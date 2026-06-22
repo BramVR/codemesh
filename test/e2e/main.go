@@ -17,6 +17,8 @@ import (
 const (
 	defaultCommandTimeout = 30 * time.Second
 	longCommandTimeout    = 2 * time.Minute
+	modeDefault           = "default"
+	modePackaged          = "packaged"
 )
 
 type result struct {
@@ -32,9 +34,11 @@ type result struct {
 
 type report struct {
 	StartedAt    string   `json:"started_at"`
+	Mode         string   `json:"mode"`
 	Binary       string   `json:"binary"`
 	CodeMeshHome string   `json:"codemesh_home"`
 	Workspace    string   `json:"workspace"`
+	RunDir       string   `json:"run_dir"`
 	Results      []result `json:"results"`
 }
 
@@ -42,9 +46,12 @@ type harness struct {
 	root         string
 	tmp          string
 	bin          string
+	externalBin  bool
 	codemeshHome string
 	home         string
 	workspace    string
+	runDir       string
+	mode         string
 	reportPath   string
 	output       io.Writer
 	results      []result
@@ -81,12 +88,20 @@ func main() {
 	h := &harness{
 		root:         root,
 		tmp:          tmp,
-		bin:          filepath.Join(tmp, "bin", "codemesh"),
 		codemeshHome: filepath.Join(tmp, "codemesh-home"),
 		home:         filepath.Join(tmp, "home"),
 		workspace:    filepath.Join(tmp, "workspace"),
+		runDir:       filepath.Join(tmp, "run"),
+		mode:         e2eMode(),
 		reportPath:   reportPath(root),
 		output:       os.Stdout,
+	}
+	if bin, external, err := binaryPath(tmp); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL harness setup: %v\n", err)
+		os.Exit(1)
+	} else {
+		h.bin = bin
+		h.externalBin = external
 	}
 
 	exitCode := h.run()
@@ -109,11 +124,29 @@ func (h *harness) run() int {
 	if err := os.MkdirAll(h.workspace, 0o755); err != nil {
 		return h.fail("harness setup", err)
 	}
+	if err := os.MkdirAll(h.runDir, 0o755); err != nil {
+		return h.fail("harness setup", err)
+	}
+	if h.mode == modePackaged {
+		inside, err := pathInside(h.root, h.runDir)
+		if err != nil {
+			return h.fail("harness setup", err)
+		}
+		if inside {
+			return h.fail("harness setup", fmt.Errorf("packaged run dir must be outside repo: %s", h.runDir))
+		}
+	}
 	if err := h.createGitFixture("future-project"); err != nil {
 		return h.fail("harness fixture", err)
 	}
 
-	if ok := h.buildBinary(); !ok {
+	if !h.externalBin {
+		if ok := h.buildBinary(); !ok {
+			h.writeReport()
+			return 1
+		}
+	} else if err := ensureExecutable(h.bin); err != nil {
+		h.record(result{Name: "packaged binary setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		h.writeReport()
 		return 1
 	}
@@ -142,6 +175,7 @@ func (h *harness) run() int {
 func (h *harness) buildBinary() bool {
 	r := h.runCommand(commandSpec{
 		Label:      "build codemesh",
+		Dir:        h.root,
 		Name:       "go",
 		Args:       []string{"build", "-o", h.bin, "./cmd/codemesh"},
 		Timeout:    longCommandTimeout,
@@ -260,7 +294,7 @@ func (h *harness) executeCommand(spec commandSpec) result {
 	if dir != "" {
 		cmd.Dir = dir
 	} else {
-		cmd.Dir = h.root
+		cmd.Dir = h.defaultCommandDir()
 	}
 	if spec.UseHostEnv {
 		cmd.Env = append(os.Environ(), spec.Env...)
@@ -333,9 +367,11 @@ func (h *harness) writeReport() error {
 	}
 	r := report{
 		StartedAt:    time.Now().UTC().Format(time.RFC3339),
+		Mode:         h.mode,
 		Binary:       h.bin,
 		CodeMeshHome: h.codemeshHome,
 		Workspace:    h.workspace,
+		RunDir:       h.runDir,
 		Results:      h.results,
 	}
 	data, err := json.MarshalIndent(r, "", "  ")
@@ -383,6 +419,61 @@ func repoRoot() (string, error) {
 		return "", errors.New("empty git root")
 	}
 	return root, nil
+}
+
+func (h *harness) defaultCommandDir() string {
+	if h.mode == modePackaged {
+		return h.runDir
+	}
+	return h.root
+}
+
+func e2eMode() string {
+	if os.Getenv("CODEMESH_E2E_MODE") == modePackaged {
+		return modePackaged
+	}
+	return modeDefault
+}
+
+func binaryPath(tmp string) (string, bool, error) {
+	if path := strings.TrimSpace(os.Getenv("CODEMESH_E2E_BINARY")); path != "" {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return "", false, err
+		}
+		return abs, true, nil
+	}
+	return filepath.Join(tmp, "bin", "codemesh"), false, nil
+}
+
+func ensureExecutable(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat packaged binary: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("packaged binary is a directory: %s", path)
+	}
+	if info.Mode()&0o111 == 0 {
+		return fmt.Errorf("packaged binary is not executable: %s", path)
+	}
+	return nil
+}
+
+func pathInside(parent, child string) (bool, error) {
+	parentAbs, err := filepath.Abs(parent)
+	if err != nil {
+		return false, err
+	}
+	childAbs, err := filepath.Abs(child)
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(parentAbs, childAbs)
+	if err != nil {
+		return false, err
+	}
+	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."), nil
 }
 
 func reportPath(root string) string {

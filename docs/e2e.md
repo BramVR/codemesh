@@ -10,6 +10,14 @@ The harness builds `codemesh` once into a temp directory, runs cases against tha
 
 The build step may use the developer Go module cache and proxy. Command cases run with isolated state.
 
+Packaged binary smoke:
+
+```sh
+make e2e-packaged
+```
+
+This target builds `dist/codemesh`, then reruns the smoke cases through the same e2e runner with `CODEMESH_E2E_BINARY` pointed at that packaged-style binary. In packaged mode, command cases run from a temp directory outside the repository checkout, with `CODEMESH_HOME`, `HOME`, Git config, and local fixtures still isolated under the harness temp directory.
+
 Override the report path:
 
 ```sh
@@ -22,10 +30,17 @@ Each run creates a temp workspace with:
 
 - `CODEMESH_HOME` under the harness temp directory.
 - `HOME` under the harness temp directory.
+- a command run directory under the harness temp directory for packaged smoke checks.
 - an empty temp Git config.
 - local Git fixtures for future Project Registry, Readiness, Hydration, and Agent Prep cases.
 
 The harness does not use GitHub, secrets, GUI automation, AppleScript, the user's `~/.codemesh`, or projects under `~/Projects`.
+
+## Packaged Smoke Pattern
+
+The packaged smoke target follows the Summarize release-smoke pattern: build the CLI artifact first, then invoke the artifact directly with basic commands such as `--help`. CodeMesh keeps the same installed-binary emphasis, but stays local and deterministic: no release package, no registry install, no network-backed provider, and no real user workspace.
+
+Unit tests exercise Go packages and command helpers in-process. Normal e2e checks exercise the CLI runner with isolated state. Packaged smoke checks add one more boundary: the executable must work when invoked by absolute path from outside the source tree, so source-relative path assumptions and accidental use of the user's state are easier to catch.
 
 ## Runner Guardrails
 
