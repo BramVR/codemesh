@@ -57,6 +57,21 @@ type harness struct {
 	results      []result
 }
 
+type offlineGitFixtures struct {
+	Root     string
+	Remotes  string
+	Sources  string
+	Projects []gitFixtureProject
+}
+
+type gitFixtureProject struct {
+	Name        string
+	Remote      string
+	Source      string
+	BaseBranch  string
+	RequiredEnv []string
+}
+
 type commandSpec struct {
 	Label      string
 	Dir        string
@@ -136,7 +151,7 @@ func (h *harness) run() int {
 			return h.fail("harness setup", fmt.Errorf("packaged run dir must be outside repo: %s", h.runDir))
 		}
 	}
-	if err := h.createGitFixture("future-project"); err != nil {
+	if _, err := h.createOfflineGitFixtures(); err != nil {
 		return h.fail("harness fixture", err)
 	}
 
@@ -154,10 +169,12 @@ func (h *harness) run() int {
 	h.caseHelpSmoke()
 	h.caseInitHelpSmoke()
 	h.caseInitSmoke()
-	h.skip("project registry fixture smoke", "pending project registry commands")
-	h.skip("readiness fixture smoke", "pending readiness commands")
-	h.skip("hydration fixture smoke", "pending hydration commands")
-	h.skip("agent prep fixture smoke", "pending agent prep commands")
+	h.caseOfflineGitFixtureSmoke()
+	h.skip("project registry fixture workflow", "pending project registry commands; offline fixtures ready")
+	h.skip("readiness fixture workflow", "pending readiness commands; offline fixtures ready")
+	h.skip("hydration fixture workflow", "pending hydration command; offline fixtures ready")
+	h.skip("agent prep fixture workflow", "pending agent prep command; offline fixtures ready")
+	h.skip("live network checks", "out of scope for MVP e2e; offline local Git fixtures cover current layer")
 
 	if err := h.writeReport(); err != nil {
 		fmt.Printf("FAIL report: %v\n", err)
@@ -274,6 +291,86 @@ func (h *harness) exec(dir string, name string, args ...string) (string, string,
 	return r.Stdout, r.Stderr, resultError(r)
 }
 
+func (h *harness) caseOfflineGitFixtureSmoke() {
+	fixtures, err := h.createOfflineGitFixtures()
+	if err != nil {
+		h.record(result{Name: "offline git fixture smoke", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	checks := []struct {
+		name string
+		fn   func() error
+	}{
+		{"clean repo", func() error {
+			project := fixtures.Project("clean-repo")
+			if project == nil {
+				return errors.New("clean-repo fixture missing")
+			}
+			return h.expectGitStatus(project.Source, "")
+		}},
+		{"dirty source checkout", func() error {
+			project := fixtures.Project("dirty-source")
+			if project == nil {
+				return errors.New("dirty-source fixture missing")
+			}
+			status, err := h.gitStatus(project.Source)
+			if err != nil {
+				return err
+			}
+			if status == "" {
+				return errors.New("dirty-source fixture is clean")
+			}
+			return nil
+		}},
+		{"missing project path", func() error {
+			project := fixtures.Project("missing-project-path")
+			if project == nil {
+				return errors.New("missing-project-path fixture missing")
+			}
+			if _, err := os.Stat(project.Source); err == nil {
+				return fmt.Errorf("missing project path exists: %s", project.Source)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("stat missing project path: %w", err)
+			}
+			return nil
+		}},
+		{"missing base branch", func() error {
+			project := fixtures.Project("missing-base-branch")
+			if project == nil {
+				return errors.New("missing-base-branch fixture missing")
+			}
+			stdout, _, err := h.exec(h.tmp, "git", "ls-remote", "--heads", project.Remote, project.BaseBranch)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(stdout) != "" {
+				return fmt.Errorf("base branch %q exists unexpectedly", project.BaseBranch)
+			}
+			return nil
+		}},
+		{"required env missing", func() error {
+			project := fixtures.Project("required-env-missing")
+			if project == nil {
+				return errors.New("required-env-missing fixture missing")
+			}
+			if len(project.RequiredEnv) != 1 || project.RequiredEnv[0] != "CODEMESH_E2E_REQUIRED_ENV" {
+				return fmt.Errorf("unexpected required env keys: %v", project.RequiredEnv)
+			}
+			if envHasKey(isolatedEnv(h.codemeshHome, h.workspace, h.home), project.RequiredEnv[0]) {
+				return fmt.Errorf("fake env key %s is present in isolated command env", project.RequiredEnv[0])
+			}
+			return nil
+		}},
+	}
+	for _, check := range checks {
+		if err := check.fn(); err != nil {
+			h.record(result{Name: "offline git fixture " + check.name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+			return
+		}
+	}
+	h.record(result{Name: "offline git fixture smoke", Status: "PASS", ExitCode: 0})
+}
+
 func (h *harness) runCommand(spec commandSpec) result {
 	r := h.executeCommand(spec)
 	h.record(r)
@@ -341,26 +438,6 @@ func resultError(r result) error {
 	return fmt.Errorf("%s failed with exit code %d", r.Name, r.ExitCode)
 }
 
-func (h *harness) createGitFixture(name string) error {
-	path := filepath.Join(h.workspace, name)
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		return err
-	}
-	if _, _, err := h.exec(path, "git", "init", "-b", "main"); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("# Future Project\n"), 0o644); err != nil {
-		return err
-	}
-	if _, _, err := h.exec(path, "git", "add", "README.md"); err != nil {
-		return err
-	}
-	if _, _, err := h.exec(path, "git", "-c", "user.name=CodeMesh E2E", "-c", "user.email=e2e@example.invalid", "commit", "-m", "Initial fixture"); err != nil {
-		return err
-	}
-	return nil
-}
-
 func (h *harness) writeReport() error {
 	if err := os.MkdirAll(filepath.Dir(h.reportPath), 0o755); err != nil {
 		return err
@@ -380,6 +457,149 @@ func (h *harness) writeReport() error {
 	}
 	data = append(data, '\n')
 	return os.WriteFile(h.reportPath, data, 0o644)
+}
+
+func (f offlineGitFixtures) Project(name string) *gitFixtureProject {
+	for i := range f.Projects {
+		if f.Projects[i].Name == name {
+			return &f.Projects[i]
+		}
+	}
+	return nil
+}
+
+func (h *harness) createOfflineGitFixtures() (offlineGitFixtures, error) {
+	fixtures := offlineGitFixtures{
+		Root:    filepath.Join(h.tmp, "git-fixtures"),
+		Remotes: filepath.Join(h.tmp, "git-fixtures", "remotes"),
+		Sources: filepath.Join(h.tmp, "git-fixtures", "sources"),
+	}
+	if err := os.MkdirAll(fixtures.Remotes, 0o755); err != nil {
+		return fixtures, err
+	}
+	if err := os.MkdirAll(fixtures.Sources, 0o755); err != nil {
+		return fixtures, err
+	}
+
+	if project, err := h.createClonedFixture(fixtures, "clean-repo", nil); err != nil {
+		return fixtures, err
+	} else {
+		fixtures.Projects = append(fixtures.Projects, project)
+	}
+	if project, err := h.createClonedFixture(fixtures, "dirty-source", func(source string) error {
+		return os.WriteFile(filepath.Join(source, "dirty.txt"), []byte("uncommitted fixture change\n"), 0o644)
+	}); err != nil {
+		return fixtures, err
+	} else {
+		fixtures.Projects = append(fixtures.Projects, project)
+	}
+	if project, err := h.createRemoteOnlyFixture(fixtures, "missing-project-path", nil); err != nil {
+		return fixtures, err
+	} else {
+		fixtures.Projects = append(fixtures.Projects, project)
+	}
+	if project, err := h.createClonedFixture(fixtures, "missing-base-branch", nil); err != nil {
+		return fixtures, err
+	} else {
+		project.BaseBranch = "release/missing"
+		fixtures.Projects = append(fixtures.Projects, project)
+	}
+	writeEnvPolicy := func(path string) error {
+		policy := []byte("agent:\n  env:\n    mode: block\n    required_files:\n      - .env.local\n    required_keys:\n      - CODEMESH_E2E_REQUIRED_ENV\n")
+		return os.WriteFile(filepath.Join(path, ".codemesh.yml"), policy, 0o644)
+	}
+	if project, err := h.createClonedFixtureWithSeed(fixtures, "required-env-missing", writeEnvPolicy, nil); err != nil {
+		return fixtures, err
+	} else {
+		project.RequiredEnv = []string{"CODEMESH_E2E_REQUIRED_ENV"}
+		fixtures.Projects = append(fixtures.Projects, project)
+	}
+	return fixtures, nil
+}
+
+func (h *harness) createClonedFixture(fixtures offlineGitFixtures, name string, mutate func(string) error) (gitFixtureProject, error) {
+	return h.createClonedFixtureWithSeed(fixtures, name, nil, mutate)
+}
+
+func (h *harness) createClonedFixtureWithSeed(fixtures offlineGitFixtures, name string, mutateSeed, mutateClone func(string) error) (gitFixtureProject, error) {
+	project, err := h.createRemoteOnlyFixture(fixtures, name, mutateSeed)
+	if err != nil {
+		return project, err
+	}
+	if _, err := os.Stat(project.Source); errors.Is(err, os.ErrNotExist) {
+		if _, _, err := h.exec(fixtures.Sources, "git", "clone", project.Remote, project.Source); err != nil {
+			return project, err
+		}
+	} else if err != nil {
+		return project, err
+	}
+	if mutateClone != nil {
+		if err := mutateClone(project.Source); err != nil {
+			return project, err
+		}
+	}
+	return project, nil
+}
+
+func (h *harness) createRemoteOnlyFixture(fixtures offlineGitFixtures, name string, mutateSeed func(string) error) (gitFixtureProject, error) {
+	remote := filepath.Join(fixtures.Remotes, name+".git")
+	source := filepath.Join(fixtures.Sources, name)
+	seed := filepath.Join(fixtures.Root, "seeds", name)
+	project := gitFixtureProject{Name: name, Remote: remote, Source: source, BaseBranch: "main"}
+	if _, err := os.Stat(remote); err == nil {
+		return project, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return project, err
+	}
+	if err := os.MkdirAll(seed, 0o755); err != nil {
+		return project, err
+	}
+	if _, _, err := h.exec(seed, "git", "init", "-b", "main"); err != nil {
+		return project, err
+	}
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("# "+name+"\n"), 0o644); err != nil {
+		return project, err
+	}
+	if mutateSeed != nil {
+		if err := mutateSeed(seed); err != nil {
+			return project, err
+		}
+	}
+	if _, _, err := h.exec(seed, "git", "add", "."); err != nil {
+		return project, err
+	}
+	if _, _, err := h.exec(seed, "git", "-c", "user.name=CodeMesh E2E", "-c", "user.email=e2e@example.invalid", "commit", "-m", "Initial fixture"); err != nil {
+		return project, err
+	}
+	if _, _, err := h.exec(fixtures.Remotes, "git", "init", "--bare", "-b", "main", remote); err != nil {
+		return project, err
+	}
+	if _, _, err := h.exec(seed, "git", "remote", "add", "origin", remote); err != nil {
+		return project, err
+	}
+	if _, _, err := h.exec(seed, "git", "push", "-u", "origin", "main"); err != nil {
+		return project, err
+	}
+	return project, nil
+}
+
+func (h *harness) expectGitStatus(dir, want string) error {
+	got, err := h.gitStatus(dir)
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return fmt.Errorf("git status for %s = %q, want %q", dir, got, want)
+	}
+	return nil
+}
+
+func (h *harness) gitStatus(dir string) (string, error) {
+	stdout, _, err := h.exec(dir, "git", "status", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(stdout), nil
 }
 
 func (h *harness) print(r result) {
@@ -547,6 +767,15 @@ func isolatedEnv(codemeshHome, workspace, home string) []string {
 		"GOSUMDB=off",
 	)
 	return env
+}
+
+func envHasKey(env []string, key string) bool {
+	for _, item := range env {
+		if strings.HasPrefix(item, key+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 func indent(s string) string {
