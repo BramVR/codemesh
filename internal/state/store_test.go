@@ -3,8 +3,10 @@ package state
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -125,6 +127,56 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestAddProjectPersistsProject(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	defer store.Close()
+
+	project, err := store.AddProject(ctx, Project{
+		Alias:            "codemesh",
+		NormalizedRemote: "https://github.com/BramVR/codemesh",
+		LocalPath:        "/tmp/codemesh",
+	})
+	if err != nil {
+		t.Fatalf("AddProject error = %v", err)
+	}
+
+	projects, err := store.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects error = %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("project count = %d, want 1", len(projects))
+	}
+	if projects[0].ID != project.ID {
+		t.Fatalf("project id = %d, want %d", projects[0].ID, project.ID)
+	}
+	if projects[0].Alias != "codemesh" || projects[0].NormalizedRemote != "https://github.com/BramVR/codemesh" || projects[0].LocalPath != "/tmp/codemesh" {
+		t.Fatalf("project = %#v", projects[0])
+	}
+}
+
+func TestAddProjectAliasConflictIsActionable(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	defer store.Close()
+
+	if _, err := store.AddProject(ctx, Project{Alias: "codemesh", NormalizedRemote: "https://github.com/BramVR/codemesh", LocalPath: "/tmp/one"}); err != nil {
+		t.Fatalf("first AddProject error = %v", err)
+	}
+	_, err := store.AddProject(ctx, Project{Alias: "codemesh", NormalizedRemote: "https://github.com/BramVR/other", LocalPath: "/tmp/two"})
+
+	if err == nil {
+		t.Fatalf("second AddProject error = nil, want alias conflict")
+	}
+	if !errors.Is(err, ErrAliasConflict) {
+		t.Fatalf("error = %v, want ErrAliasConflict", err)
+	}
+	if !strings.Contains(err.Error(), "codemesh") || !strings.Contains(err.Error(), "--alias") {
+		t.Fatalf("alias conflict is not actionable: %v", err)
+	}
+}
+
 func openRawDB(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
@@ -132,6 +184,18 @@ func openRawDB(t *testing.T, path string) *sql.DB {
 		t.Fatalf("open raw db: %v", err)
 	}
 	return db
+}
+
+func migratedStore(t *testing.T) *SQLiteStore {
+	t.Helper()
+	store, err := Open(filepath.Join(t.TempDir(), "codemesh.db"))
+	if err != nil {
+		t.Fatalf("Open error = %v", err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate error = %v", err)
+	}
+	return store
 }
 
 func setting(t *testing.T, db *sql.DB, key string) string {

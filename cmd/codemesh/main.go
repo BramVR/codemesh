@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/BramVR/codemesh/internal/config"
+	"github.com/BramVR/codemesh/internal/registry"
 	"github.com/BramVR/codemesh/internal/state"
 )
 
@@ -28,11 +29,114 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "init":
 		return runInit(args[1:], stdout, stderr)
+	case "add":
+		return runAdd(args[1:], stdout, stderr)
+	case "tree":
+		return runTree(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[0])
 		printHelp(stderr)
 		return 2
 	}
+}
+
+func runAdd(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printAddHelp(stdout)
+		return 0
+	}
+	alias, path, ok := parseAddArgs(args, stdout, stderr)
+	if !ok {
+		return 2
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+
+	project, err := registry.New(store).AddPath(context.Background(), path, alias)
+	if err != nil {
+		fmt.Fprintf(stderr, "add project: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "added project: %s\nremote: %s\npath: %s\n", project.Alias, project.NormalizedRemote, project.LocalPath)
+	return 0
+}
+
+func parseAddArgs(args []string, stdout, stderr io.Writer) (string, string, bool) {
+	var alias string
+	var paths []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--alias":
+			if i+1 >= len(args) {
+				fmt.Fprint(stderr, "add --alias requires a name\n\n")
+				printAddHelp(stderr)
+				return "", "", false
+			}
+			alias = args[i+1]
+			i++
+		default:
+			paths = append(paths, args[i])
+		}
+	}
+	if len(paths) != 1 {
+		fmt.Fprint(stderr, "add requires exactly one project path\n\n")
+		printAddHelp(stderr)
+		return "", "", false
+	}
+	return alias, paths[0], true
+}
+
+func runTree(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printTreeHelp(stdout)
+		return 0
+	}
+	if len(args) > 0 {
+		fmt.Fprint(stderr, "tree accepts no arguments\n\n")
+		printTreeHelp(stderr)
+		return 2
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+
+	entries, err := registry.New(store).Entries(context.Background())
+	if err != nil {
+		fmt.Fprintf(stderr, "read project registry: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "canonical workspace:")
+	if len(entries) == 0 {
+		fmt.Fprintln(stdout, "(empty)")
+		return 0
+	}
+	for _, entry := range entries {
+		fmt.Fprintf(stdout, "- %s %s %s\n", entry.Project.Alias, entry.State, entry.Project.LocalPath)
+	}
+	return 0
+}
+
+func openMigratedStore() (*state.SQLiteStore, error) {
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		return nil, err
+	}
+	store, err := state.Open(paths.Database)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		store.Close()
+		return nil, err
+	}
+	return store, nil
 }
 
 func runInit(args []string, stdout, stderr io.Writer) int {
@@ -75,12 +179,16 @@ Usage:
   codemesh [--help]
   codemesh [--version]
   codemesh init [workspace-root]
+  codemesh add <path> [--alias name]
+  codemesh tree
 
 Commands:
   init       create local CodeMesh state
+  add        add one Git project to the registry
+  tree       show the canonical workspace
 
 Planned MVP commands:
-  scan, add, tree, status, hydrate, agent prepare, runs, clean
+  scan, status, hydrate, agent prepare, runs, clean
 `)
 }
 
@@ -92,5 +200,23 @@ Usage:
 
 Creates CodeMesh home, codemesh.db, and the agents directory.
 Uses CODEMESH_HOME when set; otherwise uses $HOME/.codemesh.
+`)
+}
+
+func printAddHelp(w io.Writer) {
+	fmt.Fprint(w, `Add one Git project to the Project Registry.
+
+Usage:
+  codemesh add <path> [--alias name]
+
+Alias defaults to the checkout directory name.
+`)
+}
+
+func printTreeHelp(w io.Writer) {
+	fmt.Fprint(w, `Show the canonical workspace.
+
+Usage:
+  codemesh tree
 `)
 }

@@ -31,12 +31,24 @@ Initial tables:
 
 - `schema_migrations`: applied migration versions.
 - `settings`: key/value settings, including `default_workspace_root`.
-- `projects`: future project registry rows.
+- `projects`: Project Registry rows.
 - `machines`: future machine facts.
 - `scans`: future local discovery runs.
 - `agent_runs`: future agent workspace audit rows.
 
 Migrations are idempotent. Re-running `init` must not duplicate migrations or remove existing settings.
+
+## Project Registry
+
+`codemesh add <path>` records one existing Git checkout in `projects`.
+
+Stored fields:
+
+- `alias`: human CLI name; defaults to the checkout directory name and must be unique.
+- `normalized_remote`: stable project identity anchor. GitHub SSH and HTTPS remotes normalize to the same value.
+- `local_path`: absolute path to the current checkout on this machine.
+
+Presence is derived from the filesystem when reading the registry. The MVP does not store readiness, dirty, stale, env, hydration, or agent-prep state in project rows.
 
 ## Secrets
 

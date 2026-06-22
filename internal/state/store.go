@@ -14,6 +14,8 @@ import (
 
 const databaseName = "codemesh.db"
 
+var ErrAliasConflict = errors.New("project alias already exists")
+
 type InitResult struct {
 	Home            string
 	Database        string
@@ -27,6 +29,13 @@ type Store interface {
 	Migrate(context.Context) error
 	SetSetting(context.Context, string, string) error
 	Close() error
+}
+
+type Project struct {
+	ID               int64
+	Alias            string
+	NormalizedRemote string
+	LocalPath        string
 }
 
 type SQLiteStore struct {
@@ -150,6 +159,67 @@ on conflict(key) do update set value = excluded.value, updated_at = excluded.upd
 		return fmt.Errorf("set setting %q: %w", key, err)
 	}
 	return nil
+}
+
+func (s *SQLiteStore) AddProject(ctx context.Context, project Project) (Project, error) {
+	if project.Alias == "" {
+		return Project{}, errors.New("project alias is required")
+	}
+	if project.NormalizedRemote == "" {
+		return Project{}, errors.New("project normalized remote is required")
+	}
+	if project.LocalPath == "" {
+		return Project{}, errors.New("project local path is required")
+	}
+
+	var existingID int64
+	err := s.db.QueryRowContext(ctx, `select id from projects where alias = ?`, project.Alias).Scan(&existingID)
+	if err == nil {
+		return Project{}, fmt.Errorf("%w: alias %q already exists; choose a different name with --alias", ErrAliasConflict, project.Alias)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Project{}, fmt.Errorf("check project alias %q: %w", project.Alias, err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.ExecContext(ctx, `
+insert into projects(alias, normalized_remote, local_path, created_at, updated_at)
+values(?, ?, ?, ?, ?)
+`, project.Alias, project.NormalizedRemote, project.LocalPath, now, now)
+	if err != nil {
+		return Project{}, fmt.Errorf("add project %q: %w", project.Alias, err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return Project{}, fmt.Errorf("read project id: %w", err)
+	}
+	project.ID = id
+	return project, nil
+}
+
+func (s *SQLiteStore) ListProjects(ctx context.Context) ([]Project, error) {
+	rows, err := s.db.QueryContext(ctx, `
+select id, alias, normalized_remote, local_path
+from projects
+order by alias
+`)
+	if err != nil {
+		return nil, fmt.Errorf("list projects: %w", err)
+	}
+	defer rows.Close()
+
+	var projects []Project
+	for rows.Next() {
+		var project Project
+		if err := rows.Scan(&project.ID, &project.Alias, &project.NormalizedRemote, &project.LocalPath); err != nil {
+			return nil, fmt.Errorf("scan project: %w", err)
+		}
+		projects = append(projects, project)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate projects: %w", err)
+	}
+	return projects, nil
 }
 
 func (s *SQLiteStore) Close() error {
