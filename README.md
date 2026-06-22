@@ -32,9 +32,18 @@ codemesh hydrate acme-site
 codemesh agent prepare acme-site --profile codex
 ```
 
+## Testing
+
+```sh
+make test
+make e2e
+```
+
+The CLI e2e harness is documented in [docs/e2e.md](docs/e2e.md).
+
 ## Status
 
-Scaffold only. State model and Go CLI contract next.
+Scaffold only. The CLI currently supports help/version smoke behavior for the e2e harness. State model and MVP commands next.
 
 ## Research
 
