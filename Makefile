@@ -7,7 +7,7 @@ test:
 
 build:
 	mkdir -p "$(dir $(BIN))"
-	go build -o $(BIN) ./cmd/codemesh
+	go build -o "$(BIN)" ./cmd/codemesh
 
 e2e:
 	go run ./test/e2e

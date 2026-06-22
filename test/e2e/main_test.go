@@ -85,7 +85,11 @@ func TestPackagedCommandDirUsesOutsideRunDir(t *testing.T) {
 	if got := h.defaultCommandDir(); got != h.runDir {
 		t.Fatalf("default command dir = %s, want packaged run dir %s", got, h.runDir)
 	}
-	if strings.HasPrefix(h.runDir, h.root) {
+	inside, err := pathInside(h.root, h.runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inside {
 		t.Fatalf("test setup bug: packaged run dir is under repo root")
 	}
 }
