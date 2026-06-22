@@ -43,7 +43,7 @@ The CLI e2e harness is documented in [docs/e2e.md](docs/e2e.md).
 
 ## Status
 
-Scaffold only. The CLI currently supports help/version smoke behavior for the e2e harness. State model and MVP commands next.
+Scaffold plus local state bootstrap. The CLI supports help/version smoke behavior and `codemesh init [workspace-root]`.
 
 ## Research
 

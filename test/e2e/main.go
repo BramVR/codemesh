@@ -51,12 +51,13 @@ type harness struct {
 }
 
 type commandSpec struct {
-	Label   string
-	Dir     string
-	Name    string
-	Args    []string
-	Timeout time.Duration
-	Env     []string
+	Label      string
+	Dir        string
+	Name       string
+	Args       []string
+	Timeout    time.Duration
+	Env        []string
+	UseHostEnv bool
 }
 
 func main() {
@@ -118,6 +119,8 @@ func (h *harness) run() int {
 	}
 
 	h.caseHelpSmoke()
+	h.caseInitHelpSmoke()
+	h.caseInitSmoke()
 	h.skip("project registry fixture smoke", "pending project registry commands")
 	h.skip("readiness fixture smoke", "pending readiness commands")
 	h.skip("hydration fixture smoke", "pending hydration commands")
@@ -138,10 +141,11 @@ func (h *harness) run() int {
 
 func (h *harness) buildBinary() bool {
 	r := h.runCommand(commandSpec{
-		Label:   "build codemesh",
-		Name:    "go",
-		Args:    []string{"build", "-o", h.bin, "./cmd/codemesh"},
-		Timeout: longCommandTimeout,
+		Label:      "build codemesh",
+		Name:       "go",
+		Args:       []string{"build", "-o", h.bin, "./cmd/codemesh"},
+		Timeout:    longCommandTimeout,
+		UseHostEnv: true,
 	})
 	return r.Status == "PASS"
 }
@@ -158,6 +162,53 @@ func (h *harness) caseHelpSmoke() {
 		r.Error = "help output did not identify CodeMesh"
 	}
 	h.record(r)
+}
+
+func (h *harness) caseInitHelpSmoke() {
+	r := h.executeCommand(commandSpec{
+		Label:   "init help smoke",
+		Name:    h.bin,
+		Args:    []string{"init", "--help"},
+		Timeout: defaultCommandTimeout,
+	})
+	if r.Status == "PASS" && !strings.Contains(r.Stdout, "codemesh init [workspace-root]") {
+		r.Status = "FAIL"
+		r.Error = "init help output did not include usage"
+	}
+	h.record(r)
+}
+
+func (h *harness) caseInitSmoke() {
+	r := h.executeCommand(commandSpec{
+		Label:   "init smoke",
+		Name:    h.bin,
+		Args:    []string{"init", h.workspace},
+		Timeout: defaultCommandTimeout,
+	})
+	if r.Status == "PASS" {
+		if !strings.Contains(r.Stdout, "initialized CodeMesh") {
+			r.Status = "FAIL"
+			r.Error = "init output did not confirm initialization"
+		} else if _, err := os.Stat(filepath.Join(h.codemeshHome, "codemesh.db")); err != nil {
+			r.Status = "FAIL"
+			r.Error = fmt.Sprintf("state database missing: %v", err)
+		} else if _, err := os.Stat(filepath.Join(h.codemeshHome, "agents")); err != nil {
+			r.Status = "FAIL"
+			r.Error = fmt.Sprintf("agents dir missing: %v", err)
+		}
+	}
+	h.record(r)
+	if r.Status != "PASS" {
+		return
+	}
+
+	rerun := h.executeCommand(commandSpec{
+		Label:   "init rerun smoke",
+		Name:    h.bin,
+		Args:    []string{"init", h.workspace},
+		Timeout: defaultCommandTimeout,
+	})
+	h.record(rerun)
 }
 
 func (h *harness) skip(name, reason string) {
@@ -211,7 +262,11 @@ func (h *harness) executeCommand(spec commandSpec) result {
 	} else {
 		cmd.Dir = h.root
 	}
-	cmd.Env = append(isolatedEnv(h.codemeshHome, h.workspace, h.home), spec.Env...)
+	if spec.UseHostEnv {
+		cmd.Env = append(os.Environ(), spec.Env...)
+	} else {
+		cmd.Env = append(isolatedEnv(h.codemeshHome, h.workspace, h.home), spec.Env...)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

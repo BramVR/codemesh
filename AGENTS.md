@@ -12,6 +12,7 @@ Build/test:
 
 - `make test`
 - `make e2e`
+- No separate lint/typecheck command yet; `make test` is the current compile/typecheck gate.
 
 ## Workflow
 
