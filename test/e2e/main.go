@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,13 +14,20 @@ import (
 	"time"
 )
 
+const (
+	defaultCommandTimeout = 30 * time.Second
+	longCommandTimeout    = 2 * time.Minute
+)
+
 type result struct {
 	Name     string `json:"name"`
 	Status   string `json:"status"`
 	Duration string `json:"duration"`
+	ExitCode int    `json:"exit_code"`
 	Stdout   string `json:"stdout,omitempty"`
 	Stderr   string `json:"stderr,omitempty"`
 	Error    string `json:"error,omitempty"`
+	TimedOut bool   `json:"timed_out,omitempty"`
 }
 
 type report struct {
@@ -37,7 +46,17 @@ type harness struct {
 	home         string
 	workspace    string
 	reportPath   string
+	output       io.Writer
 	results      []result
+}
+
+type commandSpec struct {
+	Label   string
+	Dir     string
+	Name    string
+	Args    []string
+	Timeout time.Duration
+	Env     []string
 }
 
 func main() {
@@ -52,7 +71,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "FAIL harness setup: %v\n", err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(tmp)
+	defer func() {
+		if err := safeRemoveAll(tmp); err != nil {
+			fmt.Fprintf(os.Stderr, "WARN harness cleanup: %v\n", err)
+		}
+	}()
 
 	h := &harness{
 		root:         root,
@@ -62,6 +85,7 @@ func main() {
 		home:         filepath.Join(tmp, "home"),
 		workspace:    filepath.Join(tmp, "workspace"),
 		reportPath:   reportPath(root),
+		output:       os.Stdout,
 	}
 
 	exitCode := h.run()
@@ -113,62 +137,119 @@ func (h *harness) run() int {
 }
 
 func (h *harness) buildBinary() bool {
-	start := time.Now()
-	stdout, stderr, err := h.exec("", "go", "build", "-o", h.bin, "./cmd/codemesh")
-	r := result{Name: "build codemesh", Status: "PASS", Duration: time.Since(start).String(), Stdout: stdout, Stderr: stderr}
-	if err != nil {
-		r.Status = "FAIL"
-		r.Error = err.Error()
-	}
-	h.print(r)
-	h.results = append(h.results, r)
+	r := h.runCommand(commandSpec{
+		Label:   "build codemesh",
+		Name:    "go",
+		Args:    []string{"build", "-o", h.bin, "./cmd/codemesh"},
+		Timeout: longCommandTimeout,
+	})
 	return r.Status == "PASS"
 }
 
 func (h *harness) caseHelpSmoke() {
-	start := time.Now()
-	stdout, stderr, err := h.exec("", h.bin, "--help")
-	r := result{Name: "help smoke", Status: "PASS", Duration: time.Since(start).String(), Stdout: stdout, Stderr: stderr}
-	if err != nil {
-		r.Status = "FAIL"
-		r.Error = err.Error()
-	} else if !strings.Contains(stdout, "CodeMesh") || !strings.Contains(stdout, "codemesh") {
+	r := h.executeCommand(commandSpec{
+		Label:   "help smoke",
+		Name:    h.bin,
+		Args:    []string{"--help"},
+		Timeout: defaultCommandTimeout,
+	})
+	if r.Status == "PASS" && (!strings.Contains(r.Stdout, "CodeMesh") || !strings.Contains(r.Stdout, "codemesh")) {
 		r.Status = "FAIL"
 		r.Error = "help output did not identify CodeMesh"
 	}
-	h.print(r)
-	h.results = append(h.results, r)
+	h.record(r)
 }
 
 func (h *harness) skip(name, reason string) {
 	r := result{Name: name, Status: "SKIP", Error: reason}
-	h.print(r)
-	h.results = append(h.results, r)
+	h.record(r)
 }
 
 func (h *harness) fail(name string, err error) int {
 	r := result{Name: name, Status: "FAIL", Error: err.Error()}
-	h.print(r)
-	h.results = append(h.results, r)
+	h.record(r)
 	if reportErr := h.writeReport(); reportErr != nil {
-		fmt.Printf("FAIL report: %v\n", reportErr)
+		fmt.Fprintf(h.output, "FAIL report: %v\n", reportErr)
 	}
 	return 1
 }
 
 func (h *harness) exec(dir string, name string, args ...string) (string, string, error) {
-	cmd := exec.Command(name, args...)
+	spec := commandSpec{
+		Label:   name,
+		Dir:     dir,
+		Name:    name,
+		Args:    args,
+		Timeout: defaultCommandTimeout,
+	}
+	r := h.executeCommand(spec)
+	if r.Status == "FAIL" {
+		h.record(r)
+	}
+	return r.Stdout, r.Stderr, resultError(r)
+}
+
+func (h *harness) runCommand(spec commandSpec) result {
+	r := h.executeCommand(spec)
+	h.record(r)
+	return r
+}
+
+func (h *harness) executeCommand(spec commandSpec) result {
+	if spec.Timeout <= 0 {
+		spec.Timeout = defaultCommandTimeout
+	}
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), spec.Timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, spec.Name, spec.Args...)
+	cmd.WaitDelay = time.Second
+	dir := spec.Dir
 	if dir != "" {
 		cmd.Dir = dir
 	} else {
 		cmd.Dir = h.root
 	}
-	cmd.Env = isolatedEnv(h.codemeshHome, h.workspace, h.home)
+	cmd.Env = append(isolatedEnv(h.codemeshHome, h.workspace, h.home), spec.Env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	return stdout.String(), stderr.String(), err
+	exitCode := 0
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	} else if err != nil {
+		exitCode = -1
+	}
+	r := result{
+		Name:     spec.Label,
+		Status:   "PASS",
+		Duration: formatDuration(time.Since(start)),
+		ExitCode: exitCode,
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+	}
+	if err != nil {
+		r.Status = "FAIL"
+		r.Error = err.Error()
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		r.Status = "FAIL"
+		r.TimedOut = true
+		r.Error = fmt.Sprintf("timeout after %s", spec.Timeout)
+	}
+	return r
+}
+
+func resultError(r result) error {
+	if r.Status == "PASS" {
+		return nil
+	}
+	if r.Error != "" {
+		return errors.New(r.Error)
+	}
+	return fmt.Errorf("%s failed with exit code %d", r.Name, r.ExitCode)
 }
 
 func (h *harness) createGitFixture(name string) error {
@@ -211,19 +292,28 @@ func (h *harness) writeReport() error {
 }
 
 func (h *harness) print(r result) {
-	fmt.Printf("%s %s\n", r.Status, r.Name)
+	if r.Duration != "" {
+		fmt.Fprintf(h.output, "%s %s (exit=%d duration=%s)\n", r.Status, r.Name, r.ExitCode, r.Duration)
+	} else {
+		fmt.Fprintf(h.output, "%s %s\n", r.Status, r.Name)
+	}
 	if r.Status != "FAIL" {
 		return
 	}
 	if r.Error != "" {
-		fmt.Printf("  error: %s\n", r.Error)
+		fmt.Fprintf(h.output, "  error: %s\n", r.Error)
 	}
 	if r.Stdout != "" {
-		fmt.Printf("  stdout:\n%s\n", indent(r.Stdout))
+		fmt.Fprintf(h.output, "  stdout:\n%s\n", indent(r.Stdout))
 	}
 	if r.Stderr != "" {
-		fmt.Printf("  stderr:\n%s\n", indent(r.Stderr))
+		fmt.Fprintf(h.output, "  stderr:\n%s\n", indent(r.Stderr))
 	}
+}
+
+func (h *harness) record(r result) {
+	h.print(r)
+	h.results = append(h.results, r)
 }
 
 func repoRoot() (string, error) {
@@ -245,6 +335,38 @@ func reportPath(root string) string {
 		return path
 	}
 	return filepath.Join(root, "tmp", "e2e-report.json")
+}
+
+func safeRemoveAll(path string) error {
+	if path == "" {
+		return errors.New("refusing to remove empty path")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	tmp, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(tmp, abs)
+	if err != nil {
+		return err
+	}
+	if rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return fmt.Errorf("refusing to remove path outside temp dir: %s", abs)
+	}
+	if !strings.HasPrefix(filepath.Base(abs), "codemesh-e2e-") {
+		return fmt.Errorf("refusing to remove non-harness temp path: %s", abs)
+	}
+	return os.RemoveAll(abs)
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Millisecond {
+		return d.String()
+	}
+	return d.Round(time.Millisecond).String()
 }
 
 func isolatedEnv(codemeshHome, workspace, home string) []string {
