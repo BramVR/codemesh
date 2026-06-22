@@ -8,6 +8,8 @@ make e2e
 
 The harness builds `codemesh` once into a temp directory, runs cases against that binary, prints concise `PASS`, `FAIL`, and `SKIP` lines, and writes `tmp/e2e-report.json`.
 
+The build step may use the developer Go module cache and proxy. Command cases run with isolated state.
+
 Override the report path:
 
 ```sh
@@ -83,5 +85,5 @@ From `steipete/oracle`:
 ## Intentionally Skipped For Now
 
 - Poll/wait helpers: no async CodeMesh behavior exists yet.
-- Real command workflows: Project Registry, Readiness, Hydration, and Agent Prep commands are pending.
+- Real command workflows beyond `init`: Project Registry, Readiness, Hydration, and Agent Prep commands are pending.
 - Screenshot proof: not applicable to the current CLI-only harness.
