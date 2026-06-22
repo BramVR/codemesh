@@ -69,6 +69,50 @@ func TestTimeoutTiers(t *testing.T) {
 	}
 }
 
+func TestDefaultCommandDirUsesRepoRoot(t *testing.T) {
+	h := testHarness(t)
+
+	if got := h.defaultCommandDir(); got != h.root {
+		t.Fatalf("default command dir = %s, want repo root %s", got, h.root)
+	}
+}
+
+func TestPackagedCommandDirUsesOutsideRunDir(t *testing.T) {
+	h := testHarness(t)
+	h.mode = modePackaged
+	h.runDir = filepath.Join(t.TempDir(), "outside")
+
+	if got := h.defaultCommandDir(); got != h.runDir {
+		t.Fatalf("default command dir = %s, want packaged run dir %s", got, h.runDir)
+	}
+	inside, err := pathInside(h.root, h.runDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inside {
+		t.Fatalf("test setup bug: packaged run dir is under repo root")
+	}
+}
+
+func TestPathInside(t *testing.T) {
+	tmp := t.TempDir()
+	inside, err := pathInside(tmp, filepath.Join(tmp, "child"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inside {
+		t.Fatalf("child path not detected inside parent")
+	}
+
+	outside, err := pathInside(tmp, filepath.Join(filepath.Dir(tmp), "sibling"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outside {
+		t.Fatalf("sibling path detected inside parent")
+	}
+}
+
 func TestSafeRemoveAllRejectsUnsafePaths(t *testing.T) {
 	tmp := t.TempDir()
 	safeDir := filepath.Join(tmp, "codemesh-e2e-good")
@@ -119,6 +163,7 @@ func testHarness(t *testing.T) *harness {
 		codemeshHome: filepath.Join(tmp, "codemesh-home"),
 		home:         filepath.Join(tmp, "home"),
 		workspace:    filepath.Join(tmp, "workspace"),
+		runDir:       tmp,
 		output:       &bytes.Buffer{},
 	}
 }
