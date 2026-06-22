@@ -36,6 +36,24 @@ Each run creates a temp workspace with:
 
 The harness does not use GitHub, secrets, GUI automation, AppleScript, the user's `~/.codemesh`, or projects under `~/Projects`.
 
+## Test Layers
+
+CodeMesh follows a bslog-inspired layering model:
+
+- Unit tests cover pure package behavior and command helpers in-process.
+- Offline integration-style e2e tests run the real CLI against local temp fixtures, mocked local state, and fake env requirements.
+- Live/network e2e checks are intentionally limited and skipped until a feature needs real provider proof.
+
+The current CodeMesh e2e layer sits in the middle. It builds or receives a CLI binary, isolates `CODEMESH_HOME`, `HOME`, Git config, and workspace paths, then creates local Git remotes and clones under the e2e temp directory. These fixtures establish the shape for Project Registry, Readiness, Hydration, and Agent Prep coverage without requiring those commands to exist yet.
+
+Offline Git fixtures cover:
+
+- clean source checkout backed by a local bare remote.
+- dirty source checkout with uncommitted local changes.
+- missing project path with a known local bare remote.
+- missing base branch on an otherwise valid local remote.
+- missing required env using fake fixture names such as `CODEMESH_E2E_REQUIRED_ENV`.
+
 ## Packaged Smoke Pattern
 
 The packaged smoke target follows the Summarize release-smoke pattern: build the CLI artifact first, then invoke the artifact directly with basic commands such as `--help`. CodeMesh keeps the same installed-binary emphasis, but stays local and deterministic: no release package, no registry install, no network-backed provider, and no real user workspace.
@@ -101,4 +119,5 @@ From `steipete/oracle`:
 
 - Poll/wait helpers: no async CodeMesh behavior exists yet.
 - Real command workflows beyond `init`: Project Registry, Readiness, Hydration, and Agent Prep commands are pending.
+- Live/network checks: out of scope for MVP fixture coverage.
 - Screenshot proof: not applicable to the current CLI-only harness.
