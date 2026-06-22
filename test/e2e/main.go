@@ -69,31 +69,23 @@ func main() {
 }
 
 func (h *harness) run() int {
-	_ = os.Remove(h.reportPath)
-
 	if err := os.MkdirAll(filepath.Dir(h.bin), 0o755); err != nil {
-		fmt.Printf("FAIL harness setup: %v\n", err)
-		return 1
+		return h.fail("harness setup", err)
 	}
 	if err := os.MkdirAll(h.codemeshHome, 0o755); err != nil {
-		fmt.Printf("FAIL harness setup: %v\n", err)
-		return 1
+		return h.fail("harness setup", err)
 	}
 	if err := os.MkdirAll(h.home, 0o755); err != nil {
-		fmt.Printf("FAIL harness setup: %v\n", err)
-		return 1
+		return h.fail("harness setup", err)
 	}
 	if err := os.WriteFile(filepath.Join(h.home, ".gitconfig"), nil, 0o644); err != nil {
-		fmt.Printf("FAIL harness setup: %v\n", err)
-		return 1
+		return h.fail("harness setup", err)
 	}
 	if err := os.MkdirAll(h.workspace, 0o755); err != nil {
-		fmt.Printf("FAIL harness setup: %v\n", err)
-		return 1
+		return h.fail("harness setup", err)
 	}
 	if err := h.createGitFixture("future-project"); err != nil {
-		fmt.Printf("FAIL harness fixture: %v\n", err)
-		return 1
+		return h.fail("harness fixture", err)
 	}
 
 	if ok := h.buildBinary(); !ok {
@@ -152,6 +144,16 @@ func (h *harness) skip(name, reason string) {
 	r := result{Name: name, Status: "SKIP", Error: reason}
 	h.print(r)
 	h.results = append(h.results, r)
+}
+
+func (h *harness) fail(name string, err error) int {
+	r := result{Name: name, Status: "FAIL", Error: err.Error()}
+	h.print(r)
+	h.results = append(h.results, r)
+	if reportErr := h.writeReport(); reportErr != nil {
+		fmt.Printf("FAIL report: %v\n", reportErr)
+	}
+	return 1
 }
 
 func (h *harness) exec(dir string, name string, args ...string) (string, string, error) {
@@ -252,12 +254,10 @@ func isolatedEnv(codemeshHome, workspace, home string) []string {
 		"USER":        true,
 		"SHELL":       true,
 		"TERM":        true,
-		"GOENV":       true,
 		"GOCACHE":     true,
 		"GOMODCACHE":  true,
 		"GOROOT":      true,
 		"GOPATH":      true,
-		"GOFLAGS":     true,
 		"CGO_ENABLED": true,
 	}
 	var env []string
@@ -274,7 +274,9 @@ func isolatedEnv(codemeshHome, workspace, home string) []string {
 		"GIT_CONFIG_GLOBAL="+filepath.Join(home, ".gitconfig"),
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_TERMINAL_PROMPT=0",
+		"GOENV=off",
 		"GOPROXY=off",
+		"GOSUMDB=off",
 	)
 	return env
 }

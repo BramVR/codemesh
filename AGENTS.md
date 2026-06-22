@@ -8,7 +8,10 @@ Scaffold only. Docs and ADRs define the product before code.
 
 CodeMesh augments Git and local filesystems; it does not replace Git in the MVP.
 
-No build system yet. If one appears, add exact lint/typecheck/test commands to `AGENTS.md`.
+Build/test:
+
+- `make test`
+- `make e2e`
 
 ## Workflow
 
