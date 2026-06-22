@@ -17,7 +17,7 @@ It owns:
 - machine readiness checks
 - lazy repo setup
 - local-only path policy
-- secret reference materialization
+- env readiness checks
 - agent workspace provisioning
 
 It does not own:
@@ -25,6 +25,7 @@ It does not own:
 - Git history
 - arbitrary file sync
 - build artifact sync
+- secret materialization
 - raw secret storage
 - merge/conflict semantics for source code
 

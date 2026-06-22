@@ -19,6 +19,90 @@ Expected result:
 - ready workspace path printed
 - run metadata stored for cleanup and audit
 
+## Core Modules
+
+### Project Registry
+
+Owns the canonical workspace view.
+
+Responsibilities:
+
+- project identity
+- alias conflicts
+- normalized remotes
+- desired local paths
+- present and missing projects
+- scan and add behavior
+- project persistence
+
+Used by:
+
+- `scan`
+- `add`
+- `tree`
+- `status`
+- `hydrate`
+- `agent prepare`
+
+### Readiness
+
+Owns project and agent handoff diagnostics.
+
+Responsibilities:
+
+- present/missing state
+- stale/fetch state
+- dirty source checkout warnings
+- base branch blockers
+- env readiness results
+- final warn/block action
+
+Used by:
+
+- `tree`
+- `status`
+- `agent prepare`
+
+### Env Readiness
+
+Owns secret-free env checks.
+
+Responsibilities:
+
+- required env files
+- required env keys
+- warn/block mode
+- missing-env diagnostics
+
+Non-responsibilities:
+
+- reading secret values
+- writing `.env` files
+- integrating secret backends
+
+Used by:
+
+- Readiness
+
+### Agent Prep
+
+Owns agent workspace prep.
+
+Responsibilities:
+
+- resolve project through Project Registry
+- resolve effective project policy
+- run Readiness
+- create temp clone
+- checkout base
+- discover project docs
+- write run metadata
+- return ready path and diagnostics
+
+Used by:
+
+- `agent prepare`
+
 ## Commands
 
 ### `codemesh init [workspace-root]`
@@ -141,11 +225,12 @@ Initial tables:
 1. Go module, CLI skeleton, config path handling.
 2. SQLite store and migrations.
 3. Git remote normalization and repo inspection.
-4. `init`, `add`, `scan`, `tree`.
-5. `status` readiness checks.
-6. Policy parser.
-7. `agent prepare`, `runs`, `clean`.
-8. `hydrate`.
+4. Project Registry.
+5. Env Readiness and policy parser.
+6. Readiness.
+7. `init`, `add`, `scan`, `tree`, `status`.
+8. Agent Prep, `agent prepare`, `runs`, `clean`.
+9. `hydrate`.
 
 ## Non-Goals
 
