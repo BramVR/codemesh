@@ -170,7 +170,7 @@ func (h *harness) run() int {
 	h.caseInitHelpSmoke()
 	h.caseInitSmoke()
 	h.caseOfflineGitFixtureSmoke()
-	h.skip("project registry fixture workflow", "pending project registry commands; offline fixtures ready")
+	h.caseProjectRegistryFixtureWorkflow()
 	h.skip("readiness fixture workflow", "pending readiness commands; offline fixtures ready")
 	h.skip("hydration fixture workflow", "pending hydration command; offline fixtures ready")
 	h.skip("agent prep fixture workflow", "pending agent prep command; offline fixtures ready")
@@ -187,6 +187,40 @@ func (h *harness) run() int {
 		}
 	}
 	return 0
+}
+
+func (h *harness) caseProjectRegistryFixtureWorkflow() {
+	fixtures, err := h.createOfflineGitFixtures()
+	if err != nil {
+		h.record(result{Name: "project registry fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	project := fixtures.Project("clean-repo")
+	if project == nil {
+		h.record(result{Name: "project registry fixture workflow", Status: "FAIL", Error: "clean-repo fixture missing", ExitCode: -1})
+		return
+	}
+	add := h.executeCommand(commandSpec{
+		Label:   "project registry add clean repo",
+		Name:    h.bin,
+		Args:    []string{"add", project.Source},
+		Timeout: defaultCommandTimeout,
+	})
+	h.record(add)
+	if add.Status != "PASS" {
+		return
+	}
+	tree := h.executeCommand(commandSpec{
+		Label:   "project registry tree",
+		Name:    h.bin,
+		Args:    []string{"tree"},
+		Timeout: defaultCommandTimeout,
+	})
+	if tree.Status == "PASS" && (!strings.Contains(tree.Stdout, "clean-repo") || !strings.Contains(tree.Stdout, "present") || !strings.Contains(tree.Stdout, project.Source)) {
+		tree.Status = "FAIL"
+		tree.Error = "tree output did not show clean-repo as present with local path"
+	}
+	h.record(tree)
 }
 
 func (h *harness) buildBinary() bool {
