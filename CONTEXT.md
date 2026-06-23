@@ -25,6 +25,7 @@ CodeMesh is a developer workspace fabric for keeping code projects usable across
 - Agent workspace: scoped project view prepared for an automated coding agent.
 - Agent workspace prep: the act of making an agent workspace fresh, configured, policy-checked, and ready to hand to an agent.
 - Agent run: one prepared agent workspace plus its metadata, created for a specific task or handoff.
+- Handoff docs: project-relative documentation paths selected for agent context and recorded in agent run metadata, without copying or embedding file contents.
 - Readiness: the result of checking whether a project or agent workspace is present, fresh, configured, and safe enough for the requested action.
 - Local discovery: finding projects by scanning existing workspace roots for Git repositories.
 - Source checkout: the existing local project checkout CodeMesh uses to identify remotes, policy, and local warnings.

@@ -51,7 +51,7 @@ agent:
 
 `agent.env.required_keys`: env variable names that must be present in the process environment. Entries are names only; assignments such as `TOKEN=value` are invalid.
 
-`agent.include_docs`: project-relative docs or glob-like path patterns that express which project context should travel with an agent handoff. The Policy Module parses and preserves the list; it does not read doc contents during readiness checks.
+`agent.include_docs`: project-relative docs or glob-like path patterns that express which project context should travel with an agent handoff. Absolute paths and paths escaping the checkout are invalid. The Policy Module parses and preserves the list; it does not read doc contents during readiness checks. Agent Prep treats these as additive handoff docs on top of the default docs it discovers for ordinary repos.
 
 ## Readiness Behavior
 
@@ -65,6 +65,8 @@ Env requirements are checked without secret access:
 - missing requirements are warnings in `warn` mode and blockers in `block` mode
 
 Agent Prep uses the requested base when passed. Without `--base`, it resolves `agent.base` from policy, falling back to `main`. It checks the policy from the fetched base for handoff env requirements, while env file presence is checked against the local source checkout because those files are usually untracked local setup.
+
+Agent Prep resolves handoff docs from the prepared clone, not the source checkout, so metadata points at files available to the agent on the selected base. It records project-relative paths only; it does not copy docs or embed doc contents. The default handoff docs are `AGENTS.md`, `CONTEXT.md`, `README.md`, and `docs/adr/*.md`; `agent.include_docs` adds project-specific paths or patterns.
 
 ## No Secret Values
 
