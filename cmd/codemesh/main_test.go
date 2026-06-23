@@ -214,6 +214,147 @@ func TestStatusWithoutProjectSummarizesKnownProjects(t *testing.T) {
 	}
 }
 
+func TestHydrateMissingProjectClonesDesiredPathAndUpdatesTree(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "missing-source")
+	var err error
+	source, err = filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	if err := os.RemoveAll(source); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"tree"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("tree exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "- missing-source missing "+source) {
+		t.Fatalf("tree output missing missing project:\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"hydrate", "missing-source"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("hydrate exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "hydrated project: missing-source") {
+		t.Fatalf("hydrate stdout missing success:\n%s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(source, "README.md")); err != nil {
+		t.Fatalf("hydrated checkout missing README: %v", err)
+	}
+	assertGitStatusClean(t, source)
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"tree"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("tree after hydrate exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "- missing-source present "+source) {
+		t.Fatalf("tree output missing present hydrated project:\n%s", stdout.String())
+	}
+}
+
+func TestHydratePresentProjectReportsNoCloneNeeded(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "present-source")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"hydrate", "present-source"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("hydrate exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "project already present: present-source") {
+		t.Fatalf("hydrate stdout missing present report:\n%s", stdout.String())
+	}
+	assertGitStatusClean(t, source)
+}
+
+func TestHydrateRefusesExistingNonEmptyPath(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "conflict-source")
+	source, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	if err := os.RemoveAll(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "local.txt"), []byte("do not overwrite\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"hydrate", "conflict-source"}, &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatalf("hydrate exit code = 0, want failure\nstdout:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "path conflict") || !strings.Contains(stderr.String(), source) {
+		t.Fatalf("stderr missing clear conflict:\n%s", stderr.String())
+	}
+	if got, err := os.ReadFile(filepath.Join(source, "local.txt")); err != nil || string(got) != "do not overwrite\n" {
+		t.Fatalf("conflict file changed or missing: got %q err %v", got, err)
+	}
+}
+
+func TestHydrateDoesNotCreatePlaceholderDirectoriesForOtherMissingProjects(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	alpha := createCommittedLocalRemoteClone(t, "alpha-missing")
+	beta := createCommittedLocalRemoteClone(t, "beta-missing")
+	alpha, err := filepath.EvalSymlinks(alpha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beta, err = filepath.EvalSymlinks(beta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", alpha}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add alpha exit code = %d, want 0", code)
+	}
+	if code := run([]string{"add", beta}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add beta exit code = %d, want 0", code)
+	}
+	if err := os.RemoveAll(alpha); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(beta); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"hydrate", "alpha-missing"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("hydrate exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if _, err := os.Stat(alpha); err != nil {
+		t.Fatalf("hydrated path missing: %v", err)
+	}
+	if _, err := os.Stat(beta); !os.IsNotExist(err) {
+		t.Fatalf("other missing project path was created or stat failed unexpectedly: %v", err)
+	}
+}
+
 func TestAddAliasConflictFailsWithActionableError(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "codemesh-home")
 	first := createGitRepo(t, "https://github.com/BramVR/first.git")
@@ -231,6 +372,18 @@ func TestAddAliasConflictFailsWithActionableError(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "alias") || !strings.Contains(stderr.String(), "shared") || !strings.Contains(stderr.String(), "--alias") {
 		t.Fatalf("stderr missing actionable conflict:\n%s", stderr.String())
+	}
+}
+
+func assertGitStatusClean(t *testing.T, dir string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "status", "--porcelain")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(output)) != "" {
+		t.Fatalf("git status not clean:\n%s", output)
 	}
 }
 

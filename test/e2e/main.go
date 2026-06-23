@@ -173,7 +173,7 @@ func (h *harness) run() int {
 	h.caseProjectRegistryScanWorkflow()
 	h.caseProjectRegistryFixtureWorkflow()
 	h.caseReadinessStatusFixtureWorkflow()
-	h.skip("hydration fixture workflow", "pending hydration command; offline fixtures ready")
+	h.caseHydrationFixtureWorkflow()
 	h.skip("agent prep fixture workflow", "pending agent prep command; offline fixtures ready")
 	h.skip("live network checks", "out of scope for MVP e2e; offline local Git fixtures cover current layer")
 
@@ -350,6 +350,116 @@ func (h *harness) caseReadinessStatusFixtureWorkflow() {
 		envResult.Error = "status output did not report missing env blockers without values"
 	}
 	h.record(envResult)
+}
+
+func (h *harness) caseHydrationFixtureWorkflow() {
+	fixtures, err := h.createOfflineGitFixtures()
+	if err != nil {
+		h.record(result{Name: "hydration fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	target, err := h.createClonedFixture(fixtures, "hydrate-target", nil)
+	if err != nil {
+		h.record(result{Name: "hydration fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	other, err := h.createClonedFixture(fixtures, "hydrate-other", nil)
+	if err != nil {
+		h.record(result{Name: "hydration fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	hydrateHome := filepath.Join(h.tmp, "codemesh-hydrate-home")
+	env := []string{"CODEMESH_HOME=" + hydrateHome}
+	for _, project := range []gitFixtureProject{target, other} {
+		add := h.executeCommand(commandSpec{
+			Label:   "hydration add " + project.Name,
+			Name:    h.bin,
+			Args:    []string{"add", project.Source},
+			Timeout: defaultCommandTimeout,
+			Env:     env,
+		})
+		h.record(add)
+		if add.Status != "PASS" {
+			return
+		}
+	}
+	if err := os.RemoveAll(target.Source); err != nil {
+		h.record(result{Name: "hydration remove target source", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := os.RemoveAll(other.Source); err != nil {
+		h.record(result{Name: "hydration remove other source", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+
+	before := h.executeCommand(commandSpec{
+		Label:   "hydration tree before",
+		Name:    h.bin,
+		Args:    []string{"tree"},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if before.Status == "PASS" && (!strings.Contains(before.Stdout, "hydrate-target missing") || !strings.Contains(before.Stdout, "hydrate-other missing")) {
+		before.Status = "FAIL"
+		before.Error = "tree output did not show both hydration fixtures as missing"
+	}
+	h.record(before)
+	if before.Status != "PASS" {
+		return
+	}
+
+	hydrate := h.executeCommand(commandSpec{
+		Label:   "hydrate missing fixture",
+		Name:    h.bin,
+		Args:    []string{"hydrate", "hydrate-target"},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if hydrate.Status == "PASS" && !strings.Contains(hydrate.Stdout, "hydrated project: hydrate-target") {
+		hydrate.Status = "FAIL"
+		hydrate.Error = "hydrate output did not confirm target project"
+	}
+	h.record(hydrate)
+	if hydrate.Status != "PASS" {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(target.Source, "README.md")); err != nil {
+		h.record(result{Name: "hydrate checkout exists", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if _, err := os.Stat(other.Source); !errors.Is(err, os.ErrNotExist) {
+		h.record(result{Name: "hydrate no sibling placeholder", Status: "FAIL", Error: fmt.Sprintf("other missing path exists or stat failed: %v", err), ExitCode: -1})
+		return
+	}
+
+	after := h.executeCommand(commandSpec{
+		Label:   "hydration tree after",
+		Name:    h.bin,
+		Args:    []string{"tree"},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if after.Status == "PASS" && (!strings.Contains(after.Stdout, "hydrate-target present") || !strings.Contains(after.Stdout, "hydrate-other missing")) {
+		after.Status = "FAIL"
+		after.Error = "tree output did not show hydrated target present and sibling missing"
+	}
+	h.record(after)
+	if after.Status != "PASS" {
+		return
+	}
+
+	status := h.executeCommand(commandSpec{
+		Label:   "hydration status after",
+		Name:    h.bin,
+		Args:    []string{"status", "hydrate-target", "--base", "main"},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if status.Status == "PASS" && (!strings.Contains(status.Stdout, "state: present") || !strings.Contains(status.Stdout, "path_present: true")) {
+		status.Status = "FAIL"
+		status.Error = "status output did not show hydrated target present"
+	}
+	h.record(status)
 }
 
 func (h *harness) buildBinary() bool {

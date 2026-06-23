@@ -203,10 +203,128 @@ func TestScanWorkspaceDiscoversGitWorktreeCheckouts(t *testing.T) {
 	}
 }
 
+func TestHydrateClonesUsingPreservedCloneURL(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRemote(t, "private")
+	target := filepath.Join(t.TempDir(), "private")
+	store := &projectListStore{projects: []state.Project{{
+		Alias:            "private",
+		NormalizedRemote: "https://github.com/BramVR/private",
+		CloneURL:         remote,
+		LocalPath:        target,
+	}}}
+
+	result, err := New(store).Hydrate(ctx, "private")
+	if err != nil {
+		t.Fatalf("Hydrate error = %v", err)
+	}
+	if result.AlreadyPresent {
+		t.Fatalf("AlreadyPresent = true, want cloned checkout")
+	}
+	if _, err := os.Stat(filepath.Join(target, "README.md")); err != nil {
+		t.Fatalf("hydrated README missing: %v", err)
+	}
+	origin, err := gitOutput(target, "remote", "get-url", "origin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(origin) != remote {
+		t.Fatalf("hydrated origin = %q, want clone URL %q", strings.TrimSpace(origin), remote)
+	}
+}
+
+func TestHydrateDoesNotTreatSubdirectoryInsideCheckoutAsPresent(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRemote(t, "same-origin")
+	checkout := filepath.Join(t.TempDir(), "checkout")
+	runGit(t, filepath.Dir(checkout), "clone", remote, checkout)
+	subdir := filepath.Join(checkout, "ordinary-dir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "local.txt"), []byte("not a checkout root\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	normalized, err := NormalizeRemote(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &projectListStore{projects: []state.Project{{
+		Alias:            "same-origin",
+		NormalizedRemote: normalized,
+		CloneURL:         remote,
+		LocalPath:        subdir,
+	}}}
+
+	_, err = New(store).Hydrate(ctx, "same-origin")
+
+	if err == nil {
+		t.Fatalf("Hydrate error = nil, want path conflict")
+	}
+	if !strings.Contains(err.Error(), "path conflict") {
+		t.Fatalf("Hydrate error = %v, want path conflict", err)
+	}
+}
+
+func TestCloneURLForStripsHTTPSCredentials(t *testing.T) {
+	got := cloneURLFor("https://token:secret@example.invalid/org/repo.git", "")
+
+	if got != "https://example.invalid/org/repo.git" {
+		t.Fatalf("clone URL = %q, want credentials stripped", got)
+	}
+}
+
+func TestCloneURLForStripsURLPasswords(t *testing.T) {
+	got := cloneURLFor("ssh://git:secret@example.invalid/org/repo.git", "")
+
+	if got != "ssh://git@example.invalid/org/repo.git" {
+		t.Fatalf("clone URL = %q, want password stripped", got)
+	}
+}
+
+func TestRedactedCloneOutputHidesCredentialURL(t *testing.T) {
+	cloneURL := "https://token:secret@example.invalid/org/repo.git"
+	output := "fatal: could not read Username for 'https://token:secret@example.invalid/org/repo.git'"
+
+	got := redactedCloneOutput(output, cloneURL)
+
+	if strings.Contains(got, "token") || strings.Contains(got, "secret") {
+		t.Fatalf("redacted output leaked credentials: %q", got)
+	}
+	if !strings.Contains(got, "https://redacted@example.invalid/org/repo.git") {
+		t.Fatalf("redacted output = %q, want redacted URL", got)
+	}
+}
+
 func hasSkip(skips []ScanSkip, path, reasonPart string) bool {
 	return slices.ContainsFunc(skips, func(skip ScanSkip) bool {
 		return skip.Path == path && strings.Contains(skip.Reason, reasonPart)
 	})
+}
+
+func createBareRemote(t *testing.T, name string) string {
+	t.Helper()
+	root := t.TempDir()
+	seed := createCommittedGitRepo(t, filepath.Join(root, "seed"), "")
+	remote := filepath.Join(root, name+".git")
+	runGit(t, root, "clone", "--bare", seed, remote)
+	return remote
+}
+
+type projectListStore struct {
+	projects []state.Project
+}
+
+func (s *projectListStore) AddProject(context.Context, state.Project) (state.Project, error) {
+	panic("not implemented")
+}
+
+func (s *projectListStore) UpsertProject(context.Context, state.Project) (state.Project, state.ProjectUpsertAction, error) {
+	panic("not implemented")
+}
+
+func (s *projectListStore) ListProjects(context.Context) ([]state.Project, error) {
+	return s.projects, nil
 }
 
 func createGitRepo(t *testing.T, path, remote string) string {
