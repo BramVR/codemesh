@@ -60,6 +60,8 @@ Readiness e2e coverage runs `codemesh status` against the same local Git fixture
 
 Hydration e2e coverage uses the local bare Git remotes from the offline fixture set. It registers a known project, removes its desired local path to make it missing, runs `codemesh hydrate <project>`, and verifies the real CLI recreates the checkout without reaching GitHub or creating directories for unrelated missing projects.
 
+Agent Prep e2e coverage uses the same local bare Git remotes and isolated CodeMesh home. It scans the fixture sources, runs `codemesh agent prepare <project>` for a clean source checkout, verifies `ready_path` points under CodeMesh-managed agents storage with a real clone and `codemesh-run.json`, checks dirty source checkout warnings do not block prep, and verifies blocking env readiness stops prep with missing file/key diagnostics only.
+
 ## Packaged Smoke Pattern
 
 The packaged smoke target follows the Summarize release-smoke pattern: build the CLI artifact first, then invoke the artifact directly with basic commands such as `--help`. CodeMesh keeps the same installed-binary emphasis, but stays local and deterministic: no release package, no registry install, no network-backed provider, and no real user workspace.
@@ -124,6 +126,5 @@ From `steipete/oracle`:
 ## Intentionally Skipped For Now
 
 - Poll/wait helpers: no async CodeMesh behavior exists yet.
-- Real command workflows beyond `init`, Project Registry scan/add/tree, Readiness status, and explicit Hydration: Agent Prep commands are pending.
 - Live/network checks: out of scope for MVP fixture coverage.
 - Screenshot proof: not applicable to the current CLI-only harness.

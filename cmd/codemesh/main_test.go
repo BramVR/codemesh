@@ -355,6 +355,61 @@ func TestHydrateDoesNotCreatePlaceholderDirectoriesForOtherMissingProjects(t *te
 	}
 }
 
+func TestAgentPreparePrintsReadyPathAndWritesRunMetadata(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "agent-ready")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"agent", "prepare", "agent-ready", "--base", "main", "--profile", "codex"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("agent prepare exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "ready_path: ") {
+		t.Fatalf("stdout missing ready path:\n%s", output)
+	}
+	readyPath := valueAfterPrefix(t, output, "ready_path: ")
+	if _, err := os.Stat(filepath.Join(readyPath, "README.md")); err != nil {
+		t.Fatalf("ready checkout missing README: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(readyPath, "codemesh-run.json")); err != nil {
+		t.Fatalf("metadata missing: %v", err)
+	}
+}
+
+func TestAgentPrepareBlocksOnReadinessBlockers(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "agent-blocked")
+	if err := os.WriteFile(filepath.Join(source, ".codemesh.yml"), []byte("agent:\n  env:\n    mode: block\n    required_files:\n      - .env.local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "add", ".codemesh.yml")
+	runGit(t, source, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Require env")
+	runGit(t, source, "push", "origin", "main")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"agent", "prepare", "agent-blocked"}, &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatalf("agent prepare exit code = 0, want failure\nstdout:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "blocker: missing-env-file") {
+		t.Fatalf("stderr missing actionable blocker:\n%s", stderr.String())
+	}
+	if entries, err := os.ReadDir(filepath.Join(home, "agents")); err == nil && len(entries) != 0 {
+		t.Fatalf("agents dir has entries after blocked prep: %v", entries)
+	}
+}
+
 func TestAddAliasConflictFailsWithActionableError(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "codemesh-home")
 	first := createGitRepo(t, "https://github.com/BramVR/first.git")
@@ -373,6 +428,17 @@ func TestAddAliasConflictFailsWithActionableError(t *testing.T) {
 	if !strings.Contains(stderr.String(), "alias") || !strings.Contains(stderr.String(), "shared") || !strings.Contains(stderr.String(), "--alias") {
 		t.Fatalf("stderr missing actionable conflict:\n%s", stderr.String())
 	}
+}
+
+func valueAfterPrefix(t *testing.T, output, prefix string) string {
+	t.Helper()
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	t.Fatalf("prefix %q missing in output:\n%s", prefix, output)
+	return ""
 }
 
 func assertGitStatusClean(t *testing.T, dir string) {

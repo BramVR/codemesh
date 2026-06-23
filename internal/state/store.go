@@ -53,6 +53,14 @@ type Project struct {
 	LocalPath        string
 }
 
+type AgentRun struct {
+	ID            string
+	ProjectID     int64
+	WorkspacePath string
+	MetadataJSON  string
+	CreatedAt     time.Time
+}
+
 type SQLiteStore struct {
 	db *sql.DB
 }
@@ -500,6 +508,29 @@ order by alias
 		return nil, fmt.Errorf("iterate projects: %w", err)
 	}
 	return projects, nil
+}
+
+func (s *SQLiteStore) RecordAgentRun(ctx context.Context, run AgentRun) error {
+	if strings.TrimSpace(run.ID) == "" {
+		return errors.New("agent run id is required")
+	}
+	if strings.TrimSpace(run.WorkspacePath) == "" {
+		return errors.New("agent run workspace path is required")
+	}
+	if strings.TrimSpace(run.MetadataJSON) == "" {
+		return errors.New("agent run metadata is required")
+	}
+	if run.CreatedAt.IsZero() {
+		run.CreatedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+insert into agent_runs(id, project_id, workspace_path, metadata_json, created_at)
+values(?, ?, ?, ?, ?)
+`, run.ID, run.ProjectID, run.WorkspacePath, run.MetadataJSON, run.CreatedAt.UTC().Format(time.RFC3339))
+	if err != nil {
+		return fmt.Errorf("record agent run %q: %w", run.ID, err)
+	}
+	return nil
 }
 
 func (s *SQLiteStore) Close() error {

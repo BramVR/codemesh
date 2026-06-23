@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/agentprep"
 	"github.com/BramVR/codemesh/internal/config"
 	"github.com/BramVR/codemesh/internal/readiness"
 	"github.com/BramVR/codemesh/internal/registry"
@@ -44,6 +45,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runStatus(args[1:], stdout, stderr)
 	case "hydrate":
 		return runHydrate(args[1:], stdout, stderr)
+	case "agent":
+		return runAgent(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[0])
 		printHelp(stderr)
@@ -81,6 +84,117 @@ func runHydrate(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "hydrated project: %s\npath: %s\nremote: %s\n", result.Project.Alias, result.Project.LocalPath, result.Project.NormalizedRemote)
 	return 0
+}
+
+func runAgent(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+		printAgentHelp(stdout)
+		return 0
+	}
+	switch args[0] {
+	case "prepare":
+		return runAgentPrepare(args[1:], stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown agent command: %s\n\n", args[0])
+		printAgentHelp(stderr)
+		return 2
+	}
+}
+
+func runAgentPrepare(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printAgentPrepareHelp(stdout)
+		return 0
+	}
+	project, base, profile, ok := parseAgentPrepareArgs(args, stderr)
+	if !ok {
+		printAgentPrepareHelp(stderr)
+		return 2
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve CodeMesh home: %v\n", err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hydrateTimeout)
+	defer cancel()
+	result, err := agentprep.Preparer{
+		Store:     store,
+		AgentsDir: paths.AgentsDir,
+	}.Prepare(ctx, agentprep.Request{
+		Project: project,
+		Base:    base,
+		Profile: profile,
+	})
+	if err != nil {
+		if _, ok := err.(agentprep.BlockedError); ok {
+			printAgentDiagnostics(stderr, result.Diagnostics)
+			return 1
+		}
+		fmt.Fprintf(stderr, "prepare agent workspace: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "agent workspace ready\nproject: %s\nbase: %s\n", project, result.Base)
+	if result.Profile != "" {
+		fmt.Fprintf(stdout, "profile: %s\n", result.Profile)
+	}
+	printAgentDiagnostics(stdout, result.Diagnostics)
+	fmt.Fprintf(stdout, "ready_path: %s\n", result.ReadyPath)
+	return 0
+}
+
+func parseAgentPrepareArgs(args []string, stderr io.Writer) (string, string, string, bool) {
+	var base string
+	var profile string
+	var projects []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--base":
+			if i+1 >= len(args) {
+				fmt.Fprint(stderr, "agent prepare --base requires a branch\n\n")
+				return "", "", "", false
+			}
+			base = args[i+1]
+			i++
+		case "--profile":
+			if i+1 >= len(args) {
+				fmt.Fprint(stderr, "agent prepare --profile requires a name\n\n")
+				return "", "", "", false
+			}
+			profile = args[i+1]
+			i++
+		default:
+			projects = append(projects, args[i])
+		}
+	}
+	if len(projects) != 1 {
+		fmt.Fprint(stderr, "agent prepare requires exactly one project\n\n")
+		return "", "", "", false
+	}
+	return projects[0], base, profile, true
+}
+
+func printAgentDiagnostics(w io.Writer, diagnostics agentprep.Diagnostics) {
+	if len(diagnostics.Warnings) == 0 {
+		fmt.Fprintln(w, "warnings: none")
+	} else {
+		for _, warning := range diagnostics.Warnings {
+			fmt.Fprintf(w, "warning: %s %s\n", warning.Code, warning.Message)
+		}
+	}
+	if len(diagnostics.Blockers) == 0 {
+		fmt.Fprintln(w, "blockers: none")
+	} else {
+		for _, blocker := range diagnostics.Blockers {
+			fmt.Fprintf(w, "blocker: %s %s\n", blocker.Code, blocker.Message)
+		}
+	}
 }
 
 func runAdd(args []string, stdout, stderr io.Writer) int {
@@ -399,6 +513,7 @@ Usage:
   codemesh tree
   codemesh status [project] [--base branch]
   codemesh hydrate <project>
+  codemesh agent prepare <project> [--base branch] [--profile name]
 
 Commands:
   init       create local CodeMesh state
@@ -407,9 +522,10 @@ Commands:
   tree       show the canonical workspace
   status     report project readiness
   hydrate    clone a missing project into its desired path
+  agent      prepare agent workspaces
 
 Planned MVP commands:
-  agent prepare, runs, clean
+  runs, clean
 `)
 }
 
@@ -472,5 +588,24 @@ Usage:
 
 Clones the registered remote into the desired local path.
 Refuses existing non-empty non-Git paths.
+`)
+}
+
+func printAgentHelp(w io.Writer) {
+	fmt.Fprint(w, `Prepare agent workspaces.
+
+Usage:
+  codemesh agent prepare <project> [--base branch] [--profile name]
+`)
+}
+
+func printAgentPrepareHelp(w io.Writer) {
+	fmt.Fprint(w, `Prepare one agent workspace.
+
+Usage:
+  codemesh agent prepare <project> [--base branch] [--profile name]
+
+Creates a temporary clone under CodeMesh-managed agents storage.
+Prints ready_path when the workspace is ready.
 `)
 }
