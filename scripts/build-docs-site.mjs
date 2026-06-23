@@ -218,7 +218,8 @@ function outPath(rel, frontmatter = {}) {
 
 function assertSafePageOutRel(outRel) {
   const normalized = path.posix.normalize(outRel);
-  if (outRel.includes("\\") || /^[A-Za-z]:/.test(outRel) || normalized !== outRel || normalized.startsWith("../") || normalized === ".." || path.posix.isAbsolute(outRel)) {
+  const safeUrlPath = /^[A-Za-z0-9._~/-]+$/.test(outRel);
+  if (!safeUrlPath || outRel.includes("\\") || /^[A-Za-z]:/.test(outRel) || normalized !== outRel || normalized.startsWith("../") || normalized === ".." || path.posix.isAbsolute(outRel)) {
     throw new Error(`unsafe docs-site page output path: ${outRel}`);
   }
 }
@@ -430,7 +431,7 @@ function layout({ page, html, toc, prev, next, sectionName }) {
   <div class="shell">
     <aside class="sidebar">
       <div class="sidebar-head">
-        <a class="brand" href="${hrefToOutRel("index.html", page.outRel)}" aria-label="${productName} docs home">
+        <a class="brand" href="${escapeAttr(hrefToOutRel("index.html", page.outRel))}" aria-label="${productName} docs home">
           <span class="mark">${brandMarkSvg()}</span>
           <span><strong>${productName}</strong><small>workspace fabric</small></span>
         </a>
@@ -482,7 +483,7 @@ function navHtml(currentPage) {
   return nav
     .map((section) => `<section><h2>${escapeHtml(section.name)}</h2>${section.pages.map((page) => {
       const active = page.rel === currentPage.rel ? " active" : "";
-      return `<a class="nav-link${active}" href="${hrefToOutRel(page.outRel, currentPage.outRel)}">${escapeHtml(navTitle(page))}</a>`;
+      return `<a class="nav-link${active}" href="${escapeAttr(hrefToOutRel(page.outRel, currentPage.outRel))}">${escapeHtml(navTitle(page))}</a>`;
     }).join("")}</section>`)
     .join("");
 }
@@ -495,7 +496,7 @@ function navTitle(page) {
 function pagerHtml(prev, next, currentOutRel) {
   if (!prev && !next) return "";
   const cell = (page, label) =>
-    page ? `<a href="${hrefToOutRel(page.outRel, currentOutRel)}"><small>${label}</small>${escapeHtml(page.title)}</a>` : "<span></span>";
+    page ? `<a href="${escapeAttr(hrefToOutRel(page.outRel, currentOutRel))}"><small>${label}</small>${escapeHtml(page.title)}</a>` : "<span></span>";
   return `<nav class="pager" aria-label="Pager">${cell(prev, "Previous")}${cell(next, "Next")}</nav>`;
 }
 

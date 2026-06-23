@@ -294,3 +294,33 @@ test("docs-site refuses permalink traversal", () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("docs-site refuses attribute-breaking permalinks", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codemesh-docs-site-permalink-attr-"));
+  const outDir = path.join(tempRoot, "dist", "docs-site");
+  fs.cpSync(path.join(root, "docs"), path.join(tempRoot, "docs"), { recursive: true });
+  fs.writeFileSync(
+    path.join(tempRoot, "docs", "index.md"),
+    ['---', 'title: "Unsafe Permalink"', 'permalink: /x" onmouseover="alert(1)', '---', '', '# Unsafe'].join("\n"),
+    "utf8",
+  );
+
+  try {
+    assert.throws(
+      () =>
+        execFileSync("node", [path.join(root, "scripts", "build-docs-site.mjs")], {
+          cwd: root,
+          env: {
+            ...process.env,
+            CODEMESH_DOCS_SITE_ROOT: tempRoot,
+            CODEMESH_DOCS_SITE_OUT: outDir,
+          },
+          encoding: "utf8",
+          stdio: "pipe",
+        }),
+      /unsafe docs-site page output path/,
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
