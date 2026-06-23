@@ -63,6 +63,35 @@ func TestResolveValidPolicy(t *testing.T) {
 	}
 }
 
+func TestDocumentedPolicyExampleParses(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "docs", "project-policy.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	example := extractMarkedPolicyExample(t, string(data))
+
+	got, err := ParseBytes("docs/project-policy.md example", []byte(example))
+	if err != nil {
+		t.Fatalf("ParseBytes error = %v", err)
+	}
+
+	if got.BaseBranch != "main" {
+		t.Fatalf("BaseBranch = %q, want main", got.BaseBranch)
+	}
+	if got.Env.Mode != EnvModeBlock {
+		t.Fatalf("Env.Mode = %q, want %q", got.Env.Mode, EnvModeBlock)
+	}
+	if strings.Join(got.Env.RequiredFiles, ",") != ".env.local,.env.agent" {
+		t.Fatalf("RequiredFiles = %v", got.Env.RequiredFiles)
+	}
+	if strings.Join(got.Env.RequiredKeys, ",") != "CODEMESH_AGENT_TOKEN,CODEMESH_PROVIDER_PROFILE" {
+		t.Fatalf("RequiredKeys = %v", got.Env.RequiredKeys)
+	}
+	if strings.Join(got.IncludeDocs, ",") != "AGENTS.md,CONTEXT.md,docs/adr/**" {
+		t.Fatalf("IncludeDocs = %v", got.IncludeDocs)
+	}
+}
+
 func TestResolveInvalidPolicyReturnsActionableError(t *testing.T) {
 	root := t.TempDir()
 	writePolicy(t, root, `agent:
@@ -92,6 +121,40 @@ func TestResolveInvalidBaseReturnsActionableError(t *testing.T) {
 	if !strings.Contains(err.Error(), ".codemesh.yml") || !strings.Contains(err.Error(), "agent.base") || !strings.Contains(err.Error(), "main*") {
 		t.Fatalf("error is not actionable: %v", err)
 	}
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("repo root not found")
+		}
+		dir = parent
+	}
+}
+
+func extractMarkedPolicyExample(t *testing.T, doc string) string {
+	t.Helper()
+	const start = "<!-- codemesh-policy-example:start -->"
+	const end = "<!-- codemesh-policy-example:end -->"
+	startIndex := strings.Index(doc, start)
+	endIndex := strings.Index(doc, end)
+	if startIndex == -1 || endIndex == -1 || endIndex <= startIndex {
+		t.Fatalf("documented policy example markers not found")
+	}
+	block := strings.TrimSpace(doc[startIndex+len(start) : endIndex])
+	block = strings.TrimPrefix(block, "```yaml")
+	block = strings.TrimPrefix(block, "```yml")
+	block = strings.TrimSuffix(block, "```")
+	return strings.TrimSpace(block) + "\n"
 }
 
 func writePolicy(t *testing.T, root, body string) {

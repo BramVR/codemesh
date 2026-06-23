@@ -49,3 +49,4 @@ Scaffold plus local state bootstrap, Project Registry tracer bullets, Readiness 
 
 - [Dropbox for Devs](docs/research/dropbox-for-devs.md)
 - [MVP Spec](docs/mvp.md)
+- [Project Policy Reference](docs/project-policy.md)
