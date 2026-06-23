@@ -213,6 +213,11 @@ func (h *harness) run() int {
 	h.caseAgentPrepFixtureWorkflow()
 	h.skip("live network checks", "out of scope for MVP e2e; offline local Git fixtures cover current layer")
 
+	if !h.caseSecretSafetyReportAndStateStore() {
+		_ = h.writeReport()
+		return 1
+	}
+
 	if err := h.writeReport(); err != nil {
 		fmt.Printf("FAIL report: %v\n", err)
 		return 1
@@ -284,8 +289,45 @@ func (h *harness) caseReadinessStatusFixtureWorkflow() {
 		return
 	}
 
+	tree := s.command("readiness tree scanned fixtures", "tree")
+	if tree.Status != "PASS" {
+		return
+	}
+
+	clean := s.command("readiness status clean repo", "status", "clean-repo", "--base", "main")
+	if clean.Status != "PASS" || !s.expectOutput(clean, "state: present", "path_present: true", "warnings: none", "blockers: none") {
+		return
+	}
+	if !s.expectTreeStatusAgreement(tree, clean, "clean-repo") {
+		return
+	}
+
 	dirty := s.command("readiness status dirty source", "status", "dirty-source", "--base", "main")
 	if dirty.Status != "PASS" || !s.expectOutput(dirty, "state: dirty", "warning: dirty-checkout", "blockers: none") {
+		return
+	}
+	if !s.expectTreeStatusAgreement(tree, dirty, "dirty-source") {
+		return
+	}
+
+	missingProject, err := h.createClonedFixture(s.fixtures, "readiness-missing-path", nil)
+	if err != nil {
+		h.record(result{Name: "readiness status missing path setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if add := s.command("readiness add missing path project", "add", missingProject.Source); add.Status != "PASS" {
+		return
+	}
+	if err := os.RemoveAll(missingProject.Source); err != nil {
+		h.record(result{Name: "readiness remove missing path project", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	missingTree := s.command("readiness tree missing path", "tree")
+	missing := s.command("readiness status missing path", "status", missingProject.Name, "--base", "main")
+	if missing.Status != "PASS" || !s.expectOutput(missing, "state: missing", "path_present: false", "blocker: missing-path") {
+		return
+	}
+	if !s.expectTreeStatusAgreement(missingTree, missing, missingProject.Name) {
 		return
 	}
 
@@ -297,6 +339,45 @@ func (h *harness) caseReadinessStatusFixtureWorkflow() {
 	base := s.command("readiness status missing base", "status", "missing-base-branch", "--base", missingBase.BaseBranch)
 	s.expectOutput(base, "state: blocked", "blocker: missing-base")
 
+	fetchFailure, err := h.createClonedFixture(s.fixtures, "readiness-fetch-failure", func(source string) error {
+		return runGitNoOutput(source, "remote", "set-url", "origin", filepath.Join(s.fixtures.Remotes, "missing-fetch-remote.git"))
+	})
+	if err != nil {
+		h.record(result{Name: "readiness fetch failure setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if add := s.command("readiness add fetch failure project", "add", fetchFailure.Source); add.Status != "PASS" {
+		return
+	}
+	fetch := s.command("readiness status fetch failure", "status", fetchFailure.Name, "--base", "main")
+	if fetch.Status != "PASS" || !s.expectOutput(fetch, "state: stale", "blocker: fetch-failed") {
+		return
+	}
+
+	invalidPolicy, err := h.createClonedFixtureWithSeed(s.fixtures, "readiness-invalid-policy", func(seed string) error {
+		return os.WriteFile(filepath.Join(seed, ".codemesh.yml"), []byte("agent:\n  env:\n    mode: stop\n"), 0o644)
+	}, nil)
+	if err != nil {
+		h.record(result{Name: "readiness invalid policy setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if add := s.command("readiness add invalid policy project", "add", invalidPolicy.Source); add.Status != "PASS" {
+		return
+	}
+	invalidTree := s.command("readiness tree invalid policy", "tree")
+	invalid := s.command("readiness status invalid policy", "status", invalidPolicy.Name, "--base", "main")
+	if invalid.Status != "PASS" || !s.expectOutput(invalid, "state: blocked", "blocker: invalid-policy", "agent.env.mode") {
+		return
+	}
+	if !s.expectTreeStatusAgreement(invalidTree, invalid, invalidPolicy.Name) {
+		return
+	}
+
+	envWarn := s.command("readiness status env warn", "status", "required-env-warn", "--base", "main")
+	if envWarn.Status != "PASS" || !s.expectOutput(envWarn, "state: present", "warning: missing-env-file", "warning: missing-env-key", "blockers: none") {
+		return
+	}
+
 	envMissing := s.fixture("required-env-missing")
 	if envMissing == nil {
 		h.record(result{Name: "readiness status missing env", Status: "FAIL", Error: "required-env-missing fixture missing", ExitCode: -1})
@@ -304,8 +385,73 @@ func (h *harness) caseReadinessStatusFixtureWorkflow() {
 	}
 	envResult := s.command("readiness status missing env", "status", "required-env-missing")
 	if s.expectOutput(envResult, "state: blocked", "blocker: missing-env-file", "blocker: missing-env-key") {
-		s.expectNoOutput(envResult, "=")
+		s.expectNoOutput(envResult, "=", fakeEnvFixtureFileSecret(), fakeEnvFixtureKeySecret())
 	}
+
+	envPresent := s.commandEnv("readiness status env present no secret leak", []string{"CODEMESH_E2E_PRESENT_ENV=" + fakeEnvFixtureKeySecret()}, "status", "required-env-present", "--base", "main")
+	if envPresent.Status != "PASS" || !s.expectOutput(envPresent, "state: present", "warnings: none", "blockers: none") {
+		return
+	}
+	s.expectNoOutput(envPresent, fakeEnvFixtureFileSecret(), fakeEnvFixtureKeySecret())
+}
+
+func (h *harness) caseSecretSafetyReportAndStateStore() bool {
+	secrets := fakeEnvFixtureSecrets()
+	for _, r := range h.results {
+		if containsAnySecret(r.Stdout, secrets) || containsAnySecret(r.Stderr, secrets) || containsAnySecret(r.Error, secrets) {
+			h.record(result{Name: "secret safety command output", Status: "FAIL", Error: "fake env secret marker appeared in recorded command output", ExitCode: -1})
+			return false
+		}
+	}
+	if err := h.writeReport(); err != nil {
+		h.record(result{Name: "secret safety report write", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	reportData, err := os.ReadFile(h.reportPath)
+	if err != nil {
+		h.record(result{Name: "secret safety report read", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if containsAnySecret(string(reportData), secrets) {
+		h.record(result{Name: "secret safety JSON report", Status: "FAIL", Error: "fake env secret marker appeared in e2e JSON report", ExitCode: -1})
+		return false
+	}
+	for _, path := range h.stateStorePaths() {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			h.record(result{Name: "secret safety state store read", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+			return false
+		}
+		if containsAnySecret(string(data), secrets) {
+			h.record(result{Name: "secret safety state store", Status: "FAIL", Error: "fake env secret marker appeared in state store data: " + path, ExitCode: -1})
+			return false
+		}
+	}
+	h.record(result{Name: "secret safety public artifacts", Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func (h *harness) stateStorePaths() []string {
+	var paths []string
+	_ = filepath.WalkDir(h.tmp, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		if d.Name() == "codemesh.db" {
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	return paths
+}
+
+func containsAnySecret(value string, secrets []string) bool {
+	for _, secret := range secrets {
+		if secret != "" && strings.Contains(value, secret) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *harness) caseHydrationFixtureWorkflow() {
@@ -435,13 +581,36 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 	if envBlocked.Status != "FAIL" {
 		envBlocked.Status = "FAIL"
 		envBlocked.Error = "env-blocked prep unexpectedly passed"
-	} else if !strings.Contains(envBlocked.Stderr, "blocker: missing-env-file") || !strings.Contains(envBlocked.Stderr, "blocker: missing-env-key") || strings.Contains(envBlocked.Stderr, "=") {
+	} else if !strings.Contains(envBlocked.Stderr, "blocker: missing-env-file") || !strings.Contains(envBlocked.Stderr, "blocker: missing-env-key") || strings.Contains(envBlocked.Stderr, "=") || containsAnySecret(envBlocked.Stderr, fakeEnvFixtureSecrets()) {
 		envBlocked.Error = "env-blocked prep did not report missing env blockers without values"
 	} else {
 		envBlocked.Status = "PASS"
 		envBlocked.Error = ""
 	}
 	s.record(envBlocked)
+
+	envWarn := s.command("agent prep env warning", "agent", "prepare", "required-env-warn", "--base", "main")
+	if envWarn.Status != "PASS" || !s.expectOutput(envWarn, "warning: missing-env-file", "warning: missing-env-key", "blockers: none", "ready_path: ") {
+		return
+	}
+
+	envPresent := s.commandEnv("agent prep env present no secret leak", []string{"CODEMESH_E2E_PRESENT_ENV=" + fakeEnvFixtureKeySecret()}, "agent", "prepare", "required-env-present", "--base", "main")
+	if envPresent.Status != "PASS" || !s.expectOutput(envPresent, "warnings: none", "blockers: none", "ready_path: ") {
+		return
+	}
+	s.expectNoOutput(envPresent, fakeEnvFixtureFileSecret(), fakeEnvFixtureKeySecret())
+	if readyPath := valueAfterPrefix(envPresent.Stdout, "ready_path: "); readyPath != "" {
+		metadataPath := filepath.Join(readyPath, "codemesh-run.json")
+		data, err := os.ReadFile(metadataPath)
+		if err != nil {
+			s.h.record(result{Name: "agent prep env present metadata read", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+			return
+		}
+		if containsAnySecret(string(data), fakeEnvFixtureSecrets()) {
+			s.h.record(result{Name: "agent prep env present metadata secret safety", Status: "FAIL", Error: "fake env secret marker appeared in run metadata", ExitCode: -1})
+			return
+		}
+	}
 }
 
 func (h *harness) buildBinary() bool {
@@ -701,11 +870,7 @@ func (h *harness) writeReport() error {
 	if startedAt.IsZero() {
 		startedAt = time.Now().UTC()
 	}
-	redactions := h.redactions
-	if len(redactions) == 0 {
-		redactions = []string{fakeEnvFixtureSecret()}
-	}
-	results, redactedValues := sanitizeResults(h.results, redactions...)
+	results, redactedValues := sanitizeResults(h.results, h.redactionMarkers()...)
 	r := report{
 		StartedAt: startedAt.UTC().Format(time.RFC3339),
 		Mode:      h.mode,
@@ -781,8 +946,27 @@ func redactString(value string, count int, redactions ...string) (string, int) {
 	return value, count
 }
 
+func (h *harness) redactionMarkers() []string {
+	if len(h.redactions) != 0 {
+		return h.redactions
+	}
+	return fakeEnvFixtureSecrets()
+}
+
 func fakeEnvFixtureSecret() string {
-	return strings.Join([]string{"e2e", "fixture", "redaction", "marker"}, "-")
+	return fakeEnvFixtureKeySecret()
+}
+
+func fakeEnvFixtureSecrets() []string {
+	return []string{fakeEnvFixtureFileSecret(), fakeEnvFixtureKeySecret()}
+}
+
+func fakeEnvFixtureFileSecret() string {
+	return strings.Join([]string{"e2e", "fixture", "env", "file", "secret"}, "-")
+}
+
+func fakeEnvFixtureKeySecret() string {
+	return strings.Join([]string{"e2e", "fixture", "env", "key", "secret"}, "-")
 }
 
 func (f offlineGitFixtures) Project(name string) *gitFixtureProject {
@@ -847,6 +1031,32 @@ func (h *harness) createOfflineGitFixtures() (offlineGitFixtures, error) {
 		return fixtures, err
 	} else {
 		project.RequiredEnv = []string{"CODEMESH_E2E_REQUIRED_ENV"}
+		fixtures.Projects = append(fixtures.Projects, project)
+	}
+	writeWarnEnvPolicy := func(path string) error {
+		policy := []byte("agent:\n  env:\n    mode: warn\n    required_files:\n      - .env.local\n    required_keys:\n      - CODEMESH_E2E_WARN_ENV\n")
+		return os.WriteFile(filepath.Join(path, ".codemesh.yml"), policy, 0o644)
+	}
+	if project, err := h.createClonedFixtureWithSeed(fixtures, "required-env-warn", writeWarnEnvPolicy, nil); err != nil {
+		return fixtures, err
+	} else {
+		project.RequiredEnv = []string{"CODEMESH_E2E_WARN_ENV"}
+		fixtures.Projects = append(fixtures.Projects, project)
+	}
+	writePresentEnvPolicy := func(path string) error {
+		policy := []byte("agent:\n  env:\n    mode: block\n    required_files:\n      - .env.local\n    required_keys:\n      - CODEMESH_E2E_PRESENT_ENV\n")
+		if err := os.WriteFile(filepath.Join(path, ".codemesh.yml"), policy, 0o644); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(path, ".gitignore"), []byte(".env.local\n"), 0o644)
+	}
+	writePresentEnvFile := func(path string) error {
+		return os.WriteFile(filepath.Join(path, ".env.local"), []byte("TOKEN="+fakeEnvFixtureFileSecret()+"\n"), 0o600)
+	}
+	if project, err := h.createClonedFixtureWithSeed(fixtures, "required-env-present", writePresentEnvPolicy, writePresentEnvFile); err != nil {
+		return fixtures, err
+	} else {
+		project.RequiredEnv = []string{"CODEMESH_E2E_PRESENT_ENV"}
 		fixtures.Projects = append(fixtures.Projects, project)
 	}
 	return fixtures, nil
@@ -938,6 +1148,10 @@ func (h *harness) gitStatus(dir string) (string, error) {
 }
 
 func (h *harness) print(r result) {
+	var ignored int
+	errorText, ignored := redactString(r.Error, ignored, h.redactionMarkers()...)
+	stdout, ignored := redactString(r.Stdout, ignored, h.redactionMarkers()...)
+	stderr, _ := redactString(r.Stderr, ignored, h.redactionMarkers()...)
 	if r.Duration != "" {
 		fmt.Fprintf(h.output, "%s %s (exit=%d duration=%s)\n", r.Status, r.Name, r.ExitCode, r.Duration)
 	} else {
@@ -946,14 +1160,14 @@ func (h *harness) print(r result) {
 	if r.Status != "FAIL" {
 		return
 	}
-	if r.Error != "" {
-		fmt.Fprintf(h.output, "  error: %s\n", r.Error)
+	if errorText != "" {
+		fmt.Fprintf(h.output, "  error: %s\n", errorText)
 	}
-	if r.Stdout != "" {
-		fmt.Fprintf(h.output, "  stdout:\n%s\n", indent(r.Stdout))
+	if stdout != "" {
+		fmt.Fprintf(h.output, "  stdout:\n%s\n", indent(stdout))
 	}
-	if r.Stderr != "" {
-		fmt.Fprintf(h.output, "  stderr:\n%s\n", indent(r.Stderr))
+	if stderr != "" {
+		fmt.Fprintf(h.output, "  stderr:\n%s\n", indent(stderr))
 	}
 }
 
@@ -1031,10 +1245,31 @@ func (s *scenario) expectNoOutput(r result, fragments ...string) bool {
 		return false
 	}
 	for _, fragment := range fragments {
-		if strings.Contains(r.Stdout, fragment) {
-			s.failCommandAssertion(r, fmt.Sprintf("stdout included %q", fragment))
+		if strings.Contains(r.Stdout, fragment) || strings.Contains(r.Stderr, fragment) {
+			s.failCommandAssertion(r, fmt.Sprintf("command output included %q", fragment))
 			return false
 		}
+	}
+	return true
+}
+
+func (s *scenario) expectTreeStatusAgreement(tree, status result, alias string) bool {
+	if tree.Status != "PASS" || status.Status != "PASS" {
+		return false
+	}
+	treeState, ok := treeStateForAlias(tree.Stdout, alias)
+	if !ok {
+		s.failCommandAssertion(tree, fmt.Sprintf("tree output did not include project %q", alias))
+		return false
+	}
+	statusState, ok := projectStatusState(status.Stdout)
+	if !ok {
+		s.failCommandAssertion(status, "status output did not include state")
+		return false
+	}
+	if treeState != statusState {
+		s.failCommandAssertion(status, fmt.Sprintf("tree/status state mismatch for %s: tree=%s status=%s", alias, treeState, statusState))
+		return false
 	}
 	return true
 }
@@ -1092,6 +1327,34 @@ func repoRoot() (string, error) {
 		return "", errors.New("empty git root")
 	}
 	return root, nil
+}
+
+func treeStateForAlias(output, alias string) (string, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[0] == "-" && fields[1] == alias {
+			return fields[2], true
+		}
+	}
+	return "", false
+}
+
+func projectStatusState(output string) (string, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "state: ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "state: ")), true
+		}
+	}
+	return "", false
+}
+
+func runGitNoOutput(dir string, args ...string) error {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git %s failed: %s", strings.Join(args, " "), strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func (h *harness) defaultCommandDir() string {
