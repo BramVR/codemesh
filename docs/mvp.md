@@ -181,26 +181,7 @@ Repo-local policy is optional.
 
 File: `.codemesh.yml`
 
-```yaml
-agent:
-  base: main
-  env:
-    mode: warn
-    required_files:
-      - .env.local
-    required_keys:
-      - OPENAI_API_KEY
-  include_docs:
-    - AGENTS.md
-    - CONTEXT.md
-    - docs/adr/**
-```
-
-If absent:
-
-- infer remote default branch
-- no env requirements
-- discover common docs only
+See [Project Policy Reference](project-policy.md) for the current `.codemesh.yml` interface, defaults, env readiness behavior, include-docs intent, and no-secret-values rule.
 
 ## State
 

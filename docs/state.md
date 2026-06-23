@@ -80,33 +80,20 @@ Diagnostics are split into warnings and blockers. Dirty source checkouts and sta
 
 ## Project Policy
 
-Project policy is resolved at readiness time from the source checkout.
+Project policy is resolved at readiness time from the source checkout. See [Project Policy Reference](project-policy.md) for `.codemesh.yml` fields, defaults, validation, include-docs intent, and no-secret-values behavior.
 
 Resolution:
 
 1. `<project>/.codemesh.yml` when present.
 2. Built-in defaults when absent.
 
-Defaults keep ordinary Git repos usable:
-
-- base branch: `main` until remote-default inference exists.
-- env mode: `warn`.
-- required env files: none.
-- required env keys: none.
-- include docs: common project docs discovered by later Agent Prep.
-
-Policy is metadata only. The MVP does not store effective policy in SQLite. Invalid policy is an actionable readiness blocker that names the file and field to fix.
+Policy is metadata only. The MVP does not store effective policy in SQLite.
 
 ## Env Readiness
 
 Env readiness is derived from the effective project policy.
 
-Checks:
-
-- required env files: presence only, relative to the project checkout.
-- required env keys: `os.LookupEnv` presence only.
-
-CodeMesh never opens env files, reads env variable values, writes env files, stores env values, or prints env values. Missing env diagnostics include only file paths, key names, and warn/block action. `mode: warn` adds warnings; `mode: block` adds blockers.
+Checks and warn/block handling follow [Project Policy Reference](project-policy.md). Env readiness never reads, writes, stores, or prints secret values.
 
 ## Agent Runs
 
