@@ -127,6 +127,57 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMigrateDeduplicatesRemoteRowsBeforeUniqueIndex(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "codemesh.db")
+	db := openRawDB(t, dbPath)
+	if _, err := db.Exec(`create table schema_migrations (version integer primary key, applied_at text not null)`); err != nil {
+		t.Fatalf("create schema_migrations fixture: %v", err)
+	}
+	for _, stmt := range migration1 {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("apply migration 1 fixture: %v", err)
+		}
+	}
+	if _, err := db.Exec(`insert into schema_migrations(version, applied_at) values(1, ?)`, "2026-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("record migration 1 fixture: %v", err)
+	}
+	if _, err := db.Exec(`
+insert into projects(alias, normalized_remote, local_path, created_at, updated_at)
+values
+  ('one', 'https://github.com/BramVR/codemesh', '/tmp/old', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+  ('two', 'https://github.com/BramVR/codemesh', '/tmp/new', '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z')
+`); err != nil {
+		t.Fatalf("insert duplicate remote fixture: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open error = %v", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate error = %v", err)
+	}
+
+	projects, err := store.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects error = %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("project count = %d, want 1", len(projects))
+	}
+	if projects[0].Alias != "one" {
+		t.Fatalf("surviving alias = %q, want oldest alias", projects[0].Alias)
+	}
+	if projects[0].LocalPath != "/tmp/new" {
+		t.Fatalf("surviving path = %q, want latest path", projects[0].LocalPath)
+	}
+}
+
 func TestAddProjectPersistsProject(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -174,6 +225,74 @@ func TestAddProjectAliasConflictIsActionable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "codemesh") || !strings.Contains(err.Error(), "--alias") {
 		t.Fatalf("alias conflict is not actionable: %v", err)
+	}
+}
+
+func TestAddProjectRemoteConflictIsActionable(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	defer store.Close()
+
+	if _, err := store.AddProject(ctx, Project{Alias: "one", NormalizedRemote: "https://github.com/BramVR/codemesh", LocalPath: "/tmp/one"}); err != nil {
+		t.Fatalf("first AddProject error = %v", err)
+	}
+	_, err := store.AddProject(ctx, Project{Alias: "two", NormalizedRemote: "https://github.com/BramVR/codemesh", LocalPath: "/tmp/two"})
+
+	if err == nil {
+		t.Fatalf("second AddProject error = nil, want remote conflict")
+	}
+	if !errors.Is(err, ErrRemoteConflict) {
+		t.Fatalf("error = %v, want ErrRemoteConflict", err)
+	}
+	if !strings.Contains(err.Error(), "one") || !strings.Contains(err.Error(), "codemesh") {
+		t.Fatalf("remote conflict is not actionable: %v", err)
+	}
+}
+
+func TestUpsertProjectByRemoteUpdatesPathWithoutDuplicate(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	defer store.Close()
+
+	first, action, err := store.UpsertProject(ctx, Project{
+		Alias:            "codemesh",
+		NormalizedRemote: "https://github.com/BramVR/codemesh",
+		LocalPath:        "/tmp/old",
+	})
+	if err != nil {
+		t.Fatalf("first UpsertProject error = %v", err)
+	}
+	if action != ProjectUpsertAdded {
+		t.Fatalf("first upsert action = %s, want %s", action, ProjectUpsertAdded)
+	}
+
+	second, action, err := store.UpsertProject(ctx, Project{
+		Alias:            "ignored",
+		NormalizedRemote: "https://github.com/BramVR/codemesh",
+		LocalPath:        "/tmp/new",
+	})
+	if err != nil {
+		t.Fatalf("second UpsertProject error = %v", err)
+	}
+	if action != ProjectUpsertUpdated {
+		t.Fatalf("second upsert action = %s, want %s", action, ProjectUpsertUpdated)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("updated id = %d, want %d", second.ID, first.ID)
+	}
+	if second.Alias != "codemesh" {
+		t.Fatalf("updated alias = %q, want existing alias", second.Alias)
+	}
+
+	projects, err := store.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects error = %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("project count = %d, want 1", len(projects))
+	}
+	if projects[0].LocalPath != "/tmp/new" {
+		t.Fatalf("local path = %q, want updated path", projects[0].LocalPath)
 	}
 }
 

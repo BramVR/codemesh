@@ -14,7 +14,18 @@ import (
 
 const databaseName = "codemesh.db"
 
-var ErrAliasConflict = errors.New("project alias already exists")
+var (
+	ErrAliasConflict  = errors.New("project alias already exists")
+	ErrRemoteConflict = errors.New("project remote already exists")
+)
+
+type ProjectUpsertAction string
+
+const (
+	ProjectUpsertAdded     ProjectUpsertAction = "added"
+	ProjectUpsertUpdated   ProjectUpsertAction = "updated"
+	ProjectUpsertUnchanged ProjectUpsertAction = "unchanged"
+)
 
 type InitResult struct {
 	Home            string
@@ -143,8 +154,35 @@ create table if not exists schema_migrations (
 			return fmt.Errorf("record migration 1: %w", err)
 		}
 	}
+	if err := applyMigration(ctx, tx, 2, migration2); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
+	}
+	return nil
+}
+
+type migrationTx interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func applyMigration(ctx context.Context, tx migrationTx, version int, statements []string) error {
+	var exists int
+	if err := tx.QueryRowContext(ctx, `select count(*) from schema_migrations where version = ?`, version).Scan(&exists); err != nil {
+		return fmt.Errorf("check migration %d: %w", version, err)
+	}
+	if exists != 0 {
+		return nil
+	}
+	for _, stmt := range statements {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("apply migration %d: %w", version, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `insert into schema_migrations(version, applied_at) values(?, ?)`, version, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return fmt.Errorf("record migration %d: %w", version, err)
 	}
 	return nil
 }
@@ -180,6 +218,14 @@ func (s *SQLiteStore) AddProject(ctx context.Context, project Project) (Project,
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Project{}, fmt.Errorf("check project alias %q: %w", project.Alias, err)
 	}
+	var existingAlias string
+	err = s.db.QueryRowContext(ctx, `select alias from projects where normalized_remote = ?`, project.NormalizedRemote).Scan(&existingAlias)
+	if err == nil {
+		return Project{}, fmt.Errorf("%w: remote %q already exists as alias %q", ErrRemoteConflict, project.NormalizedRemote, existingAlias)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Project{}, fmt.Errorf("check project remote %q: %w", project.NormalizedRemote, err)
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := s.db.ExecContext(ctx, `
@@ -195,6 +241,50 @@ values(?, ?, ?, ?, ?)
 	}
 	project.ID = id
 	return project, nil
+}
+
+func (s *SQLiteStore) UpsertProject(ctx context.Context, project Project) (Project, ProjectUpsertAction, error) {
+	if project.Alias == "" {
+		return Project{}, "", errors.New("project alias is required")
+	}
+	if project.NormalizedRemote == "" {
+		return Project{}, "", errors.New("project normalized remote is required")
+	}
+	if project.LocalPath == "" {
+		return Project{}, "", errors.New("project local path is required")
+	}
+
+	var existing Project
+	err := s.db.QueryRowContext(ctx, `
+select id, alias, normalized_remote, local_path
+from projects
+where normalized_remote = ?
+order by id
+limit 1
+`, project.NormalizedRemote).Scan(&existing.ID, &existing.Alias, &existing.NormalizedRemote, &existing.LocalPath)
+	if err == nil {
+		if existing.LocalPath == project.LocalPath {
+			return existing, ProjectUpsertUnchanged, nil
+		}
+		if _, err := s.db.ExecContext(ctx, `
+update projects
+set local_path = ?, updated_at = ?
+where id = ?
+`, project.LocalPath, time.Now().UTC().Format(time.RFC3339), existing.ID); err != nil {
+			return Project{}, "", fmt.Errorf("update project %q path: %w", existing.Alias, err)
+		}
+		existing.LocalPath = project.LocalPath
+		return existing, ProjectUpsertUpdated, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Project{}, "", fmt.Errorf("check project remote %q: %w", project.NormalizedRemote, err)
+	}
+
+	added, err := s.AddProject(ctx, project)
+	if err != nil {
+		return Project{}, "", err
+	}
+	return added, ProjectUpsertAdded, nil
 }
 
 func (s *SQLiteStore) ListProjects(ctx context.Context) ([]Project, error) {
@@ -283,4 +373,39 @@ var migration1 = []string{
   created_at text not null,
   foreign key(project_id) references projects(id)
 )`,
+}
+
+var migration2 = []string{
+	`update projects
+set
+  local_path = (
+    select latest.local_path
+    from projects latest
+    where latest.normalized_remote = projects.normalized_remote
+    order by latest.updated_at desc, latest.id desc
+    limit 1
+  ),
+  updated_at = (
+    select latest.updated_at
+    from projects latest
+    where latest.normalized_remote = projects.normalized_remote
+    order by latest.updated_at desc, latest.id desc
+    limit 1
+  )
+where id in (
+  select min(id)
+  from projects
+  group by normalized_remote
+  having count(*) > 1
+)`,
+	`delete from projects
+where id not in (
+  select keep_id
+  from (
+    select min(id) as keep_id
+    from projects
+    group by normalized_remote
+  )
+)`,
+	`create unique index if not exists projects_normalized_remote_unique on projects(normalized_remote)`,
 }

@@ -31,6 +31,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runInit(args[1:], stdout, stderr)
 	case "add":
 		return runAdd(args[1:], stdout, stderr)
+	case "scan":
+		return runScan(args[1:], stdout, stderr)
 	case "tree":
 		return runTree(args[1:], stdout, stderr)
 	default:
@@ -88,6 +90,61 @@ func parseAddArgs(args []string, stdout, stderr io.Writer) (string, string, bool
 		return "", "", false
 	}
 	return alias, paths[0], true
+}
+
+func runScan(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printScanHelp(stdout)
+		return 0
+	}
+	if len(args) > 1 {
+		fmt.Fprint(stderr, "scan accepts at most one workspace root\n\n")
+		printScanHelp(stderr)
+		return 2
+	}
+	workspaceArg := ""
+	if len(args) == 1 {
+		workspaceArg = args[0]
+	}
+	workspaceRoot, err := config.ResolveWorkspaceRoot(workspaceArg)
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve workspace root: %v\n", err)
+		return 1
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+
+	result, err := registry.New(store).ScanWorkspace(context.Background(), workspaceRoot)
+	if err != nil {
+		fmt.Fprintf(stderr, "scan workspace: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "scan complete\nworkspace: %s\n", result.WorkspaceRoot)
+	printScanProjects(stdout, "added", result.Added)
+	printScanProjects(stdout, "updated", result.Updated)
+	printScanProjects(stdout, "unchanged", result.Unchanged)
+	if len(result.Skipped) == 0 {
+		fmt.Fprintln(stdout, "skipped: none")
+	} else {
+		for _, skip := range result.Skipped {
+			fmt.Fprintf(stdout, "skipped: %s (%s)\n", skip.Path, skip.Reason)
+		}
+	}
+	return 0
+}
+
+func printScanProjects(w io.Writer, label string, projects []state.Project) {
+	if len(projects) == 0 {
+		fmt.Fprintf(w, "%s: none\n", label)
+		return
+	}
+	for _, project := range projects {
+		fmt.Fprintf(w, "%s: %s %s\n", label, project.Alias, project.LocalPath)
+	}
 }
 
 func runTree(args []string, stdout, stderr io.Writer) int {
@@ -180,15 +237,17 @@ Usage:
   codemesh [--version]
   codemesh init [workspace-root]
   codemesh add <path> [--alias name]
+  codemesh scan [workspace-root]
   codemesh tree
 
 Commands:
   init       create local CodeMesh state
   add        add one Git project to the registry
+  scan       scan a workspace root for Git projects
   tree       show the canonical workspace
 
 Planned MVP commands:
-  scan, status, hydrate, agent prepare, runs, clean
+  status, hydrate, agent prepare, runs, clean
 `)
 }
 
@@ -210,6 +269,17 @@ Usage:
   codemesh add <path> [--alias name]
 
 Alias defaults to the checkout directory name.
+`)
+}
+
+func printScanHelp(w io.Writer) {
+	fmt.Fprint(w, `Scan a workspace root into the Project Registry.
+
+Usage:
+  codemesh scan [workspace-root]
+
+Workspace root defaults to the current directory.
+Nested and unsupported Git candidates are reported as skipped.
 `)
 }
 
