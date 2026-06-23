@@ -26,7 +26,7 @@ test("docs-site builds static artifact from public allowlist", () => {
   );
   fs.appendFileSync(
     path.join(tempRoot, "docs", "commands.md"),
-    "\n\n## Entity Heading `<path>`\n\n### Supporting Anchor\n",
+    "\n\n## Entity Heading `<path>`\n\n### Supporting Anchor\n\n```sh {linenos}\necho rich-fence\n[Custom scheme inside rich fence](codemesh:thing)\n```\n\nAfter rich fence prose.\n",
     "utf8",
   );
 
@@ -82,6 +82,9 @@ test("docs-site builds static artifact from public allowlist", () => {
     assert.match(index, /<table>/);
     assert.match(commands, /<a class="toc-l2" href="#entity-heading-path">Entity Heading &lt;path&gt;<\/a>/);
     assert.doesNotMatch(commands, /Entity Heading &amp;lt;path&amp;gt;/);
+    assert.match(commands, /<pre><code class="language-sh">echo rich-fence/);
+    assert.match(commands, /\[Custom scheme inside rich fence\]\(codemesh:thing\)/);
+    assert.match(commands, /<p>After rich fence prose\.<\/p>/);
     assert.match(commands, /<pre><code class="language-sh">/);
     assert.match(trust, /id="secret-free-readiness"/);
     assert.match(trust, /<table>/);

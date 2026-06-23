@@ -154,7 +154,7 @@ function sanitizeMarkdownBody(body) {
   let inFence = false;
   const cleaned = [];
   for (const line of lines) {
-    if (/^```/.test(line)) {
+    if (parseFenceLine(line)) {
       inFence = !inFence;
       cleaned.push(line);
       continue;
@@ -214,6 +214,12 @@ function titleize(input) {
   return input.replaceAll("-", " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function parseFenceLine(line) {
+  const match = line.match(/^```\s*([A-Za-z0-9_+-]+)?(?:\s+.*)?$/);
+  if (!match) return null;
+  return { lang: match[1] || "text" };
+}
+
 function markdownToHtml(markdown, currentRel) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const html = [];
@@ -240,7 +246,7 @@ function markdownToHtml(markdown, currentRel) {
 
   for (let idx = 0; idx < lines.length; idx++) {
     const line = lines[idx];
-    const fenceMatch = line.match(/^```([\w+-]+)?\s*$/);
+    const fenceMatch = parseFenceLine(line);
     if (fenceMatch) {
       flushParagraph();
       closeList();
@@ -248,7 +254,7 @@ function markdownToHtml(markdown, currentRel) {
         html.push(`<pre><code class="language-${escapeAttr(fence.lang)}">${escapeHtml(fence.lines.join("\n"))}</code></pre>`);
         fence = null;
       } else {
-        fence = { lang: fenceMatch[1] || "text", lines: [] };
+        fence = { lang: fenceMatch.lang, lines: [] };
       }
       continue;
     }
