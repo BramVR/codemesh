@@ -136,6 +136,103 @@ test("docs-site builds static artifact from public allowlist", () => {
   }
 });
 
+test("docs-site emits LLM metadata with canonical and source URLs", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codemesh-docs-site-llms-"));
+  const outDir = path.join(tempRoot, "dist", "docs-site");
+  fs.cpSync(path.join(root, "docs"), path.join(tempRoot, "docs"), { recursive: true });
+
+  try {
+    execFileSync("node", [path.join(root, "scripts", "build-docs-site.mjs")], {
+      cwd: root,
+      env: {
+        ...process.env,
+        CODEMESH_DOCS_SITE_ROOT: tempRoot,
+        CODEMESH_DOCS_SITE_OUT: outDir,
+      },
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+
+    const llms = fs.readFileSync(path.join(outDir, "llms.txt"), "utf8");
+    const llmsFull = fs.readFileSync(path.join(outDir, "llms-full.txt"), "utf8");
+    assert.match(llms, /Canonical public documentation URLs:/);
+    assert.match(llms, /- CodeMesh: https:\/\/bramvr\.github\.io\/codemesh\//);
+    assert.match(llms, /Public Markdown source URLs:/);
+    assert.match(llms, /- CodeMesh: https:\/\/github\.com\/BramVR\/codemesh\/blob\/main\/docs\/index\.md/);
+    assert.match(llms, /Install\/build hint:/);
+    assert.match(llms, /Source repository: https:\/\/github\.com\/BramVR\/codemesh/);
+    assert.match(llmsFull, /Canonical: https:\/\/bramvr\.github\.io\/codemesh\//);
+    assert.match(llmsFull, /Source: https:\/\/github\.com\/BramVR\/codemesh\/blob\/main\/docs\/index\.md/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("docs-site keeps non-public docs and traversal links out of public artifacts", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codemesh-docs-site-non-public-"));
+  const outDir = path.join(tempRoot, "dist", "docs-site");
+  const internalSentinel = privateSentinel("INTERNAL", "ONLY", "SENTINEL", "CODEMESH", "PRIVATE", "WORKSPACE");
+  const adrSentinel = privateSentinel("ADR", "ONLY", "SENTINEL", "CODEMESH", "PRIVATE", "WORKSPACE");
+  const agentSentinel = privateSentinel("AGENT", "ONLY", "SENTINEL", "CODEMESH", "PRIVATE", "WORKSPACE");
+  fs.cpSync(path.join(root, "docs"), path.join(tempRoot, "docs"), { recursive: true });
+  fs.mkdirSync(path.join(tempRoot, "docs", "research"), { recursive: true });
+  fs.writeFileSync(path.join(tempRoot, "docs", "research", "internal.md"), ["# Internal Research", "", internalSentinel, ""].join("\n"), "utf8");
+  fs.appendFileSync(path.join(tempRoot, "docs", "adr", "0001-product-boundary.md"), `\n\n${adrSentinel}\n`, "utf8");
+  fs.writeFileSync(path.join(tempRoot, "docs", "agent-notes.md"), ["# Agent Notes", "", agentSentinel, ""].join("\n"), "utf8");
+  fs.appendFileSync(path.join(tempRoot, "docs", "index.md"), "\n\n[Unsafe traversal](../private.md)\n", "utf8");
+
+  try {
+    execFileSync("node", [path.join(root, "scripts", "build-docs-site.mjs")], {
+      cwd: root,
+      env: {
+        ...process.env,
+        CODEMESH_DOCS_SITE_ROOT: tempRoot,
+        CODEMESH_DOCS_SITE_OUT: outDir,
+      },
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+
+    const index = fs.readFileSync(path.join(outDir, "index.html"), "utf8");
+    const publicArtifactText = readPublicTextArtifacts(outDir);
+    assert.match(index, /<a href="#">Unsafe traversal<\/a>/);
+    assert.doesNotMatch(publicArtifactText, new RegExp(escapeRegExp(internalSentinel)));
+    assert.doesNotMatch(publicArtifactText, new RegExp(escapeRegExp(adrSentinel)));
+    assert.doesNotMatch(publicArtifactText, new RegExp(escapeRegExp(agentSentinel)));
+    assert.ok(!fs.existsSync(path.join(outDir, "adr", "0001-product-boundary.html")));
+    assert.ok(!fs.existsSync(path.join(outDir, "research", "internal.html")));
+    assert.ok(!fs.existsSync(path.join(outDir, "agent-notes.html")));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("docs-site fails generated link validation for missing local Markdown links", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codemesh-docs-site-missing-link-"));
+  const outDir = path.join(tempRoot, "dist", "docs-site");
+  fs.cpSync(path.join(root, "docs"), path.join(tempRoot, "docs"), { recursive: true });
+  fs.appendFileSync(path.join(tempRoot, "docs", "index.md"), "\n\n[Missing local doc](missing-public-page.md)\n", "utf8");
+
+  try {
+    assert.throws(
+      () =>
+        execFileSync("node", [path.join(root, "scripts", "build-docs-site.mjs")], {
+          cwd: root,
+          env: {
+            ...process.env,
+            CODEMESH_DOCS_SITE_ROOT: tempRoot,
+            CODEMESH_DOCS_SITE_OUT: outDir,
+          },
+          encoding: "utf8",
+          stdio: "pipe",
+        }),
+      /broken docs links:\nindex\.html: missing-public-page\.html missing/,
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("docs-site fails when the public manifest references a missing page", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codemesh-docs-site-missing-page-"));
   const outDir = path.join(tempRoot, "dist", "docs-site");
@@ -345,3 +442,23 @@ test("docs-site refuses attribute-breaking permalinks", () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
+
+function readPublicTextArtifacts(dir) {
+  return fs
+    .readdirSync(dir, { withFileTypes: true })
+    .flatMap((entry) => {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) return readPublicTextArtifacts(full);
+      if (!/\.(html|txt|xml|svg)$/i.test(entry.name) && entry.name !== ".nojekyll") return [];
+      return fs.readFileSync(full, "utf8");
+    })
+    .join("\n");
+}
+
+function privateSentinel(...parts) {
+  return parts.join("_");
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
