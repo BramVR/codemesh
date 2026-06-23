@@ -62,6 +62,8 @@ Hydration e2e coverage uses the local bare Git remotes from the offline fixture 
 
 Agent Prep e2e coverage uses the same local bare Git remotes and isolated CodeMesh home. It scans the fixture sources, runs `codemesh agent prepare <project>` for a clean source checkout, verifies `ready_path` points under CodeMesh-managed agents storage with a real clone and `codemesh-run.json`, checks dirty source checkout warnings do not block prep, and verifies blocking env readiness stops prep with missing file/key diagnostics only.
 
+Agent Run cleanup coverage reuses that isolated Agent Prep state. It runs `codemesh runs` to verify stored run metadata, then `codemesh clean --older-than 0d` to verify the guarded runner removes only the prepared workspace under the temp CodeMesh home and updates local metadata.
+
 ## Packaged Smoke Pattern
 
 The packaged smoke target follows the Summarize release-smoke pattern: build the CLI artifact first, then invoke the artifact directly with basic commands such as `--help`. CodeMesh keeps the same installed-binary emphasis, but stays local and deterministic: no release package, no registry install, no network-backed provider, and no real user workspace.

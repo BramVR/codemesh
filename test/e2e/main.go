@@ -510,6 +510,58 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 		return
 	}
 
+	runs := h.executeCommand(commandSpec{
+		Label:   "agent runs list prepared fixture",
+		Name:    h.bin,
+		Args:    []string{"runs"},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if runs.Status == "PASS" && (!strings.Contains(runs.Stdout, "project=clean-repo") || !strings.Contains(runs.Stdout, "base=main") || !strings.Contains(runs.Stdout, "profile=codex") || !strings.Contains(runs.Stdout, "workspace="+readyPath)) {
+		runs.Status = "FAIL"
+		runs.Error = "runs output did not include prepared run metadata"
+	}
+	h.record(runs)
+	if runs.Status != "PASS" {
+		return
+	}
+
+	clean := h.executeCommand(commandSpec{
+		Label:   "agent runs clean old fixture",
+		Name:    h.bin,
+		Args:    []string{"clean", "--older-than", "0d"},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if clean.Status == "PASS" && (!strings.Contains(clean.Stdout, "deleted: 1") || !strings.Contains(clean.Stdout, "kept: 0")) {
+		clean.Status = "FAIL"
+		clean.Error = "clean output did not report one deleted prepared run"
+	}
+	h.record(clean)
+	if clean.Status != "PASS" {
+		return
+	}
+	if _, err := os.Stat(readyPath); !errors.Is(err, os.ErrNotExist) {
+		h.record(result{Name: "agent runs cleaned workspace", Status: "FAIL", Error: fmt.Sprintf("ready path exists or stat failed: %v", err), ExitCode: -1})
+		return
+	}
+
+	afterClean := h.executeCommand(commandSpec{
+		Label:   "agent runs list after clean",
+		Name:    h.bin,
+		Args:    []string{"runs"},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if afterClean.Status == "PASS" && !strings.Contains(afterClean.Stdout, "(empty)") {
+		afterClean.Status = "FAIL"
+		afterClean.Error = "runs output was not empty after cleanup"
+	}
+	h.record(afterClean)
+	if afterClean.Status != "PASS" {
+		return
+	}
+
 	dirty := h.executeCommand(commandSpec{
 		Label:   "agent prep dirty source warning",
 		Name:    h.bin,

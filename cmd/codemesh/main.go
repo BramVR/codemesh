@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BramVR/codemesh/internal/agentprep"
+	"github.com/BramVR/codemesh/internal/agentruns"
 	"github.com/BramVR/codemesh/internal/config"
 	"github.com/BramVR/codemesh/internal/readiness"
 	"github.com/BramVR/codemesh/internal/registry"
@@ -47,11 +50,128 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runHydrate(args[1:], stdout, stderr)
 	case "agent":
 		return runAgent(args[1:], stdout, stderr)
+	case "runs":
+		return runRuns(args[1:], stdout, stderr)
+	case "clean":
+		return runClean(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[0])
 		printHelp(stderr)
 		return 2
 	}
+}
+
+func runRuns(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printRunsHelp(stdout)
+		return 0
+	}
+	if len(args) > 0 {
+		fmt.Fprint(stderr, "runs accepts no arguments\n\n")
+		printRunsHelp(stderr)
+		return 2
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve CodeMesh home: %v\n", err)
+		return 1
+	}
+	runs, err := agentruns.Manager{Store: store, AgentsDir: paths.AgentsDir}.List(context.Background())
+	if err != nil {
+		fmt.Fprintf(stderr, "list agent runs: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "agent runs:")
+	if len(runs) == 0 {
+		fmt.Fprintln(stdout, "(empty)")
+		return 0
+	}
+	for _, run := range runs {
+		fmt.Fprintf(stdout, "- %s project=%s base=%s profile=%s created=%s workspace=%s\n", run.ID, run.ProjectAlias, run.Base, run.Profile, run.CreatedAt.UTC().Format(time.RFC3339), run.WorkspacePath)
+	}
+	return 0
+}
+
+func runClean(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printCleanHelp(stdout)
+		return 0
+	}
+	olderThan, ok := parseCleanArgs(args, stderr)
+	if !ok {
+		printCleanHelp(stderr)
+		return 2
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve CodeMesh home: %v\n", err)
+		return 1
+	}
+	result, err := agentruns.Manager{Store: store, AgentsDir: paths.AgentsDir}.Clean(context.Background(), olderThan)
+	if err != nil {
+		fmt.Fprintf(stderr, "clean agent runs: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "clean complete\ndeleted: %d\nkept: %d\n", result.Deleted, result.Kept)
+	return 0
+}
+
+func parseCleanArgs(args []string, stderr io.Writer) (time.Duration, bool) {
+	olderThan := 7 * 24 * time.Hour
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--older-than":
+			if i+1 >= len(args) {
+				fmt.Fprint(stderr, "clean --older-than requires an age\n\n")
+				return 0, false
+			}
+			parsed, err := parseAge(args[i+1])
+			if err != nil {
+				fmt.Fprintf(stderr, "clean --older-than: %v\n\n", err)
+				return 0, false
+			}
+			olderThan = parsed
+			i++
+		default:
+			fmt.Fprintf(stderr, "unknown clean argument: %s\n\n", args[i])
+			return 0, false
+		}
+	}
+	return olderThan, true
+}
+
+func parseAge(raw string) (time.Duration, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, fmt.Errorf("age is required")
+	}
+	if strings.HasSuffix(value, "d") {
+		days, err := strconv.Atoi(strings.TrimSuffix(value, "d"))
+		if err != nil || days < 0 {
+			return 0, fmt.Errorf("invalid day age %q", raw)
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid age %q", raw)
+	}
+	if duration < 0 {
+		return 0, fmt.Errorf("age must be non-negative")
+	}
+	return duration, nil
 }
 
 func runHydrate(args []string, stdout, stderr io.Writer) int {
@@ -514,6 +634,8 @@ Usage:
   codemesh status [project] [--base branch]
   codemesh hydrate <project>
   codemesh agent prepare <project> [--base branch] [--profile name]
+  codemesh runs
+  codemesh clean [--older-than age]
 
 Commands:
   init       create local CodeMesh state
@@ -523,9 +645,8 @@ Commands:
   status     report project readiness
   hydrate    clone a missing project into its desired path
   agent      prepare agent workspaces
-
-Planned MVP commands:
-  runs, clean
+  runs       list prepared agent runs
+  clean      delete old CodeMesh-managed agent runs
 `)
 }
 
@@ -607,5 +728,23 @@ Usage:
 
 Creates a temporary clone under CodeMesh-managed agents storage.
 Prints ready_path when the workspace is ready.
+`)
+}
+
+func printRunsHelp(w io.Writer) {
+	fmt.Fprint(w, `List prepared agent runs.
+
+Usage:
+  codemesh runs
+`)
+}
+
+func printCleanHelp(w io.Writer) {
+	fmt.Fprint(w, `Delete old CodeMesh-managed agent runs.
+
+Usage:
+  codemesh clean [--older-than age]
+
+Age supports Go durations and day values such as 7d.
 `)
 }

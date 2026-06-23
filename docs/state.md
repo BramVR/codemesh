@@ -131,6 +131,19 @@ The clone checks out the requested `--base` when provided. Otherwise it checks o
 
 The `agent_runs` SQLite row stores the same metadata JSON for local audit and future cleanup/listing. Secret values are never included; env readiness records only missing file/key names and warn/block diagnostics, and clone URLs in metadata omit userinfo, query strings, and fragments.
 
+`codemesh runs` reads `agent_runs` and lists prepared runs from local metadata. The user-facing row includes project alias, base, profile, created time, and workspace path so temporary workspaces are auditable without inspecting SQLite.
+
+`codemesh clean --older-than <age>` removes only matching Agent Run directories created under `<codemesh-home>/agents`. Age is evaluated from the stored `created_at` timestamp. After successful deletion, CodeMesh removes the matching `agent_runs` rows so `runs` no longer reports cleaned workspaces.
+
+Cleanup safety rules:
+
+- only `agent_runs` rows are candidates
+- workspace path must resolve inside configured CodeMesh `agents/`
+- workspace path must be the `workspace/` child of a run directory whose basename matches the run id
+- unsafe candidates abort cleanup before deletion
+- missing managed run directories are treated as already gone and their metadata rows may be removed
+- arbitrary paths outside CodeMesh-managed storage are never deleted
+
 ## Secrets
 
 No secret values are stored, read, or materialized by `init`, Project Policy, or Env Readiness.
