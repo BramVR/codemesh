@@ -82,6 +82,13 @@ type commandSpec struct {
 	UseHostEnv bool
 }
 
+type scenario struct {
+	h            *harness
+	name         string
+	codemeshHome string
+	fixtures     offlineGitFixtures
+}
+
 func main() {
 	root, err := repoRoot()
 	if err != nil {
@@ -191,194 +198,105 @@ func (h *harness) run() int {
 }
 
 func (h *harness) caseProjectRegistryScanWorkflow() {
-	fixtures, err := h.createOfflineGitFixtures()
+	s, err := h.newScenario("project registry scan")
 	if err != nil {
 		h.record(result{Name: "project registry scan workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
-	scanHome := filepath.Join(h.tmp, "codemesh-scan-home")
-	env := []string{"CODEMESH_HOME=" + scanHome}
-	scan := h.executeCommand(commandSpec{
-		Label:   "project registry scan fixtures",
-		Name:    h.bin,
-		Args:    []string{"scan", fixtures.Sources},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	if scan.Status == "PASS" && (!strings.Contains(scan.Stdout, "added: clean-repo") || !strings.Contains(scan.Stdout, "added: dirty-source") || !strings.Contains(scan.Stdout, "scan complete")) {
-		scan.Status = "FAIL"
-		scan.Error = "scan output did not report discovered fixture projects"
-	}
-	h.record(scan)
-	if scan.Status != "PASS" {
+	fixtures := s.fixtures
+	scan := s.command("project registry scan fixtures", "scan", fixtures.Sources)
+	if scan.Status != "PASS" || !s.expectOutput(scan, "added: clean-repo", "added: dirty-source", "scan complete") {
 		return
 	}
 
-	rerun := h.executeCommand(commandSpec{
-		Label:   "project registry scan fixtures rerun",
-		Name:    h.bin,
-		Args:    []string{"scan", fixtures.Sources},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	if rerun.Status == "PASS" && !strings.Contains(rerun.Stdout, "unchanged: clean-repo") {
-		rerun.Status = "FAIL"
-		rerun.Error = "scan rerun output did not report unchanged fixture project"
-	}
-	h.record(rerun)
-	if rerun.Status != "PASS" {
+	rerun := s.command("project registry scan fixtures rerun", "scan", fixtures.Sources)
+	if rerun.Status != "PASS" || !s.expectOutput(rerun, "unchanged: clean-repo") {
 		return
 	}
 
-	tree := h.executeCommand(commandSpec{
-		Label:   "project registry tree scanned fixtures",
-		Name:    h.bin,
-		Args:    []string{"tree"},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
+	tree := s.command("project registry tree scanned fixtures", "tree")
 	clean := fixtures.Project("clean-repo")
-	if tree.Status == "PASS" && (clean == nil || !strings.Contains(tree.Stdout, "clean-repo") || !strings.Contains(tree.Stdout, "present") || !strings.Contains(tree.Stdout, clean.Source)) {
-		tree.Status = "FAIL"
-		tree.Error = "tree output did not show scanned clean-repo as present with local path"
+	if clean == nil {
+		s.failScenarioAssertion("project registry tree scanned fixtures", "clean-repo fixture missing")
+		return
 	}
-	h.record(tree)
+	if tree.Status == "PASS" {
+		s.expectOutput(tree, "clean-repo", "present", clean.Source)
+	}
 }
 
 func (h *harness) caseProjectRegistryFixtureWorkflow() {
-	fixtures, err := h.createOfflineGitFixtures()
+	s, err := h.newScenario("project registry add")
 	if err != nil {
 		h.record(result{Name: "project registry fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
-	project := fixtures.Project("clean-repo")
+	project := s.fixture("clean-repo")
 	if project == nil {
 		h.record(result{Name: "project registry fixture workflow", Status: "FAIL", Error: "clean-repo fixture missing", ExitCode: -1})
 		return
 	}
-	add := h.executeCommand(commandSpec{
-		Label:   "project registry add clean repo",
-		Name:    h.bin,
-		Args:    []string{"add", project.Source},
-		Timeout: defaultCommandTimeout,
-	})
-	h.record(add)
+	add := s.command("project registry add clean repo", "add", project.Source)
 	if add.Status != "PASS" {
 		return
 	}
-	tree := h.executeCommand(commandSpec{
-		Label:   "project registry tree",
-		Name:    h.bin,
-		Args:    []string{"tree"},
-		Timeout: defaultCommandTimeout,
-	})
-	if tree.Status == "PASS" && (!strings.Contains(tree.Stdout, "clean-repo") || !strings.Contains(tree.Stdout, "present") || !strings.Contains(tree.Stdout, project.Source)) {
-		tree.Status = "FAIL"
-		tree.Error = "tree output did not show clean-repo as present with local path"
-	}
-	h.record(tree)
+	tree := s.command("project registry tree", "tree")
+	s.expectOutput(tree, "clean-repo", "present", project.Source)
 }
 
 func (h *harness) caseReadinessStatusFixtureWorkflow() {
-	fixtures, err := h.createOfflineGitFixtures()
+	s, err := h.newScenario("readiness status")
 	if err != nil {
 		h.record(result{Name: "readiness status fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
-	statusHome := filepath.Join(h.tmp, "codemesh-status-home")
-	env := []string{"CODEMESH_HOME=" + statusHome}
-	scan := h.executeCommand(commandSpec{
-		Label:   "readiness status scan fixtures",
-		Name:    h.bin,
-		Args:    []string{"scan", fixtures.Sources},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	h.record(scan)
+	scan := s.command("readiness status scan fixtures", "scan", s.fixtures.Sources)
 	if scan.Status != "PASS" {
 		return
 	}
 
-	dirty := h.executeCommand(commandSpec{
-		Label:   "readiness status dirty source",
-		Name:    h.bin,
-		Args:    []string{"status", "dirty-source", "--base", "main"},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	if dirty.Status == "PASS" && (!strings.Contains(dirty.Stdout, "state: dirty") || !strings.Contains(dirty.Stdout, "warning: dirty-checkout") || !strings.Contains(dirty.Stdout, "blockers: none")) {
-		dirty.Status = "FAIL"
-		dirty.Error = "status output did not report dirty checkout as warning"
-	}
-	h.record(dirty)
-	if dirty.Status != "PASS" {
+	dirty := s.command("readiness status dirty source", "status", "dirty-source", "--base", "main")
+	if dirty.Status != "PASS" || !s.expectOutput(dirty, "state: dirty", "warning: dirty-checkout", "blockers: none") {
 		return
 	}
 
-	missingBase := fixtures.Project("missing-base-branch")
+	missingBase := s.fixture("missing-base-branch")
 	if missingBase == nil {
 		h.record(result{Name: "readiness status missing base", Status: "FAIL", Error: "missing-base-branch fixture missing", ExitCode: -1})
 		return
 	}
-	base := h.executeCommand(commandSpec{
-		Label:   "readiness status missing base",
-		Name:    h.bin,
-		Args:    []string{"status", "missing-base-branch", "--base", missingBase.BaseBranch},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	if base.Status == "PASS" && (!strings.Contains(base.Stdout, "state: blocked") || !strings.Contains(base.Stdout, "blocker: missing-base")) {
-		base.Status = "FAIL"
-		base.Error = "status output did not report missing base as blocker"
-	}
-	h.record(base)
+	base := s.command("readiness status missing base", "status", "missing-base-branch", "--base", missingBase.BaseBranch)
+	s.expectOutput(base, "state: blocked", "blocker: missing-base")
 
-	envMissing := fixtures.Project("required-env-missing")
+	envMissing := s.fixture("required-env-missing")
 	if envMissing == nil {
 		h.record(result{Name: "readiness status missing env", Status: "FAIL", Error: "required-env-missing fixture missing", ExitCode: -1})
 		return
 	}
-	envResult := h.executeCommand(commandSpec{
-		Label:   "readiness status missing env",
-		Name:    h.bin,
-		Args:    []string{"status", "required-env-missing"},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	if envResult.Status == "PASS" && (!strings.Contains(envResult.Stdout, "state: blocked") || !strings.Contains(envResult.Stdout, "blocker: missing-env-file") || !strings.Contains(envResult.Stdout, "blocker: missing-env-key") || strings.Contains(envResult.Stdout, "=")) {
-		envResult.Status = "FAIL"
-		envResult.Error = "status output did not report missing env blockers without values"
+	envResult := s.command("readiness status missing env", "status", "required-env-missing")
+	if s.expectOutput(envResult, "state: blocked", "blocker: missing-env-file", "blocker: missing-env-key") {
+		s.expectNoOutput(envResult, "=")
 	}
-	h.record(envResult)
 }
 
 func (h *harness) caseHydrationFixtureWorkflow() {
-	fixtures, err := h.createOfflineGitFixtures()
+	s, err := h.newScenario("hydration")
 	if err != nil {
 		h.record(result{Name: "hydration fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
-	target, err := h.createClonedFixture(fixtures, "hydrate-target", nil)
+	target, err := h.createClonedFixture(s.fixtures, "hydrate-target", nil)
 	if err != nil {
 		h.record(result{Name: "hydration fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
-	other, err := h.createClonedFixture(fixtures, "hydrate-other", nil)
+	other, err := h.createClonedFixture(s.fixtures, "hydrate-other", nil)
 	if err != nil {
 		h.record(result{Name: "hydration fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
-	hydrateHome := filepath.Join(h.tmp, "codemesh-hydrate-home")
-	env := []string{"CODEMESH_HOME=" + hydrateHome}
 	for _, project := range []gitFixtureProject{target, other} {
-		add := h.executeCommand(commandSpec{
-			Label:   "hydration add " + project.Name,
-			Name:    h.bin,
-			Args:    []string{"add", project.Source},
-			Timeout: defaultCommandTimeout,
-			Env:     env,
-		})
-		h.record(add)
+		add := s.command("hydration add "+project.Name, "add", project.Source)
 		if add.Status != "PASS" {
 			return
 		}
@@ -392,199 +310,99 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 		return
 	}
 
-	before := h.executeCommand(commandSpec{
-		Label:   "hydration tree before",
-		Name:    h.bin,
-		Args:    []string{"tree"},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	if before.Status == "PASS" && (!strings.Contains(before.Stdout, "hydrate-target missing") || !strings.Contains(before.Stdout, "hydrate-other missing")) {
-		before.Status = "FAIL"
-		before.Error = "tree output did not show both hydration fixtures as missing"
-	}
-	h.record(before)
-	if before.Status != "PASS" {
+	before := s.command("hydration tree before", "tree")
+	if before.Status != "PASS" || !s.expectOutput(before, "hydrate-target missing", "hydrate-other missing") {
 		return
 	}
 
-	hydrate := h.executeCommand(commandSpec{
-		Label:   "hydrate missing fixture",
-		Name:    h.bin,
-		Args:    []string{"hydrate", "hydrate-target"},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	if hydrate.Status == "PASS" && !strings.Contains(hydrate.Stdout, "hydrated project: hydrate-target") {
-		hydrate.Status = "FAIL"
-		hydrate.Error = "hydrate output did not confirm target project"
-	}
-	h.record(hydrate)
-	if hydrate.Status != "PASS" {
+	hydrate := s.command("hydrate missing fixture", "hydrate", "hydrate-target")
+	if hydrate.Status != "PASS" || !s.expectOutput(hydrate, "hydrated project: hydrate-target") {
 		return
 	}
-	if _, err := os.Stat(filepath.Join(target.Source, "README.md")); err != nil {
-		h.record(result{Name: "hydrate checkout exists", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+	if !s.expectPathExists("hydrate checkout exists", filepath.Join(target.Source, "README.md")) {
 		return
 	}
-	if _, err := os.Stat(other.Source); !errors.Is(err, os.ErrNotExist) {
-		h.record(result{Name: "hydrate no sibling placeholder", Status: "FAIL", Error: fmt.Sprintf("other missing path exists or stat failed: %v", err), ExitCode: -1})
+	if !s.expectPathMissing("hydrate no sibling placeholder", other.Source) {
 		return
 	}
 
-	after := h.executeCommand(commandSpec{
-		Label:   "hydration tree after",
-		Name:    h.bin,
-		Args:    []string{"tree"},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	if after.Status == "PASS" && (!strings.Contains(after.Stdout, "hydrate-target present") || !strings.Contains(after.Stdout, "hydrate-other missing")) {
-		after.Status = "FAIL"
-		after.Error = "tree output did not show hydrated target present and sibling missing"
-	}
-	h.record(after)
-	if after.Status != "PASS" {
+	after := s.command("hydration tree after", "tree")
+	if after.Status != "PASS" || !s.expectOutput(after, "hydrate-target present", "hydrate-other missing") {
 		return
 	}
 
-	status := h.executeCommand(commandSpec{
-		Label:   "hydration status after",
-		Name:    h.bin,
-		Args:    []string{"status", "hydrate-target", "--base", "main"},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	if status.Status == "PASS" && (!strings.Contains(status.Stdout, "state: present") || !strings.Contains(status.Stdout, "path_present: true")) {
-		status.Status = "FAIL"
-		status.Error = "status output did not show hydrated target present"
-	}
-	h.record(status)
+	status := s.command("hydration status after", "status", "hydrate-target", "--base", "main")
+	s.expectOutput(status, "state: present", "path_present: true")
 }
 
 func (h *harness) caseAgentPrepFixtureWorkflow() {
-	fixtures, err := h.createOfflineGitFixtures()
+	s, err := h.newScenario("agent prep")
 	if err != nil {
 		h.record(result{Name: "agent prep fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
-	prepHome := filepath.Join(h.tmp, "codemesh-agent-prep-home")
-	env := []string{"CODEMESH_HOME=" + prepHome}
-	scan := h.executeCommand(commandSpec{
-		Label:   "agent prep scan fixtures",
-		Name:    h.bin,
-		Args:    []string{"scan", fixtures.Sources},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	h.record(scan)
+	scan := s.command("agent prep scan fixtures", "scan", s.fixtures.Sources)
 	if scan.Status != "PASS" {
 		return
 	}
 
-	prepare := h.executeCommand(commandSpec{
-		Label:   "agent prep clean fixture",
-		Name:    h.bin,
-		Args:    []string{"agent", "prepare", "clean-repo", "--base", "main", "--profile", "codex"},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
+	prepare := s.command("agent prep clean fixture", "agent", "prepare", "clean-repo", "--base", "main", "--profile", "codex")
 	readyPath := valueAfterPrefix(prepare.Stdout, "ready_path: ")
 	if prepare.Status == "PASS" {
 		if readyPath == "" {
 			prepare.Status = "FAIL"
 			prepare.Error = "agent prepare output did not include ready_path"
-		} else if !strings.HasPrefix(readyPath, filepath.Join(prepHome, "agents")+string(filepath.Separator)) {
+			s.updateResult(prepare)
+		} else if !strings.HasPrefix(readyPath, filepath.Join(s.codemeshHome, "agents")+string(filepath.Separator)) {
 			prepare.Status = "FAIL"
 			prepare.Error = "ready path was not under CodeMesh-managed agents storage"
+			s.updateResult(prepare)
 		} else if _, err := os.Stat(filepath.Join(readyPath, "README.md")); err != nil {
 			prepare.Status = "FAIL"
 			prepare.Error = fmt.Sprintf("ready checkout missing README: %v", err)
+			s.updateResult(prepare)
 		} else if _, err := os.Stat(filepath.Join(readyPath, "codemesh-run.json")); err != nil {
 			prepare.Status = "FAIL"
 			prepare.Error = fmt.Sprintf("ready metadata missing: %v", err)
+			s.updateResult(prepare)
 		}
 	}
-	h.record(prepare)
 	if prepare.Status != "PASS" {
 		return
 	}
 
-	runs := h.executeCommand(commandSpec{
-		Label:   "agent runs list prepared fixture",
-		Name:    h.bin,
-		Args:    []string{"runs"},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	if runs.Status == "PASS" && (!strings.Contains(runs.Stdout, "project=clean-repo") || !strings.Contains(runs.Stdout, "base=main") || !strings.Contains(runs.Stdout, "profile=codex") || !strings.Contains(runs.Stdout, "workspace="+readyPath)) {
-		runs.Status = "FAIL"
-		runs.Error = "runs output did not include prepared run metadata"
-	}
-	h.record(runs)
-	if runs.Status != "PASS" {
+	runs := s.command("agent runs list prepared fixture", "runs")
+	if runs.Status != "PASS" || !s.expectOutput(runs, "project=clean-repo", "base=main", "profile=codex", "workspace="+readyPath) {
 		return
 	}
 
-	clean := h.executeCommand(commandSpec{
-		Label:   "agent runs clean old fixture",
-		Name:    h.bin,
-		Args:    []string{"clean", "--older-than", "0d"},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	if clean.Status == "PASS" && (!strings.Contains(clean.Stdout, "deleted: 1") || !strings.Contains(clean.Stdout, "kept: 0")) {
-		clean.Status = "FAIL"
-		clean.Error = "clean output did not report one deleted prepared run"
-	}
-	h.record(clean)
-	if clean.Status != "PASS" {
+	clean := s.command("agent runs clean old fixture", "clean", "--older-than", "0d")
+	if clean.Status != "PASS" || !s.expectOutput(clean, "deleted: 1", "kept: 0") {
 		return
 	}
-	if _, err := os.Stat(readyPath); !errors.Is(err, os.ErrNotExist) {
-		h.record(result{Name: "agent runs cleaned workspace", Status: "FAIL", Error: fmt.Sprintf("ready path exists or stat failed: %v", err), ExitCode: -1})
+	if !s.expectPathMissing("agent runs cleaned workspace", readyPath) {
 		return
 	}
 
-	afterClean := h.executeCommand(commandSpec{
-		Label:   "agent runs list after clean",
-		Name:    h.bin,
-		Args:    []string{"runs"},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	if afterClean.Status == "PASS" && !strings.Contains(afterClean.Stdout, "(empty)") {
-		afterClean.Status = "FAIL"
-		afterClean.Error = "runs output was not empty after cleanup"
-	}
-	h.record(afterClean)
-	if afterClean.Status != "PASS" {
+	afterClean := s.command("agent runs list after clean", "runs")
+	if afterClean.Status != "PASS" || !s.expectOutput(afterClean, "(empty)") {
 		return
 	}
 
-	dirty := h.executeCommand(commandSpec{
-		Label:   "agent prep dirty source warning",
-		Name:    h.bin,
-		Args:    []string{"agent", "prepare", "dirty-source", "--base", "main"},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
-	if dirty.Status == "PASS" && (!strings.Contains(dirty.Stdout, "warning: dirty-checkout") || valueAfterPrefix(dirty.Stdout, "ready_path: ") == "") {
+	dirty := s.command("agent prep dirty source warning", "agent", "prepare", "dirty-source", "--base", "main")
+	if dirty.Status == "PASS" && !s.expectOutput(dirty, "warning: dirty-checkout") {
+		return
+	}
+	if dirty.Status == "PASS" && valueAfterPrefix(dirty.Stdout, "ready_path: ") == "" {
 		dirty.Status = "FAIL"
-		dirty.Error = "dirty source prep did not warn and still print ready path"
+		dirty.Error = "dirty source prep did not print ready path"
+		s.updateResult(dirty)
 	}
-	h.record(dirty)
 	if dirty.Status != "PASS" {
 		return
 	}
 
-	envBlocked := h.executeCommand(commandSpec{
-		Label:   "agent prep env blocker",
-		Name:    h.bin,
-		Args:    []string{"agent", "prepare", "required-env-missing"},
-		Timeout: defaultCommandTimeout,
-		Env:     env,
-	})
+	envBlocked := s.expectedFailure("agent prep env blocker", "agent", "prepare", "required-env-missing")
 	if envBlocked.Status != "FAIL" {
 		envBlocked.Status = "FAIL"
 		envBlocked.Error = "env-blocked prep unexpectedly passed"
@@ -594,7 +412,7 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 		envBlocked.Status = "PASS"
 		envBlocked.Error = ""
 	}
-	h.record(envBlocked)
+	s.record(envBlocked)
 }
 
 func (h *harness) buildBinary() bool {
@@ -1044,6 +862,124 @@ func (h *harness) record(r result) {
 	h.results = append(h.results, r)
 }
 
+func (h *harness) newScenario(name string) (*scenario, error) {
+	codemeshHome := filepath.Join(h.tmp, "codemesh-"+slug(name)+"-home")
+	if err := os.MkdirAll(codemeshHome, 0o755); err != nil {
+		return nil, err
+	}
+	fixtures, err := h.createOfflineGitFixtures()
+	if err != nil {
+		return nil, err
+	}
+	return &scenario{
+		h:            h,
+		name:         name,
+		codemeshHome: codemeshHome,
+		fixtures:     fixtures,
+	}, nil
+}
+
+func (s *scenario) fixture(name string) *gitFixtureProject {
+	return s.fixtures.Project(name)
+}
+
+func (s *scenario) command(label string, args ...string) result {
+	r := s.execute(label, nil, args...)
+	s.h.record(r)
+	return r
+}
+
+func (s *scenario) commandEnv(label string, env []string, args ...string) result {
+	r := s.execute(label, env, args...)
+	s.h.record(r)
+	return r
+}
+
+func (s *scenario) expectedFailure(label string, args ...string) result {
+	return s.execute(label, nil, args...)
+}
+
+func (s *scenario) record(r result) {
+	s.h.record(r)
+}
+
+func (s *scenario) execute(label string, env []string, args ...string) result {
+	return s.h.executeCommand(commandSpec{
+		Label:   label,
+		Name:    s.h.bin,
+		Args:    args,
+		Timeout: defaultCommandTimeout,
+		Env:     append([]string{"CODEMESH_HOME=" + s.codemeshHome}, env...),
+	})
+}
+
+func (s *scenario) expectOutput(r result, fragments ...string) bool {
+	if r.Status != "PASS" {
+		return false
+	}
+	for _, fragment := range fragments {
+		if !strings.Contains(r.Stdout, fragment) {
+			s.failCommandAssertion(r, fmt.Sprintf("stdout did not include %q", fragment))
+			return false
+		}
+	}
+	return true
+}
+
+func (s *scenario) expectNoOutput(r result, fragments ...string) bool {
+	if r.Status != "PASS" {
+		return false
+	}
+	for _, fragment := range fragments {
+		if strings.Contains(r.Stdout, fragment) {
+			s.failCommandAssertion(r, fmt.Sprintf("stdout included %q", fragment))
+			return false
+		}
+	}
+	return true
+}
+
+func (s *scenario) expectPathExists(name, path string) bool {
+	if _, err := os.Stat(path); err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	return true
+}
+
+func (s *scenario) expectPathMissing(name, path string) bool {
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("path exists or stat failed: %v", err), ExitCode: -1})
+		return false
+	}
+	return true
+}
+
+func (s *scenario) failCommandAssertion(r result, message string) {
+	r.Name += " assertion"
+	r.Status = "FAIL"
+	r.Error = message
+	r.ExitCode = -1
+	s.h.record(r)
+}
+
+func (s *scenario) failScenarioAssertion(name, message string) {
+	s.h.record(result{Name: name + " assertion", Status: "FAIL", Error: message, ExitCode: -1})
+}
+
+func (s *scenario) updateResult(r result) {
+	for i := len(s.h.results) - 1; i >= 0; i-- {
+		if s.h.results[i].Name == r.Name {
+			previous := s.h.results[i]
+			s.h.results[i] = r
+			if previous.Status != r.Status || previous.Error != r.Error {
+				s.h.print(r)
+			}
+			break
+		}
+	}
+}
+
 func repoRoot() (string, error) {
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
 	var stdout bytes.Buffer
@@ -1118,6 +1054,23 @@ func reportPath(root string) string {
 		return path
 	}
 	return filepath.Join(root, "tmp", "e2e-report.json")
+}
+
+func slug(name string) string {
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func safeRemoveAll(path string) error {

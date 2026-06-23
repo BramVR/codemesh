@@ -211,6 +211,43 @@ func TestOfflineGitFixturesCreateLocalRemotesAndClones(t *testing.T) {
 	}
 }
 
+func TestScenarioCreatesFixturesAndIsolatedCommands(t *testing.T) {
+	h := testHarness(t)
+	h.bin = os.Args[0]
+
+	s, err := h.newScenario("Readiness Status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertUnder(t, h.tmp, s.codemeshHome)
+	if s.codemeshHome == h.codemeshHome {
+		t.Fatalf("scenario home reused harness default home")
+	}
+	clean := s.fixture("clean-repo")
+	if clean == nil {
+		t.Fatalf("clean fixture missing")
+	}
+	assertUnder(t, h.tmp, clean.Remote)
+	assertUnder(t, h.tmp, clean.Source)
+
+	r := s.commandEnv("scenario helper env", []string{"CODEMESH_E2E_HELPER_PROCESS=1"}, "-test.run=TestHelperProcess", "--", "print-env", "CODEMESH_HOME", "HOME", "GIT_CONFIG_GLOBAL", "CODEMESH_E2E_REQUIRED_ENV")
+	if r.Status != "PASS" {
+		t.Fatalf("status = %s, error = %s", r.Status, r.Error)
+	}
+	if !s.expectOutput(r, "CODEMESH_HOME="+s.codemeshHome, "HOME="+h.home, "GIT_CONFIG_GLOBAL="+filepath.Join(h.home, ".gitconfig")) {
+		t.Fatalf("env output assertion failed: %#v", h.results)
+	}
+	if !s.expectNoOutput(r, "CODEMESH_E2E_REQUIRED_ENV=") {
+		t.Fatalf("fake env key leaked into command env: %#v", h.results)
+	}
+	if len(h.results) != 1 || h.results[0].Name != "scenario helper env" {
+		t.Fatalf("scenario command was not recorded: %#v", h.results)
+	}
+	if h.results[0].Status != "PASS" {
+		t.Fatalf("scenario command status = %s, error = %s", h.results[0].Status, h.results[0].Error)
+	}
+}
+
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("CODEMESH_E2E_HELPER_PROCESS") != "1" {
 		return
@@ -229,6 +266,13 @@ func TestHelperProcess(t *testing.T) {
 		os.Exit(7)
 	case "sleep":
 		time.Sleep(5 * time.Second)
+		os.Exit(0)
+	case "print-env":
+		for _, key := range args[2:] {
+			if value, ok := os.LookupEnv(key); ok {
+				os.Stdout.WriteString(key + "=" + value + "\n")
+			}
+		}
 		os.Exit(0)
 	default:
 		os.Exit(2)
