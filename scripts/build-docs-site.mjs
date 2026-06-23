@@ -323,6 +323,10 @@ function inline(text, currentRel) {
 }
 
 function decodeHrefEntities(value) {
+  return decodeHtmlEntities(value);
+}
+
+function decodeHtmlEntities(value) {
   return String(value)
     .replace(/&amp;/g, "&")
     .replace(/&quot;/g, '"')
@@ -351,7 +355,7 @@ function tocFromHtml(html) {
     const text = match[3]
       .replace(/<a\b(?=[^>]*class="[^"]*\banchor\b[^"]*")[\s\S]*?<\/a>/g, "")
       .replace(/<[^>]+>/g, "");
-    items.push({ level: Number(match[1]), id: match[2], text });
+    items.push({ level: Number(match[1]), id: match[2], text: decodeHtmlEntities(text) });
   }
   if (items.length < 2) return "";
   return `<aside class="toc"><h2>On this page</h2>${items.map((item) => `<a class="toc-l${item.level}" href="#${item.id}">${escapeHtml(item.text)}</a>`).join("")}</aside>`;

@@ -24,6 +24,11 @@ test("docs-site builds static artifact from public allowlist", () => {
     "\n\n[Unsafe link](javascript:alert(1))\n[Unsafe control link](java\tscript:alert(1))\n[Safe link](https://example.com?a=1&b=2)\n\n```md\n[Custom scheme example](codemesh:thing)\n{: .keep }\n```\n",
     "utf8",
   );
+  fs.appendFileSync(
+    path.join(tempRoot, "docs", "commands.md"),
+    "\n\n## Entity Heading `<path>`\n\n### Supporting Anchor\n",
+    "utf8",
+  );
 
   try {
     execFileSync("make", ["docs-site"], {
@@ -75,6 +80,8 @@ test("docs-site builds static artifact from public allowlist", () => {
     assert.match(index, /class="nav-toggle"/);
     assert.match(index, /assets\/codemesh-hero\.svg/);
     assert.match(index, /<table>/);
+    assert.match(commands, /<a class="toc-l2" href="#entity-heading-path">Entity Heading &lt;path&gt;<\/a>/);
+    assert.doesNotMatch(commands, /Entity Heading &amp;lt;path&amp;gt;/);
     assert.match(commands, /<pre><code class="language-sh">/);
     assert.match(trust, /id="secret-free-readiness"/);
     assert.match(trust, /<table>/);
