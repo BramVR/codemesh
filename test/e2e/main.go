@@ -17,7 +17,7 @@ import (
 const (
 	defaultCommandTimeout = 30 * time.Second
 	longCommandTimeout    = 2 * time.Minute
-	modeDefault           = "default"
+	modeSource            = "source"
 	modePackaged          = "packaged"
 )
 
@@ -33,13 +33,39 @@ type result struct {
 }
 
 type report struct {
-	StartedAt    string   `json:"started_at"`
-	Mode         string   `json:"mode"`
-	Binary       string   `json:"binary"`
-	CodeMeshHome string   `json:"codemesh_home"`
-	Workspace    string   `json:"workspace"`
-	RunDir       string   `json:"run_dir"`
-	Results      []result `json:"results"`
+	StartedAt    string             `json:"started_at"`
+	Mode         string             `json:"mode"`
+	Binary       reportBinary       `json:"binary"`
+	Isolation    reportIsolation    `json:"isolation"`
+	Summary      reportSummary      `json:"summary"`
+	SecretSafety reportSecretSafety `json:"secret_safety"`
+	Results      []result           `json:"results"`
+}
+
+type reportBinary struct {
+	Path     string `json:"path"`
+	Kind     string `json:"kind"`
+	External bool   `json:"external"`
+}
+
+type reportIsolation struct {
+	CodeMeshHome string `json:"codemesh_home"`
+	Home         string `json:"home"`
+	Workspace    string `json:"workspace"`
+	RunDir       string `json:"run_dir"`
+	GitConfig    string `json:"git_config"`
+}
+
+type reportSummary struct {
+	Pass  int `json:"pass"`
+	Fail  int `json:"fail"`
+	Skip  int `json:"skip"`
+	Total int `json:"total"`
+}
+
+type reportSecretSafety struct {
+	Enabled        bool `json:"enabled"`
+	RedactedValues int  `json:"redacted_values"`
 }
 
 type harness struct {
@@ -52,6 +78,8 @@ type harness struct {
 	workspace    string
 	runDir       string
 	mode         string
+	startedAt    time.Time
+	redactions   []string
 	reportPath   string
 	output       io.Writer
 	results      []result
@@ -115,6 +143,7 @@ func main() {
 		workspace:    filepath.Join(tmp, "workspace"),
 		runDir:       filepath.Join(tmp, "run"),
 		mode:         e2eMode(),
+		startedAt:    time.Now().UTC(),
 		reportPath:   reportPath(root),
 		output:       os.Stdout,
 	}
@@ -668,14 +697,33 @@ func (h *harness) writeReport() error {
 	if err := os.MkdirAll(filepath.Dir(h.reportPath), 0o755); err != nil {
 		return err
 	}
+	startedAt := h.startedAt
+	if startedAt.IsZero() {
+		startedAt = time.Now().UTC()
+	}
+	redactions := h.redactions
+	if len(redactions) == 0 {
+		redactions = []string{fakeEnvFixtureSecret()}
+	}
+	results, redactedValues := sanitizeResults(h.results, redactions...)
 	r := report{
-		StartedAt:    time.Now().UTC().Format(time.RFC3339),
-		Mode:         h.mode,
-		Binary:       h.bin,
-		CodeMeshHome: h.codemeshHome,
-		Workspace:    h.workspace,
-		RunDir:       h.runDir,
-		Results:      h.results,
+		StartedAt: startedAt.UTC().Format(time.RFC3339),
+		Mode:      h.mode,
+		Binary: reportBinary{
+			Path:     h.bin,
+			Kind:     h.binaryKind(),
+			External: h.externalBin,
+		},
+		Isolation: reportIsolation{
+			CodeMeshHome: h.codemeshHome,
+			Home:         h.home,
+			Workspace:    h.workspace,
+			RunDir:       h.runDir,
+			GitConfig:    filepath.Join(h.home, ".gitconfig"),
+		},
+		Summary:      summarizeResults(results),
+		SecretSafety: reportSecretSafety{Enabled: true, RedactedValues: redactedValues},
+		Results:      results,
 	}
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
@@ -683,6 +731,58 @@ func (h *harness) writeReport() error {
 	}
 	data = append(data, '\n')
 	return os.WriteFile(h.reportPath, data, 0o644)
+}
+
+func (h *harness) binaryKind() string {
+	if h.externalBin {
+		return "external-packaged"
+	}
+	return "built-from-source"
+}
+
+func summarizeResults(results []result) reportSummary {
+	var summary reportSummary
+	for _, r := range results {
+		switch r.Status {
+		case "PASS":
+			summary.Pass++
+		case "FAIL":
+			summary.Fail++
+		case "SKIP":
+			summary.Skip++
+		}
+		summary.Total++
+	}
+	return summary
+}
+
+func sanitizeResults(results []result, redactions ...string) ([]result, int) {
+	sanitized := make([]result, len(results))
+	redacted := 0
+	for i, r := range results {
+		r.Stdout, redacted = redactString(r.Stdout, redacted, redactions...)
+		r.Stderr, redacted = redactString(r.Stderr, redacted, redactions...)
+		r.Error, redacted = redactString(r.Error, redacted, redactions...)
+		sanitized[i] = r
+	}
+	return sanitized, redacted
+}
+
+func redactString(value string, count int, redactions ...string) (string, int) {
+	for _, marker := range redactions {
+		if marker == "" {
+			continue
+		}
+		if strings.Contains(value, marker) {
+			count += strings.Count(value, marker)
+			value = strings.ReplaceAll(value, marker, "[REDACTED]")
+		}
+	}
+	return value, count
+}
+
+func fakeEnvFixtureSecret() string {
+	return strings.Join([]string{"e2e", "fixture", "redaction", "marker"}, "-")
 }
 
 func (f offlineGitFixtures) Project(name string) *gitFixtureProject {
@@ -1005,7 +1105,7 @@ func e2eMode() string {
 	if os.Getenv("CODEMESH_E2E_MODE") == modePackaged {
 		return modePackaged
 	}
-	return modeDefault
+	return modeSource
 }
 
 func binaryPath(tmp string) (string, bool, error) {
