@@ -170,6 +170,7 @@ func (h *harness) run() int {
 	h.caseInitHelpSmoke()
 	h.caseInitSmoke()
 	h.caseOfflineGitFixtureSmoke()
+	h.caseProjectRegistryScanWorkflow()
 	h.caseProjectRegistryFixtureWorkflow()
 	h.skip("readiness fixture workflow", "pending readiness commands; offline fixtures ready")
 	h.skip("hydration fixture workflow", "pending hydration command; offline fixtures ready")
@@ -187,6 +188,61 @@ func (h *harness) run() int {
 		}
 	}
 	return 0
+}
+
+func (h *harness) caseProjectRegistryScanWorkflow() {
+	fixtures, err := h.createOfflineGitFixtures()
+	if err != nil {
+		h.record(result{Name: "project registry scan workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	scanHome := filepath.Join(h.tmp, "codemesh-scan-home")
+	env := []string{"CODEMESH_HOME=" + scanHome}
+	scan := h.executeCommand(commandSpec{
+		Label:   "project registry scan fixtures",
+		Name:    h.bin,
+		Args:    []string{"scan", fixtures.Sources},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if scan.Status == "PASS" && (!strings.Contains(scan.Stdout, "added: clean-repo") || !strings.Contains(scan.Stdout, "added: dirty-source") || !strings.Contains(scan.Stdout, "scan complete")) {
+		scan.Status = "FAIL"
+		scan.Error = "scan output did not report discovered fixture projects"
+	}
+	h.record(scan)
+	if scan.Status != "PASS" {
+		return
+	}
+
+	rerun := h.executeCommand(commandSpec{
+		Label:   "project registry scan fixtures rerun",
+		Name:    h.bin,
+		Args:    []string{"scan", fixtures.Sources},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if rerun.Status == "PASS" && !strings.Contains(rerun.Stdout, "unchanged: clean-repo") {
+		rerun.Status = "FAIL"
+		rerun.Error = "scan rerun output did not report unchanged fixture project"
+	}
+	h.record(rerun)
+	if rerun.Status != "PASS" {
+		return
+	}
+
+	tree := h.executeCommand(commandSpec{
+		Label:   "project registry tree scanned fixtures",
+		Name:    h.bin,
+		Args:    []string{"tree"},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	clean := fixtures.Project("clean-repo")
+	if tree.Status == "PASS" && (clean == nil || !strings.Contains(tree.Stdout, "clean-repo") || !strings.Contains(tree.Stdout, "present") || !strings.Contains(tree.Stdout, clean.Source)) {
+		tree.Status = "FAIL"
+		tree.Error = "tree output did not show scanned clean-repo as present with local path"
+	}
+	h.record(tree)
 }
 
 func (h *harness) caseProjectRegistryFixtureWorkflow() {

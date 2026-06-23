@@ -115,6 +115,44 @@ func TestAddThenTreeShowsPresentProject(t *testing.T) {
 	}
 }
 
+func TestScanThenTreeShowsDiscoveredProjects(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	workspace := t.TempDir()
+	alpha := createGitRepoAt(t, filepath.Join(workspace, "alpha"), "https://github.com/BramVR/alpha.git")
+	nested := createGitRepoAt(t, filepath.Join(alpha, "vendor", "nested"), "https://github.com/BramVR/nested.git")
+	createGitRepoAt(t, filepath.Join(workspace, "no-remote"), "")
+	t.Setenv("CODEMESH_HOME", home)
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"scan", workspace}, &stdout, &stderr); code != 0 {
+		t.Fatalf("scan exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "scan complete") || !strings.Contains(stdout.String(), "added: alpha") {
+		t.Fatalf("scan stdout missing added report:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "skipped: "+nested+" (nested Git repo)") || !strings.Contains(stdout.String(), "unsupported") {
+		t.Fatalf("scan stdout missing skips:\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"scan", workspace}, &stdout, &stderr); code != 0 {
+		t.Fatalf("rerun scan exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "unchanged: alpha") {
+		t.Fatalf("rerun scan stdout missing unchanged report:\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"tree"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("tree exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "alpha") || !strings.Contains(stdout.String(), "present") || !strings.Contains(stdout.String(), alpha) {
+		t.Fatalf("tree output missing scanned project:\n%s", stdout.String())
+	}
+}
+
 func TestAddAliasConflictFailsWithActionableError(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "codemesh-home")
 	first := createGitRepo(t, "https://github.com/BramVR/first.git")
@@ -137,13 +175,23 @@ func TestAddAliasConflictFailsWithActionableError(t *testing.T) {
 
 func createGitRepo(t *testing.T, remote string) string {
 	t.Helper()
-	repo := filepath.Join(t.TempDir(), "codemesh")
-	if err := os.Mkdir(repo, 0o755); err != nil {
+	return createGitRepoAt(t, filepath.Join(t.TempDir(), "codemesh"), remote)
+}
+
+func createGitRepoAt(t *testing.T, repo, remote string) string {
+	t.Helper()
+	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	runGit(t, repo, "init", "-b", "main")
-	runGit(t, repo, "remote", "add", "origin", remote)
-	return repo
+	if remote != "" {
+		runGit(t, repo, "remote", "add", "origin", remote)
+	}
+	root, err := gitRoot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
 }
 
 func runGit(t *testing.T, dir string, args ...string) {
@@ -153,4 +201,13 @@ func runGit(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, output)
 	}
+}
+
+func gitRoot(dir string) (string, error) {
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
 }
