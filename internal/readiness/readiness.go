@@ -102,7 +102,7 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 		})
 		return report, nil
 	}
-	if remote, err := gitOutput(ctx, project.LocalPath, "config", "--get", "remote.origin.url"); err != nil {
+	if remote, err := gitOutput(ctx, project.LocalPath, "remote", "get-url", "origin"); err != nil {
 		report.State = StateBlocked
 		report.Blockers = append(report.Blockers, Diagnostic{
 			Code:    "origin-missing",
@@ -155,7 +155,7 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 			report.State = StateStale
 			report.Warnings = append(report.Warnings, Diagnostic{
 				Code:    "stale-checkout",
-				Message: fmt.Sprintf("local base branch %q is behind origin/%s", base, base),
+				Message: fmt.Sprintf("local base branch %q is behind or diverged from origin/%s", base, base),
 			})
 		}
 	}

@@ -181,7 +181,9 @@ func runTree(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	for _, project := range projects {
-		report, err := readiness.EvaluateProject(context.Background(), project, readiness.Options{CheckRemote: false})
+		ctx, cancel := context.WithTimeout(context.Background(), statusReadinessTimeout)
+		report, err := readiness.EvaluateProject(ctx, project, readiness.Options{CheckRemote: false})
+		cancel()
 		if err != nil {
 			fmt.Fprintf(stderr, "check project readiness: %v\n", err)
 			return 1

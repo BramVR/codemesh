@@ -63,10 +63,10 @@ Normalized states:
 - `present`: local path exists and no warning or blocker changes the summary state.
 - `missing`: local path from the registry does not exist.
 - `dirty`: source checkout has uncommitted or untracked changes; this is a warning, not a blocker.
-- `stale`: remote freshness could not be checked because fetch failed, or the local base branch is behind the fetched remote base.
+- `stale`: remote freshness could not be checked, or the local base branch is behind or diverged from the fetched remote base.
 - `blocked`: local path or requested base branch prevents safe use.
 
-Diagnostics are split into warnings and blockers. Dirty and stale source checkouts are warnings so unrelated local work does not prevent temp-clone agent handoff. Missing local paths, fetch failures, and missing requested base branches are blockers for `status` until hydration or base selection exists.
+Diagnostics are split into warnings and blockers. Dirty source checkouts and stale local base branches are warnings so unrelated local work does not prevent temp-clone agent handoff. Missing local paths, fetch failures, and missing requested base branches are blockers for `status` until hydration or base selection exists.
 
 `tree` consumes the same normalized states for local filesystem and dirty-checkout summaries. `status` runs the fuller readiness check, including fetch and base branch validation.
 

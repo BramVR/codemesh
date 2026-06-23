@@ -148,6 +148,7 @@ func TestScanThenTreeShowsDiscoveredProjects(t *testing.T) {
 	if code := run([]string{"tree"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("tree exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
 	}
+	// alpha contains the nested repo fixture, so local tree readiness should surface it as dirty.
 	if !strings.Contains(stdout.String(), "alpha") || !strings.Contains(stdout.String(), "dirty") || !strings.Contains(stdout.String(), alpha) {
 		t.Fatalf("tree output missing scanned project:\n%s", stdout.String())
 	}
