@@ -17,6 +17,7 @@ It keeps the canonical project tree visible, checks whether projects are present
 - [Install](install.md): build the current CLI from source and verify it runs.
 - [Quickstart](quickstart.md): try CodeMesh against a local Git remote with isolated state.
 - [Command Catalog](commands.md): see the current runnable command surface.
+- Command references: [init](commands/init.md), [add](commands/add.md), [scan](commands/scan.md), [tree](commands/tree.md), [status](commands/status.md), [hydrate](commands/hydrate.md), [agent prepare](commands/agent-prepare.md), [runs](commands/runs.md), and [clean](commands/clean.md).
 - [Trust Boundaries](trust.md): review what CodeMesh does and does not own.
 - [Local State Model](state.md): understand CodeMesh home, SQLite metadata, and agent run storage.
 

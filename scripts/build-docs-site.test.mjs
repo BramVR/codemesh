@@ -47,6 +47,18 @@ test("docs-site builds static artifact from public allowlist", () => {
     const quickstart = fs.readFileSync(path.join(outDir, "quickstart.html"), "utf8");
     const commands = fs.readFileSync(path.join(outDir, "commands.html"), "utf8");
     const trust = fs.readFileSync(path.join(outDir, "trust.html"), "utf8");
+    const commandRefs = [
+      "commands/init/index.html",
+      "commands/add/index.html",
+      "commands/scan/index.html",
+      "commands/tree/index.html",
+      "commands/status/index.html",
+      "commands/hydrate/index.html",
+      "commands/agent-prepare/index.html",
+      "commands/runs/index.html",
+      "commands/clean/index.html",
+    ];
+    const commandRefText = commandRefs.map((rel) => fs.readFileSync(path.join(outDir, rel), "utf8")).join("\n");
     const llmsFull = fs.readFileSync(path.join(outDir, "llms-full.txt"), "utf8");
     const heroSvg = fs.readFileSync(path.join(outDir, "assets", "codemesh-hero.svg"), "utf8");
     const socialSvg = fs.readFileSync(path.join(outDir, "assets", "social-card.svg"), "utf8");
@@ -57,6 +69,7 @@ test("docs-site builds static artifact from public allowlist", () => {
       "install.html",
       "quickstart.html",
       "commands.html",
+      ...commandRefs,
       "trust.html",
       "project-policy.html",
       "state.html",
@@ -84,6 +97,8 @@ test("docs-site builds static artifact from public allowlist", () => {
     assert.match(index, /href="quickstart\.html"/);
     assert.match(index, /href="install\.html"/);
     assert.match(index, /href="commands\.html"/);
+    assert.match(index, /href="commands\/init\/index\.html"/);
+    assert.match(index, /href="commands\/agent-prepare\/index\.html"/);
     assert.match(index, /id="doc-search"/);
     assert.match(index, /data-theme-toggle/);
     assert.match(index, /class="nav-toggle"/);
@@ -104,6 +119,14 @@ test("docs-site builds static artifact from public allowlist", () => {
     assert.match(favicon, /#68f36f/);
     assert.match(index, /<table>/);
     assert.match(commands, /<a class="toc-l2" href="#entity-heading-path">Entity Heading &lt;path&gt;<\/a>/);
+    assert.match(commands, /href="commands\/init\/index\.html"/);
+    assert.match(commands, /href="commands\/clean\/index\.html"/);
+    assert.match(commandRefText, /<h1 id="codemesh-init">codemesh init<\/h1>/);
+    assert.match(commandRefText, /<h1 id="codemesh-agent-prepare">codemesh agent prepare<\/h1>/);
+    assert.match(commandRefText, /<code>CODEMESH_HOME<\/code>/);
+    assert.match(commandRefText, /git clone --bare/);
+    assert.match(commandRefText, /Current Limitations/);
+    assert.match(commandRefText, /href="\.\.\/\.\.\/commands\.html"/);
     assert.doesNotMatch(commands, /Entity Heading &amp;lt;path&amp;gt;/);
     assert.match(commands, /<pre><code class="language-sh">echo rich-fence/);
     assert.match(commands, /\[Custom scheme inside rich fence\]\(codemesh:thing\)/);
@@ -114,10 +137,12 @@ test("docs-site builds static artifact from public allowlist", () => {
     assert.match(quickstart, /CODEMESH_HOME/);
     assert.match(quickstart, /git clone --bare/);
     assert.match(quickstart, /href="commands\.html"/);
+    assert.match(quickstart, /href="commands\/status\/index\.html"/);
     assert.match(quickstart, /<small>Previous<\/small>Install/);
     assert.match(quickstart, /<small>Next<\/small>Command Catalog/);
-    assert.doesNotMatch(index + llmsFull, /javascript:alert/);
-    assert.doesNotMatch(index + llmsFull, /java\tscript:alert/);
+    assert.doesNotMatch(index + llmsFull + commandRefText, /javascript:alert/);
+    assert.doesNotMatch(index + llmsFull + commandRefText, /java\tscript:alert/);
+    assert.doesNotMatch(commandRefText, /\/Users\/bram|~\/Projects|~\/\.codemesh|GITHUB_TOKEN|GH_TOKEN|TOKEN=|git@github\.com/);
     assert.match(index, /href="https:\/\/example\.com\?a=1&amp;b=2"/);
     assert.doesNotMatch(index, /&amp;amp;b=2/);
     assert.match(index, /\[Custom scheme example\]\(codemesh:thing\)/);
@@ -163,6 +188,8 @@ test("docs-site emits LLM metadata with canonical and source URLs", () => {
     assert.match(llms, /Source repository: https:\/\/github\.com\/BramVR\/codemesh/);
     assert.match(llmsFull, /Canonical: https:\/\/bramvr\.github\.io\/codemesh\//);
     assert.match(llmsFull, /Source: https:\/\/github\.com\/BramVR\/codemesh\/blob\/main\/docs\/index\.md/);
+    assert.match(llmsFull, /Canonical: https:\/\/bramvr\.github\.io\/codemesh\/commands\/init\//);
+    assert.match(llmsFull, /Source: https:\/\/github\.com\/BramVR\/codemesh\/blob\/main\/docs\/commands\/agent-prepare\.md/);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

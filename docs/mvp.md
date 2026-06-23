@@ -143,7 +143,7 @@ States:
 - stale
 - env-missing
 
-### `codemesh status [project]`
+### `codemesh status [project] [--base branch]`
 
 Shows readiness detail for one project or the whole index.
 
@@ -179,7 +179,7 @@ Rules:
 
 Lists prepared agent runs.
 
-### `codemesh clean [--older-than 7d]`
+### `codemesh clean [--older-than age]`
 
 Deletes old agent runs.
 

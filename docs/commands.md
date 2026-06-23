@@ -6,19 +6,21 @@ read_when:
 
 # Command Catalog
 
-CodeMesh command docs separate current commands from planned behavior. The current command list below is checked against top-level CLI help by `TestCommandCatalogMatchesTopLevelHelp`.
+CodeMesh command docs separate current commands from planned behavior. The current command list below is checked against top-level CLI help and the stable command reference pages by `TestCommandCatalogMatchesTopLevelHelp` and `TestCommandReferencePagesMatchCatalog`.
 
 ## Current Commands
 
-- `codemesh init [workspace-root]`
-- `codemesh add <path> [--alias name]`
-- `codemesh scan [workspace-root]`
-- `codemesh tree`
-- `codemesh status [project] [--base branch]`
-- `codemesh hydrate <project>`
-- `codemesh agent prepare <project> [--base branch] [--profile name]`
-- `codemesh runs`
-- `codemesh clean [--older-than age]`
+- [`codemesh init [workspace-root]`](commands/init.md)
+- [`codemesh add <path> [--alias name]`](commands/add.md)
+- [`codemesh scan [workspace-root]`](commands/scan.md)
+- [`codemesh tree`](commands/tree.md)
+- [`codemesh status [project] [--base branch]`](commands/status.md)
+- [`codemesh hydrate <project>`](commands/hydrate.md)
+- [`codemesh agent prepare <project> [--base branch] [--profile name]`](commands/agent-prepare.md)
+- [`codemesh runs`](commands/runs.md)
+- [`codemesh clean [--older-than age]`](commands/clean.md)
+
+Each linked reference page documents the current syntax, purpose, safe local examples, and current limitations. If a command does not appear in this list, it is not part of the runnable MVP surface.
 
 ## Safe Local Example
 

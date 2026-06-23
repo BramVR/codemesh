@@ -6,7 +6,18 @@
     },
     {
       "name": "Use",
-      "pages": ["commands.md"]
+      "pages": [
+        "commands.md",
+        "commands/init.md",
+        "commands/add.md",
+        "commands/scan.md",
+        "commands/tree.md",
+        "commands/status.md",
+        "commands/hydrate.md",
+        "commands/agent-prepare.md",
+        "commands/runs.md",
+        "commands/clean.md"
+      ]
     },
     {
       "name": "Trust",
