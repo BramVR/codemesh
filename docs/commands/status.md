@@ -19,7 +19,7 @@ codemesh status [project] [--base branch]
 
 Report readiness for all registered projects or one project. Status includes local path presence, normalized remote, selected base branch, warnings, and blockers.
 
-When `--base` is omitted, CodeMesh uses `main`.
+When `--base` is omitted, CodeMesh uses the project's policy base branch, which defaults to `main` when no project policy sets one.
 
 ## Safe Example
 
