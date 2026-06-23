@@ -55,6 +55,7 @@ For the full current-vs-planned surface, see the [Command Catalog](docs/commands
 ```sh
 make test
 make e2e
+make e2e-packaged
 ```
 
 The CLI e2e harness is documented in [docs/e2e.md](docs/e2e.md).
