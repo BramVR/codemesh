@@ -11,6 +11,7 @@ const root = path.resolve(process.env.CODEMESH_DOCS_SITE_ROOT || defaultRoot);
 const docsDir = path.join(root, "docs");
 const outDir = path.resolve(process.env.CODEMESH_DOCS_SITE_OUT || path.join(root, "dist", "docs-site"));
 const repoBase = "https://github.com/BramVR/codemesh";
+const repoSourceBase = `${repoBase}/blob/main/docs`;
 const repoEditBase = `${repoBase}/edit/main/docs`;
 const siteBase = "https://bramvr.github.io/codemesh";
 const productName = "CodeMesh";
@@ -373,9 +374,10 @@ function rewriteHref(href, currentRel) {
   if (!raw) return hash ? `#${hash}` : "";
   if (!raw.endsWith(".md")) return href;
   const targetRel = path.posix.normalize(path.posix.join(path.posix.dirname(currentRel), raw));
+  if (targetRel === ".." || targetRel.startsWith("../") || path.posix.isAbsolute(targetRel)) return "#";
   const target = pageMap.get(targetRel);
-  if (!target) return `${repoBase}/blob/main/docs/${targetRel}${hash ? `#${hash}` : ""}`;
-  const rewritten = hrefToOutRel(target.outRel, pageMap.get(currentRel)?.outRel || outPath(currentRel));
+  const targetOutRel = target?.outRel || outPath(targetRel);
+  const rewritten = hrefToOutRel(targetOutRel, pageMap.get(currentRel)?.outRel || outPath(currentRel));
   return `${rewritten}${hash ? `#${hash}` : ""}`;
 }
 
@@ -508,6 +510,10 @@ function pageCanonicalUrl(page) {
   return `${siteBase}/${rel}`;
 }
 
+function pageSourceUrl(page) {
+  return `${repoSourceBase}/${page.rel}`;
+}
+
 function hrefToOutRel(targetOutRel, currentOutRel) {
   const currentDir = path.posix.dirname(currentOutRel);
   if (targetOutRel === "index.html") return path.posix.relative(currentDir, ".") || ".";
@@ -543,13 +549,16 @@ function llmsTxt() {
     "",
     productDescription,
     "",
-    "Canonical documentation:",
+    "Canonical public documentation URLs:",
     ...orderedPages.map((page) => `- ${page.title}: ${pageCanonicalUrl(page)}`),
     "",
-    "Install:",
+    "Public Markdown source URLs:",
+    ...orderedPages.map((page) => `- ${page.title}: ${pageSourceUrl(page)}`),
+    "",
+    "Install/build hint:",
     `- ${installHint}`,
     "",
-    `Source: ${repoBase}`,
+    `Source repository: ${repoBase}`,
     "",
     "Guidance for agents:",
     "- Prefer these canonical public documentation URLs over README excerpts or internal planning docs.",
@@ -562,7 +571,7 @@ function llmsTxt() {
 function llmsFullTxt() {
   const blocks = [`# ${productName}`, "", productDescription, ""];
   for (const page of orderedPages) {
-    blocks.push("---", `# ${page.title}`, `Source: ${pageCanonicalUrl(page)}`, "", page.markdown.trim(), "");
+    blocks.push("---", `# ${page.title}`, `Canonical: ${pageCanonicalUrl(page)}`, `Source: ${pageSourceUrl(page)}`, "", page.markdown.trim(), "");
   }
   return `${blocks.join("\n")}\n`;
 }
