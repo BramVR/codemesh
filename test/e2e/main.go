@@ -209,6 +209,7 @@ func (h *harness) run() int {
 	h.caseInitHelpSmoke()
 	h.caseInitSmoke()
 	h.caseOfflineGitFixtureSmoke()
+	h.caseNegativeCLIWorkflow()
 	h.caseProjectRegistryScanWorkflow()
 	h.caseProjectRegistryFixtureWorkflow()
 	h.caseProjectRegistryAliasPathStateWorkflow()
@@ -590,6 +591,88 @@ func containsAnySecret(value string, secrets []string) bool {
 		}
 	}
 	return false
+}
+
+func (h *harness) caseNegativeCLIWorkflow() {
+	s, err := h.newScenario("negative cli")
+	if err != nil {
+		h.record(result{Name: "negative cli workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+
+	unknown := s.expectedFailure("negative cli unknown command", "bogus")
+	if !s.expectFailure(unknown, 2, "unknown command: bogus", "Usage:") {
+		return
+	}
+	if !s.expectNoStateStore("negative cli unknown command no state store") {
+		return
+	}
+	if !s.expectPathMissing("negative cli unknown command no workspace mutation", filepath.Join(s.h.workspace, "bogus")) {
+		return
+	}
+
+	invalidArgCount := s.expectedFailure("negative cli invalid hydrate arg count", "hydrate")
+	if !s.expectFailure(invalidArgCount, 2, "hydrate requires exactly one project", "codemesh hydrate <project>") {
+		return
+	}
+	if !s.expectNoStateStore("negative cli invalid arg count no state store") {
+		return
+	}
+
+	scan := s.command("negative cli scan fixtures", "scan", s.fixtures.Sources)
+	if scan.Status != "PASS" || !s.expectProjectRowCount("negative cli baseline state rows", 6) {
+		return
+	}
+
+	unknownProject := s.expectedFailure("negative cli unknown project", "status", "ghost-project")
+	if !s.expectFailure(unknownProject, 1, "unknown project: ghost-project") {
+		return
+	}
+	if !s.expectProjectRowCount("negative cli unknown project state unchanged", 6) {
+		return
+	}
+	if !s.expectPathMissing("negative cli unknown project no filesystem mutation", filepath.Join(s.fixtures.Sources, "ghost-project")) {
+		return
+	}
+
+	conflict, err := h.createClonedFixture(s.fixtures, "negative-hydrate-conflict", nil)
+	if err != nil {
+		h.record(result{Name: "negative cli hydrate conflict setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if conflict.Source, err = filepath.EvalSymlinks(conflict.Source); err != nil {
+		h.record(result{Name: "negative cli hydrate conflict canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if add := s.command("negative cli hydrate conflict add", "add", conflict.Source); add.Status != "PASS" {
+		return
+	}
+	if err := os.RemoveAll(conflict.Source); err != nil {
+		h.record(result{Name: "negative cli hydrate conflict remove source", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := os.MkdirAll(conflict.Source, 0o755); err != nil {
+		h.record(result{Name: "negative cli hydrate conflict dir setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	conflictMarker := filepath.Join(conflict.Source, "local.txt")
+	if err := os.WriteFile(conflictMarker, []byte("keep me\n"), 0o644); err != nil {
+		h.record(result{Name: "negative cli hydrate conflict marker setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+
+	hydrateConflict := s.expectedFailure("negative cli hydrate path conflict", "hydrate", conflict.Name)
+	if !s.expectFailure(hydrateConflict, 1, "hydrate project: path conflict", conflict.Source) {
+		return
+	}
+	if !s.expectProjectRowCount("negative cli hydrate conflict state unchanged", 7) {
+		return
+	}
+	if got, err := os.ReadFile(conflictMarker); err != nil || string(got) != "keep me\n" {
+		h.record(result{Name: "negative cli hydrate conflict marker unchanged", Status: "FAIL", Error: fmt.Sprintf("marker changed or missing: got %q err %v", got, err), ExitCode: -1})
+		return
+	}
+	h.record(result{Name: "negative cli hydrate conflict marker unchanged", Status: "PASS", ExitCode: 0})
 }
 
 func (h *harness) caseHydrationFixtureWorkflow() {
@@ -1477,6 +1560,41 @@ func (s *scenario) expectNoOutput(r result, fragments ...string) bool {
 			return false
 		}
 	}
+	return true
+}
+
+func (s *scenario) expectFailure(r result, exitCode int, stderrFragments ...string) bool {
+	if r.Status != "FAIL" {
+		r.Status = "FAIL"
+		r.Error = fmt.Sprintf("command exited %d, want failure exit %d", r.ExitCode, exitCode)
+		s.record(r)
+		return false
+	}
+	if r.ExitCode != exitCode {
+		r.Error = fmt.Sprintf("exit code = %d, want %d", r.ExitCode, exitCode)
+		s.record(r)
+		return false
+	}
+	for _, fragment := range stderrFragments {
+		if !strings.Contains(r.Stderr, fragment) {
+			r.Error = fmt.Sprintf("stderr did not include %q", fragment)
+			s.record(r)
+			return false
+		}
+	}
+	r.Status = "PASS"
+	r.Error = ""
+	s.record(r)
+	return true
+}
+
+func (s *scenario) expectNoStateStore(name string) bool {
+	dbPath := filepath.Join(s.codemeshHome, "codemesh.db")
+	if _, err := os.Stat(dbPath); !errors.Is(err, os.ErrNotExist) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("state store exists or stat failed: %v", err), ExitCode: -1})
+		return false
+	}
+	s.h.record(result{Name: name, Status: "PASS", ExitCode: 0})
 	return true
 }
 
