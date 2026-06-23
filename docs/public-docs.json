@@ -1,0 +1,20 @@
+{
+  "sections": [
+    {
+      "name": "Start",
+      "pages": ["index.md", "install.md", "quickstart.md"]
+    },
+    {
+      "name": "Use",
+      "pages": ["commands.md"]
+    },
+    {
+      "name": "Trust",
+      "pages": ["trust.md", "project-policy.md"]
+    },
+    {
+      "name": "Concepts",
+      "pages": ["state.md", "mvp.md", "e2e.md"]
+    }
+  ]
+}

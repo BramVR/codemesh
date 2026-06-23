@@ -1,6 +1,6 @@
 BIN ?= dist/codemesh
 
-.PHONY: test build e2e e2e-packaged docs\:list docs-list
+.PHONY: test build e2e e2e-packaged docs\:list docs-list docs-site docs-site-test docs-site-clean
 
 test:
 	go test ./...
@@ -26,3 +26,12 @@ docs-list:
 		echo "docs-list helper not found" >&2; \
 		exit 1; \
 	fi
+
+docs-site:
+	node scripts/build-docs-site.mjs
+
+docs-site-test:
+	node --test scripts/build-docs-site.test.mjs
+
+docs-site-clean:
+	rm -rf dist/docs-site
