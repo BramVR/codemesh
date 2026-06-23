@@ -101,6 +101,16 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
+	pathDiagnostics, err := evaluateSourcePath(project)
+	if err != nil {
+		return Result{}, err
+	}
+	if len(pathDiagnostics.Blockers) != 0 {
+		return Result{
+			Profile:     strings.TrimSpace(req.Profile),
+			Diagnostics: pathDiagnostics,
+		}, BlockedError{Diagnostics: pathDiagnostics}
+	}
 	base, err := p.resolveBase(project, req.Base)
 	if err != nil {
 		return Result{}, err
@@ -126,6 +136,12 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	if err := os.Mkdir(runDir, 0o700); err != nil {
 		return Result{}, fmt.Errorf("create agent run directory: %w", err)
 	}
+	runRecorded := false
+	defer func() {
+		if !runRecorded {
+			_ = os.RemoveAll(runDir)
+		}
+	}()
 
 	cloneURL := project.CloneURL
 	if cloneURL == "" {
@@ -169,6 +185,7 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	}); err != nil {
 		return Result{}, err
 	}
+	runRecorded = true
 
 	return Result{
 		RunID:       runID,
@@ -204,6 +221,28 @@ func (p Preparer) resolveBase(project state.Project, requestedBase string) (stri
 	return projectPolicy.BaseBranch, nil
 }
 
+func evaluateSourcePath(project state.Project) (Diagnostics, error) {
+	var diagnostics Diagnostics
+	info, err := os.Stat(project.LocalPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{
+				Code:    "missing-path",
+				Message: fmt.Sprintf("local path does not exist: %s", project.LocalPath),
+			})
+			return diagnostics, nil
+		}
+		return Diagnostics{}, fmt.Errorf("check project path %q: %w", project.LocalPath, err)
+	}
+	if !info.IsDir() {
+		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{
+			Code:    "path-not-directory",
+			Message: fmt.Sprintf("local path is not a directory: %s", project.LocalPath),
+		})
+	}
+	return diagnostics, nil
+}
+
 func (p Preparer) newID() string {
 	if p.NewID != nil {
 		return p.NewID()
@@ -224,22 +263,12 @@ func (p Preparer) now() time.Time {
 
 func evaluateForPrep(ctx context.Context, project state.Project, base string) (Diagnostics, error) {
 	var diagnostics Diagnostics
-	info, err := os.Stat(project.LocalPath)
+	pathDiagnostics, err := evaluateSourcePath(project)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{
-				Code:    "missing-path",
-				Message: fmt.Sprintf("local path does not exist: %s", project.LocalPath),
-			})
-			return diagnostics, nil
-		}
-		return Diagnostics{}, fmt.Errorf("check project path %q: %w", project.LocalPath, err)
+		return Diagnostics{}, err
 	}
-	if !info.IsDir() {
-		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{
-			Code:    "path-not-directory",
-			Message: fmt.Sprintf("local path is not a directory: %s", project.LocalPath),
-		})
+	if len(pathDiagnostics.Blockers) != 0 {
+		diagnostics.Blockers = append(diagnostics.Blockers, pathDiagnostics.Blockers...)
 		return diagnostics, nil
 	}
 
@@ -282,7 +311,7 @@ func evaluateForPrep(ctx context.Context, project state.Project, base string) (D
 			})
 			return diagnostics, nil
 		}
-		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{Code: "fetch-failed", Message: err.Error()})
+		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{Code: "fetch-failed", Message: redactedCloneOutput(err.Error(), strings.TrimSpace(remote))})
 		return diagnostics, nil
 	}
 	basePolicy, err := policyFromFetchedBase(ctx, project.LocalPath, base)

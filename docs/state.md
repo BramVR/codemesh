@@ -21,7 +21,7 @@ Layout:
   agents/
     <run-id>/
       workspace/
-      codemesh-run.json
+        codemesh-run.json
 ```
 
 `init` creates the home directory, `agents/`, and `codemesh.db`.

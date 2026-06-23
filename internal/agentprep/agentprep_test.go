@@ -84,6 +84,27 @@ func TestPrepareUsesPolicyBaseWhenRequestBaseUnset(t *testing.T) {
 	}
 }
 
+func TestPrepareReportsPathFileAsReadinessBlockerBeforePolicy(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-directory")
+	writeFile(t, path, "file\n")
+	project := state.Project{
+		Alias:            "path-file",
+		NormalizedRemote: "https://example.invalid/path-file",
+		CloneURL:         "https://example.invalid/path-file",
+		LocalPath:        path,
+	}
+	preparer := testPreparer(t.TempDir(), newMemoryStore(project))
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias})
+
+	if err == nil {
+		t.Fatal("Prepare error = nil, want blocker")
+	}
+	if !hasDiagnostic(result.Diagnostics.Blockers, "path-not-directory") {
+		t.Fatalf("blockers = %#v, want path-not-directory", result.Diagnostics.Blockers)
+	}
+}
+
 func TestPrepareStopsOnReadinessBlockerBeforeWorkspacePrep(t *testing.T) {
 	project := createFixtureProject(t, "blocked-env")
 	writeFile(t, filepath.Join(project.LocalPath, ".codemesh.yml"), "agent:\n  env:\n    mode: block\n    required_files:\n      - .env.local\n")
@@ -107,6 +128,22 @@ func TestPrepareStopsOnReadinessBlockerBeforeWorkspacePrep(t *testing.T) {
 	}
 	if len(store.runs) != 0 {
 		t.Fatalf("recorded runs = %d, want 0", len(store.runs))
+	}
+}
+
+func TestPrepareRemovesRunDirectoryWhenCloneFails(t *testing.T) {
+	project := createFixtureProject(t, "clone-fails")
+	project.CloneURL = "https://example.invalid/missing.git"
+	home := t.TempDir()
+	preparer := testPreparer(home, newMemoryStore(project))
+
+	_, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+
+	if err == nil {
+		t.Fatal("Prepare error = nil, want clone failure")
+	}
+	if _, statErr := os.Stat(filepath.Join(home, "agents", "run-test")); !os.IsNotExist(statErr) {
+		t.Fatalf("run dir exists after clone failure or stat failed: %v", statErr)
 	}
 }
 
