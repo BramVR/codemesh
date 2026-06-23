@@ -2,11 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/BramVR/codemesh/internal/state"
 )
 
 func TestHelpIdentifiesCodeMesh(t *testing.T) {
@@ -382,6 +386,110 @@ func TestAgentPreparePrintsReadyPathAndWritesRunMetadata(t *testing.T) {
 	}
 }
 
+func TestRunsListsPreparedAgentRuns(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "agent-listed")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	if code := run([]string{"agent", "prepare", "agent-listed", "--base", "main", "--profile", "codex"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("agent prepare exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"runs"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("runs exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"agent runs:", "project=agent-listed", "base=main", "profile=codex", "created=", "workspace="} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("runs output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestCleanDeletesOnlyOldManagedAgentRuns(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	agents := filepath.Join(home, "agents")
+	t.Setenv("CODEMESH_HOME", home)
+	now := time.Now().UTC()
+	oldRun := createRecordedAgentRun(t, home, "run-old", "old-project", now.Add(-8*24*time.Hour))
+	newRun := createRecordedAgentRun(t, home, "run-new", "new-project", now.Add(-2*24*time.Hour))
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"clean", "--older-than", "7d"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("clean exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "deleted: 1") || !strings.Contains(stdout.String(), "kept: 1") {
+		t.Fatalf("clean output missing counts:\n%s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(agents, oldRun)); !os.IsNotExist(err) {
+		t.Fatalf("old run dir exists or stat failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(agents, newRun, "workspace", "README.md")); err != nil {
+		t.Fatalf("new run workspace missing: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"runs"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("runs exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "old-project") || !strings.Contains(stdout.String(), "new-project") {
+		t.Fatalf("runs output did not reflect cleaned metadata:\n%s", stdout.String())
+	}
+}
+
+func TestCleanRefusesUnsafeAgentRunPath(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	t.Setenv("CODEMESH_HOME", home)
+	now := time.Now().UTC()
+	safeID := createRecordedAgentRun(t, home, "run-safe", "safe-project", now.Add(-8*24*time.Hour))
+	outside := filepath.Join(t.TempDir(), "outside-workspace")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recordAgentRun(t, home, state.AgentRun{
+		ID:            "run-unsafe",
+		WorkspacePath: outside,
+		MetadataJSON:  agentRunMetadata("run-unsafe", "unsafe-project", outside, now.Add(-8*24*time.Hour)),
+		CreatedAt:     now.Add(-8 * 24 * time.Hour),
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"clean", "--older-than", "7d"}, &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatalf("clean exit code = 0, want failure\nstdout:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "outside CodeMesh-managed agents storage") {
+		t.Fatalf("stderr missing unsafe refusal:\n%s", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, "agents", safeID, "workspace", "README.md")); err != nil {
+		t.Fatalf("safe run was deleted: %v", err)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside path changed: %v", err)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	runs, err := store.ListAgentRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("metadata rows = %d, want 2 after refusal", len(runs))
+	}
+}
+
 func TestAgentPrepareBlocksOnReadinessBlockers(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "codemesh-home")
 	source := createCommittedLocalRemoteClone(t, "agent-blocked")
@@ -494,6 +602,50 @@ func createCommittedLocalRemoteClone(t *testing.T, name string) string {
 	runGit(t, root, "clone", "--bare", seed, remote)
 	runGit(t, root, "clone", remote, source)
 	return source
+}
+
+func createRecordedAgentRun(t *testing.T, home, id, project string, createdAt time.Time) string {
+	t.Helper()
+	workspace := filepath.Join(home, "agents", id, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("# "+project+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recordAgentRun(t, home, state.AgentRun{
+		ID:            id,
+		WorkspacePath: workspace,
+		MetadataJSON:  agentRunMetadata(id, project, workspace, createdAt),
+		CreatedAt:     createdAt,
+	})
+	return id
+}
+
+func recordAgentRun(t *testing.T, home string, run state.AgentRun) {
+	t.Helper()
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAgentRun(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func agentRunMetadata(id, project, workspace string, createdAt time.Time) string {
+	return `{
+  "run_id": "` + id + `",
+  "ready_path": "` + workspace + `",
+  "project": {"alias": "` + project + `"},
+  "base": "main",
+  "profile": "codex",
+  "created_at": "` + createdAt.UTC().Format(time.RFC3339) + `"
+}`
 }
 
 func runGit(t *testing.T, dir string, args ...string) {

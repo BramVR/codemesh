@@ -293,6 +293,54 @@ func TestMigrateDoesNotKeepBackfillingCloneURLAfterMigration3(t *testing.T) {
 	}
 }
 
+func TestListAndDeleteAgentRuns(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	defer store.Close()
+	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
+
+	if err := store.RecordAgentRun(ctx, AgentRun{
+		ID:            "run-old",
+		ProjectID:     42,
+		WorkspacePath: "/tmp/codemesh/agents/run-old/workspace",
+		MetadataJSON:  `{"run_id":"run-old"}`,
+		CreatedAt:     now.Add(-8 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("RecordAgentRun old error = %v", err)
+	}
+	if err := store.RecordAgentRun(ctx, AgentRun{
+		ID:            "run-new",
+		ProjectID:     42,
+		WorkspacePath: "/tmp/codemesh/agents/run-new/workspace",
+		MetadataJSON:  `{"run_id":"run-new"}`,
+		CreatedAt:     now,
+	}); err != nil {
+		t.Fatalf("RecordAgentRun new error = %v", err)
+	}
+
+	runs, err := store.ListAgentRuns(ctx)
+	if err != nil {
+		t.Fatalf("ListAgentRuns error = %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("run count = %d, want 2", len(runs))
+	}
+	if runs[0].ID != "run-new" || runs[1].ID != "run-old" {
+		t.Fatalf("runs order = %#v, want newest first", runs)
+	}
+
+	if err := store.DeleteAgentRuns(ctx, []string{"run-old"}); err != nil {
+		t.Fatalf("DeleteAgentRuns error = %v", err)
+	}
+	runs, err = store.ListAgentRuns(ctx)
+	if err != nil {
+		t.Fatalf("ListAgentRuns after delete error = %v", err)
+	}
+	if len(runs) != 1 || runs[0].ID != "run-new" {
+		t.Fatalf("remaining runs = %#v, want run-new only", runs)
+	}
+}
+
 func TestCloneURLForStoreStripsURLPasswords(t *testing.T) {
 	got := cloneURLForStore("ssh://git:secret@example.invalid/org/repo.git", "")
 

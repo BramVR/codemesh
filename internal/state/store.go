@@ -533,6 +533,60 @@ values(?, ?, ?, ?, ?)
 	return nil
 }
 
+func (s *SQLiteStore) ListAgentRuns(ctx context.Context) ([]AgentRun, error) {
+	rows, err := s.db.QueryContext(ctx, `
+select id, project_id, workspace_path, metadata_json, created_at
+from agent_runs
+order by created_at desc, id desc
+`)
+	if err != nil {
+		return nil, fmt.Errorf("list agent runs: %w", err)
+	}
+	defer rows.Close()
+
+	var runs []AgentRun
+	for rows.Next() {
+		var run AgentRun
+		var createdAt string
+		if err := rows.Scan(&run.ID, &run.ProjectID, &run.WorkspacePath, &run.MetadataJSON, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan agent run: %w", err)
+		}
+		parsed, err := time.Parse(time.RFC3339, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse agent run %q created_at: %w", run.ID, err)
+		}
+		run.CreatedAt = parsed
+		runs = append(runs, run)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate agent runs: %w", err)
+	}
+	return runs, nil
+}
+
+func (s *SQLiteStore) DeleteAgentRuns(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin agent run delete: %w", err)
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		if strings.TrimSpace(id) == "" {
+			return errors.New("agent run id is required")
+		}
+		if _, err := tx.ExecContext(ctx, `delete from agent_runs where id = ?`, id); err != nil {
+			return fmt.Errorf("delete agent run %q: %w", id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit agent run delete: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
