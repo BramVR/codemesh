@@ -211,6 +211,7 @@ func (h *harness) run() int {
 	h.caseOfflineGitFixtureSmoke()
 	h.caseProjectRegistryScanWorkflow()
 	h.caseProjectRegistryFixtureWorkflow()
+	h.caseProjectRegistryAliasPathStateWorkflow()
 	h.caseReadinessStatusFixtureWorkflow()
 	h.caseHydrationFixtureWorkflow()
 	h.caseAgentPrepFixtureWorkflow()
@@ -250,6 +251,9 @@ func (h *harness) caseProjectRegistryScanWorkflow() {
 	if rerun.Status != "PASS" || !s.expectOutput(rerun, "unchanged: clean-repo") {
 		return
 	}
+	if !s.expectProjectRowCount("project registry scan idempotent state rows", 6) {
+		return
+	}
 
 	tree := s.command("project registry tree scanned fixtures", "tree")
 	clean := fixtures.Project("clean-repo")
@@ -273,12 +277,143 @@ func (h *harness) caseProjectRegistryFixtureWorkflow() {
 		h.record(result{Name: "project registry fixture workflow", Status: "FAIL", Error: "clean-repo fixture missing", ExitCode: -1})
 		return
 	}
+	projectSource, err := filepath.EvalSymlinks(project.Source)
+	if err != nil {
+		h.record(result{Name: "project registry fixture source canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
 	add := s.command("project registry add clean repo", "add", project.Source)
 	if add.Status != "PASS" {
 		return
 	}
+	if !s.expectProjectRows("project registry add state row", projectRow{
+		Alias:            "clean-repo",
+		NormalizedRemote: filepath.Clean(project.Remote),
+		CloneURL:         project.Remote,
+		LocalPath:        projectSource,
+	}) {
+		return
+	}
+	duplicateAdd := s.expectedFailure("project registry add clean repo rerun", "add", project.Source)
+	if duplicateAdd.Status != "FAIL" {
+		duplicateAdd.Status = "FAIL"
+		duplicateAdd.Error = "duplicate add unexpectedly passed"
+	} else if !strings.Contains(duplicateAdd.Stderr, "already exists") || !strings.Contains(duplicateAdd.Stderr, "clean-repo") {
+		duplicateAdd.Error = "duplicate add did not report existing project identity"
+	} else {
+		duplicateAdd.Status = "PASS"
+		duplicateAdd.Error = ""
+	}
+	s.record(duplicateAdd)
+	if duplicateAdd.Status != "PASS" || !s.expectProjectRowCount("project registry add idempotent state rows", 1) {
+		return
+	}
 	tree := s.command("project registry tree", "tree")
-	s.expectOutput(tree, "clean-repo", "present", project.Source)
+	s.expectOutput(tree, "clean-repo", "present", projectSource)
+}
+
+func (h *harness) caseProjectRegistryAliasPathStateWorkflow() {
+	s, err := h.newScenario("project registry alias path state")
+	if err != nil {
+		h.record(result{Name: "project registry alias path state workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	alpha, err := h.createRemoteOnlyFixture(s.fixtures, "alias-alpha", nil)
+	if err != nil {
+		h.record(result{Name: "project registry alias alpha setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	beta, err := h.createRemoteOnlyFixture(s.fixtures, "alias-beta", nil)
+	if err != nil {
+		h.record(result{Name: "project registry alias beta setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	aliasRoot := filepath.Join(s.fixtures.Sources, "aliases")
+	alphaPath := filepath.Join(aliasRoot, "a", "shared")
+	betaPath := filepath.Join(aliasRoot, "b", "shared")
+	if err := h.cloneFixtureRemote(alpha, alphaPath); err != nil {
+		h.record(result{Name: "project registry alias alpha clone", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	alphaPath, err = filepath.EvalSymlinks(alphaPath)
+	if err != nil {
+		h.record(result{Name: "project registry alias alpha canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := h.cloneFixtureRemote(beta, betaPath); err != nil {
+		h.record(result{Name: "project registry alias beta clone", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	betaPath, err = filepath.EvalSymlinks(betaPath)
+	if err != nil {
+		h.record(result{Name: "project registry alias beta canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+
+	scan := s.command("project registry duplicate alias scan", "scan", aliasRoot)
+	if scan.Status != "PASS" || !s.expectOutput(scan, "added: shared "+alphaPath, "added: shared-2 "+betaPath) {
+		return
+	}
+	if !s.expectProjectRows("project registry duplicate alias state rows",
+		projectRow{Alias: "shared", NormalizedRemote: filepath.Clean(alpha.Remote), CloneURL: alpha.Remote, LocalPath: alphaPath},
+		projectRow{Alias: "shared-2", NormalizedRemote: filepath.Clean(beta.Remote), CloneURL: beta.Remote, LocalPath: betaPath},
+	) {
+		return
+	}
+
+	rerun := s.command("project registry duplicate alias scan rerun", "scan", aliasRoot)
+	if rerun.Status != "PASS" || !s.expectOutput(rerun, "unchanged: shared "+alphaPath, "unchanged: shared-2 "+betaPath) {
+		return
+	}
+	if !s.expectProjectRows("project registry duplicate alias deterministic state rows",
+		projectRow{Alias: "shared", NormalizedRemote: filepath.Clean(alpha.Remote), CloneURL: alpha.Remote, LocalPath: alphaPath},
+		projectRow{Alias: "shared-2", NormalizedRemote: filepath.Clean(beta.Remote), CloneURL: beta.Remote, LocalPath: betaPath},
+	) {
+		return
+	}
+
+	movedAlphaPath := filepath.Join(aliasRoot, "c", "shared-moved")
+	if err := os.RemoveAll(alphaPath); err != nil {
+		h.record(result{Name: "project registry alias remove old path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := h.cloneFixtureRemote(alpha, movedAlphaPath); err != nil {
+		h.record(result{Name: "project registry alias moved clone", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	movedAlphaPath, err = filepath.EvalSymlinks(movedAlphaPath)
+	if err != nil {
+		h.record(result{Name: "project registry alias moved canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	update := s.command("project registry known remote moved path scan", "scan", aliasRoot)
+	if update.Status != "PASS" || !s.expectOutput(update, "updated: shared "+movedAlphaPath, "unchanged: shared-2 "+betaPath) {
+		return
+	}
+	if !s.expectProjectRows("project registry moved path state rows",
+		projectRow{Alias: "shared", NormalizedRemote: filepath.Clean(alpha.Remote), CloneURL: alpha.Remote, LocalPath: movedAlphaPath},
+		projectRow{Alias: "shared-2", NormalizedRemote: filepath.Clean(beta.Remote), CloneURL: beta.Remote, LocalPath: betaPath},
+	) {
+		return
+	}
+
+	if err := os.RemoveAll(betaPath); err != nil {
+		h.record(result{Name: "project registry alias remove present path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	tree := s.command("project registry derived missing tree", "tree")
+	if tree.Status != "PASS" || !s.expectOutput(tree, "shared present "+movedAlphaPath, "shared-2 missing "+betaPath) {
+		return
+	}
+	if !s.expectProjectRows("project registry missing path metadata unchanged",
+		projectRow{Alias: "shared", NormalizedRemote: filepath.Clean(alpha.Remote), CloneURL: alpha.Remote, LocalPath: movedAlphaPath},
+		projectRow{Alias: "shared-2", NormalizedRemote: filepath.Clean(beta.Remote), CloneURL: beta.Remote, LocalPath: betaPath},
+	) {
+		return
+	}
+	if !s.expectProjectSchemaNoPresenceColumns("project registry presence derived state schema") {
+		return
+	}
 }
 
 func (h *harness) caseReadinessStatusFixtureWorkflow() {
@@ -1210,6 +1345,16 @@ func (h *harness) createRemoteOnlyFixture(fixtures offlineGitFixtures, name stri
 	return project, nil
 }
 
+func (h *harness) cloneFixtureRemote(project gitFixtureProject, target string) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	if _, _, err := h.exec(filepath.Dir(target), "git", "clone", project.Remote, target); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (h *harness) expectGitStatus(dir, want string) error {
 	got, err := h.gitStatus(dir)
 	if err != nil {
@@ -1437,6 +1582,77 @@ func (s *scenario) expectAgentRunMetadata(name, readyPath, projectAlias, base, p
 	return true
 }
 
+func (s *scenario) expectProjectRowCount(name string, want int) bool {
+	projects, err := readProjectRowsFromStore(filepath.Join(s.codemeshHome, "codemesh.db"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if len(projects) != want {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row count = %d, want %d", len(projects), want), ExitCode: -1})
+		return false
+	}
+	return s.expectProjectRowsAreIsolated(name+" isolation", projects)
+}
+
+func (s *scenario) expectProjectRows(name string, want ...projectRow) bool {
+	got, err := readProjectRowsFromStore(filepath.Join(s.codemeshHome, "codemesh.db"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if len(got) != len(want) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project rows = %#v, want %#v", got, want), ExitCode: -1})
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row %d = %#v, want %#v", i, got[i], want[i]), ExitCode: -1})
+			return false
+		}
+	}
+	return s.expectProjectRowsAreIsolated(name+" isolation", got)
+}
+
+func (s *scenario) expectProjectRowsAreIsolated(name string, rows []projectRow) bool {
+	for _, row := range rows {
+		if strings.Contains(row.NormalizedRemote, "github.com") || strings.Contains(row.CloneURL, "github.com") {
+			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row reached GitHub: %#v", row), ExitCode: -1})
+			return false
+		}
+		for label, path := range map[string]string{
+			"normalized_remote": row.NormalizedRemote,
+			"clone_url":         row.CloneURL,
+			"local_path":        row.LocalPath,
+		} {
+			inside, err := pathInside(s.h.tmp, path)
+			if err != nil {
+				s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("check %s %q: %v", label, path, err), ExitCode: -1})
+				return false
+			}
+			if !inside {
+				s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("%s outside harness temp dir: %s", label, path), ExitCode: -1})
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (s *scenario) expectProjectSchemaNoPresenceColumns(name string) bool {
+	columns, err := projectColumns(filepath.Join(s.codemeshHome, "codemesh.db"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	want := []string{"id", "alias", "normalized_remote", "local_path", "created_at", "updated_at", "clone_url"}
+	if !stringSlicesEqual(columns, want) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("projects columns = %v, want metadata-only schema %v", columns, want), ExitCode: -1})
+		return false
+	}
+	return true
+}
+
 type agentMetadata struct {
 	Raw       string
 	RunID     string `json:"run_id"`
@@ -1446,6 +1662,13 @@ type agentMetadata struct {
 	} `json:"project"`
 	Base    string `json:"base"`
 	Profile string `json:"profile"`
+}
+
+type projectRow struct {
+	Alias            string
+	NormalizedRemote string
+	CloneURL         string
+	LocalPath        string
 }
 
 func readAgentMetadata(path string) (agentMetadata, error) {
@@ -1477,6 +1700,72 @@ func readAgentRunMetadataFromStore(dbPath, runID string) (agentMetadata, error) 
 	}
 	metadata.Raw = metadataJSON
 	return metadata, nil
+}
+
+func readProjectRowsFromStore(dbPath string) ([]projectRow, error) {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	rows, err := db.Query(`select alias, normalized_remote, clone_url, local_path from projects order by alias`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var projects []projectRow
+	for rows.Next() {
+		var project projectRow
+		if err := rows.Scan(&project.Alias, &project.NormalizedRemote, &project.CloneURL, &project.LocalPath); err != nil {
+			return nil, err
+		}
+		projects = append(projects, project)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return projects, nil
+}
+
+func projectColumns(dbPath string) ([]string, error) {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	rows, err := db.Query(`pragma table_info(projects)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &primaryKey); err != nil {
+			return nil, err
+		}
+		columns = append(columns, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return columns, nil
+}
+
+func stringSlicesEqual(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *scenario) failCommandAssertion(r result, message string) {
@@ -1586,19 +1875,40 @@ func ensureExecutable(path string) error {
 }
 
 func pathInside(parent, child string) (bool, error) {
-	parentAbs, err := filepath.Abs(parent)
+	parentPath, err := canonicalPathForInside(parent)
 	if err != nil {
 		return false, err
 	}
-	childAbs, err := filepath.Abs(child)
+	childPath, err := canonicalPathForInside(child)
 	if err != nil {
 		return false, err
 	}
-	rel, err := filepath.Rel(parentAbs, childAbs)
+	rel, err := filepath.Rel(parentPath, childPath)
 	if err != nil {
 		return false, err
 	}
 	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."), nil
+}
+
+func canonicalPathForInside(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if realPath, err := filepath.EvalSymlinks(abs); err == nil {
+		return realPath, nil
+	}
+	var suffix []string
+	for current := abs; ; current = filepath.Dir(current) {
+		parent := filepath.Dir(current)
+		if parent == current {
+			return abs, nil
+		}
+		suffix = append([]string{filepath.Base(current)}, suffix...)
+		if realParent, err := filepath.EvalSymlinks(parent); err == nil {
+			return filepath.Join(append([]string{realParent}, suffix...)...), nil
+		}
+	}
 }
 
 func reportPath(root string) string {

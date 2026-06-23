@@ -95,7 +95,7 @@ Offline Git fixtures cover:
 - missing required env in warn and block modes using fake fixture names such as `CODEMESH_E2E_REQUIRED_ENV`.
 - present env requirements using fake env values and fake env file contents that must not appear in public artifacts or state.
 
-Project Registry e2e coverage runs `codemesh scan` against the fixture source workspace, reruns scan to prove idempotent unchanged reporting, and verifies `codemesh tree` shows scanned projects with normalized local states and paths.
+Project Registry e2e coverage runs `codemesh scan` and `codemesh add` against local fixture workspaces, reruns them to prove no duplicate rows, verifies deterministic discovered aliases, verifies known-remote path updates, and checks State store rows for normalized remote, clone URL, alias, desired local path, temp-only isolation, and derived missing/present behavior.
 
 Readiness e2e coverage runs `codemesh tree` and `codemesh status` against the same local Git fixtures. It verifies clean present, missing, dirty warning, missing base blocker, fetch failure stale blocker, invalid Project policy blocker, Env readiness warn/block behavior, and tree/status agreement on normalized states for projects both commands report.
 
