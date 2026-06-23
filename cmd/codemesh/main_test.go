@@ -61,6 +61,60 @@ func TestCommandCatalogMatchesTopLevelHelp(t *testing.T) {
 	}
 }
 
+func TestCommandReferencePagesMatchCatalog(t *testing.T) {
+	refs := catalogCommandReferences(t)
+	if len(refs) == 0 {
+		t.Fatal("docs/commands.md did not link command reference pages")
+	}
+
+	expectedPaths := map[string]string{}
+	for _, ref := range refs {
+		expectedPaths[ref.path] = ref.command
+		rawBytes, err := os.ReadFile(filepath.Join("..", "..", "docs", ref.path))
+		if err != nil {
+			t.Fatalf("read command reference %s: %v", ref.path, err)
+		}
+		raw := string(rawBytes)
+		for _, want := range []string{
+			"# " + commandHeading(ref.command),
+			"## Syntax",
+			"```sh\n" + ref.command + "\n```",
+			"## Purpose",
+			"## Safe Example",
+			"CODEMESH_HOME",
+			"## Current Limitations",
+			"[Command Catalog](../commands.md)",
+		} {
+			if !strings.Contains(raw, want) {
+				t.Fatalf("%s missing %q", ref.path, want)
+			}
+		}
+		for _, unsafe := range []string{"/Users/bram", "~/Projects", "~/.codemesh", "GITHUB_TOKEN", "GH_TOKEN", "TOKEN=", "git@github.com", "https://github.com"} {
+			if strings.Contains(raw, unsafe) {
+				t.Fatalf("%s contains unsafe public example text %q", ref.path, unsafe)
+			}
+		}
+	}
+
+	files, err := filepath.Glob(filepath.Join("..", "..", "docs", "commands", "*.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != len(expectedPaths) {
+		t.Fatalf("command reference page count = %d, want %d", len(files), len(expectedPaths))
+	}
+	for _, file := range files {
+		rel, err := filepath.Rel(filepath.Join("..", "..", "docs"), file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rel = filepath.ToSlash(rel)
+		if _, ok := expectedPaths[rel]; !ok {
+			t.Fatalf("unlisted command reference page: %s", rel)
+		}
+	}
+}
+
 func TestInitCreatesLocalState(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "codemesh-home")
 	workspace := filepath.Join(t.TempDir(), "workspace")
@@ -601,20 +655,39 @@ func commandUsageLines(help string) []string {
 
 func catalogCurrentCommands(t *testing.T) []string {
 	t.Helper()
+	refs := catalogCommandReferences(t)
+	commands := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		commands = append(commands, ref.command)
+	}
+	return commands
+}
+
+type commandReference struct {
+	command string
+	path    string
+}
+
+func commandHeading(command string) string {
+	return regexp.MustCompile(`\s+(?:\[|<).*$`).ReplaceAllString(command, "")
+}
+
+func catalogCommandReferences(t *testing.T) []commandReference {
+	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "commands.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	re := regexp.MustCompile(`(?m)^- ` + "`" + `(codemesh [^` + "`" + `]+)` + "`")
+	re := regexp.MustCompile(`(?m)^- \[` + "`" + `(codemesh .*)` + "`" + `\]\((commands/[a-z0-9-]+\.md)\)$`)
 	matches := re.FindAllStringSubmatch(string(raw), -1)
 	if len(matches) == 0 {
-		t.Fatalf("docs/commands.md did not list current commands")
+		t.Fatalf("docs/commands.md did not link current command references")
 	}
-	commands := make([]string, 0, len(matches))
+	refs := make([]commandReference, 0, len(matches))
 	for _, match := range matches {
-		commands = append(commands, match[1])
+		refs = append(refs, commandReference{command: match[1], path: match[2]})
 	}
-	return commands
+	return refs
 }
 
 func createGitRepo(t *testing.T, remote string) string {
