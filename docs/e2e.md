@@ -46,6 +46,28 @@ CodeMesh follows a bslog-inspired layering model:
 
 The current CodeMesh e2e layer sits in the middle. It builds or receives a CLI binary, isolates `CODEMESH_HOME`, `HOME`, Git config, and workspace paths, then creates local Git remotes and clones under the e2e temp directory. These fixtures cover Project Registry, Readiness, Hydration, Agent Prep, run listing, and guarded cleanup without GitHub, secrets, or user workspace state.
 
+## Scenario Shape
+
+Domain cases should use the scenario helpers in `test/e2e/main.go` instead of open-coding command setup.
+
+Start each domain workflow with:
+
+```go
+s, err := h.newScenario("readiness status")
+```
+
+A scenario owns:
+
+- a case-specific `CODEMESH_HOME` under the harness temp directory.
+- the shared isolated `HOME`, empty Git config, temp workspace, and command runner.
+- offline local Git fixtures created under the harness temp directory.
+- command helpers that run the real `codemesh` binary with isolated env.
+- assertion helpers for common output and durable path checks.
+
+Use `s.command(...)` for commands that should exit successfully. Use `s.expectedFailure(...)` when a non-zero CLI exit is the expected user-visible behavior, then convert the result to `PASS` only after checking stderr/stdout. Use `s.expectOutput` and `s.expectNoOutput` for stdout assertions, and `s.expectPathExists` / `s.expectPathMissing` for durable filesystem effects.
+
+Keep new cases vertical: arrange fixtures, run one real CLI command, assert user-visible output, then assert the durable filesystem or state effect. Avoid reading secrets, using host project paths, calling GitHub, or weakening the isolated `CODEMESH_HOME`, `HOME`, `GIT_CONFIG_GLOBAL`, local remotes, and temp workspace boundaries.
+
 Offline Git fixtures cover:
 
 - clean source checkout backed by a local bare remote.
