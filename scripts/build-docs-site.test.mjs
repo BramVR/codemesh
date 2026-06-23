@@ -144,6 +144,54 @@ test("docs-site fails when the public manifest references a missing page", () =>
   }
 });
 
+test("docs-site rejects symlinked markdown and asset sources", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codemesh-docs-site-symlink-source-"));
+  const outDir = path.join(tempRoot, "dist", "docs-site");
+  fs.cpSync(path.join(root, "docs"), path.join(tempRoot, "docs"), { recursive: true });
+  fs.mkdirSync(path.join(tempRoot, "docs", "research"), { recursive: true });
+  fs.writeFileSync(path.join(tempRoot, "docs", "research", "internal.md"), "# Internal\n", "utf8");
+
+  try {
+    fs.rmSync(path.join(tempRoot, "docs", "index.md"));
+    fs.symlinkSync(path.join(tempRoot, "docs", "research", "internal.md"), path.join(tempRoot, "docs", "index.md"));
+    assert.throws(
+      () =>
+        execFileSync("node", [path.join(root, "scripts", "build-docs-site.mjs")], {
+          cwd: root,
+          env: {
+            ...process.env,
+            CODEMESH_DOCS_SITE_ROOT: tempRoot,
+            CODEMESH_DOCS_SITE_OUT: outDir,
+          },
+          encoding: "utf8",
+          stdio: "pipe",
+        }),
+      /unsafe docs-site markdown symlink/,
+    );
+
+    fs.rmSync(path.join(tempRoot, "docs", "index.md"));
+    fs.copyFileSync(path.join(root, "docs", "index.md"), path.join(tempRoot, "docs", "index.md"));
+    fs.rmSync(path.join(tempRoot, "docs", "assets", "codemesh-hero.svg"));
+    fs.symlinkSync(path.join(tempRoot, "docs", "research", "internal.md"), path.join(tempRoot, "docs", "assets", "codemesh-hero.svg"));
+    assert.throws(
+      () =>
+        execFileSync("node", [path.join(root, "scripts", "build-docs-site.mjs")], {
+          cwd: root,
+          env: {
+            ...process.env,
+            CODEMESH_DOCS_SITE_ROOT: tempRoot,
+            CODEMESH_DOCS_SITE_OUT: outDir,
+          },
+          encoding: "utf8",
+          stdio: "pipe",
+        }),
+      /unsafe docs-site asset source is not a regular file/,
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("docs-site refuses output paths outside the build root or inside docs", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codemesh-docs-site-safe-out-"));
   fs.cpSync(path.join(root, "docs"), path.join(tempRoot, "docs"), { recursive: true });

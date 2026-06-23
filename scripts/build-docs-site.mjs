@@ -91,6 +91,7 @@ function assertNoSymlinkedExistingParents(targetDir) {
 function copyAsset(name) {
   const source = path.join(docsDir, "assets", name);
   if (!fs.existsSync(source)) throw new Error(`missing docs-site asset: ${path.relative(root, source)}`);
+  assertPublicSourceFile(source, path.join(docsDir, "assets"), "asset");
   const target = path.join(outDir, "assets", name);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.copyFileSync(source, target);
@@ -180,10 +181,31 @@ function allMarkdown(dir) {
     .readdirSync(dir, { withFileTypes: true })
     .flatMap((entry) => {
       const full = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        if (entry.name.endsWith(".md")) {
+          throw new Error(`unsafe docs-site markdown symlink: ${path.relative(root, full)}`);
+        }
+        return [];
+      }
       if (entry.isDirectory()) return allMarkdown(full);
-      return entry.name.endsWith(".md") ? [full] : [];
+      if (!entry.name.endsWith(".md")) return [];
+      assertPublicSourceFile(full, docsDir, "markdown");
+      return [full];
     })
     .sort();
+}
+
+function assertPublicSourceFile(file, baseDir, kind) {
+  const stat = fs.lstatSync(file);
+  if (!stat.isFile()) {
+    throw new Error(`unsafe docs-site ${kind} source is not a regular file: ${path.relative(root, file)}`);
+  }
+  const baseReal = fs.realpathSync(baseDir);
+  const fileReal = fs.realpathSync(file);
+  const relative = path.relative(baseReal, fileReal);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`unsafe docs-site ${kind} source outside public tree: ${path.relative(root, file)}`);
+  }
 }
 
 function outPath(rel, frontmatter = {}) {
