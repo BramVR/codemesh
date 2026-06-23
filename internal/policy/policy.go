@@ -72,13 +72,16 @@ func Resolve(root string) (Policy, error) {
 		return Policy{}, fmt.Errorf("read %s: %w", path, err)
 	}
 
+	return ParseBytes(path, data)
+}
+
+func ParseBytes(path string, data []byte) (Policy, error) {
 	var raw policyFile
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&raw); err != nil {
 		return Policy{}, fmt.Errorf("invalid %s: parse YAML: %w", path, err)
 	}
-
 	p := Defaults()
 	if base := strings.TrimSpace(raw.Agent.Base); base != "" {
 		if err := validateBaseBranch(path, base); err != nil {

@@ -174,7 +174,7 @@ func (h *harness) run() int {
 	h.caseProjectRegistryFixtureWorkflow()
 	h.caseReadinessStatusFixtureWorkflow()
 	h.caseHydrationFixtureWorkflow()
-	h.skip("agent prep fixture workflow", "pending agent prep command; offline fixtures ready")
+	h.caseAgentPrepFixtureWorkflow()
 	h.skip("live network checks", "out of scope for MVP e2e; offline local Git fixtures cover current layer")
 
 	if err := h.writeReport(); err != nil {
@@ -462,6 +462,89 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 	h.record(status)
 }
 
+func (h *harness) caseAgentPrepFixtureWorkflow() {
+	fixtures, err := h.createOfflineGitFixtures()
+	if err != nil {
+		h.record(result{Name: "agent prep fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	prepHome := filepath.Join(h.tmp, "codemesh-agent-prep-home")
+	env := []string{"CODEMESH_HOME=" + prepHome}
+	scan := h.executeCommand(commandSpec{
+		Label:   "agent prep scan fixtures",
+		Name:    h.bin,
+		Args:    []string{"scan", fixtures.Sources},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	h.record(scan)
+	if scan.Status != "PASS" {
+		return
+	}
+
+	prepare := h.executeCommand(commandSpec{
+		Label:   "agent prep clean fixture",
+		Name:    h.bin,
+		Args:    []string{"agent", "prepare", "clean-repo", "--base", "main", "--profile", "codex"},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	readyPath := valueAfterPrefix(prepare.Stdout, "ready_path: ")
+	if prepare.Status == "PASS" {
+		if readyPath == "" {
+			prepare.Status = "FAIL"
+			prepare.Error = "agent prepare output did not include ready_path"
+		} else if !strings.HasPrefix(readyPath, filepath.Join(prepHome, "agents")+string(filepath.Separator)) {
+			prepare.Status = "FAIL"
+			prepare.Error = "ready path was not under CodeMesh-managed agents storage"
+		} else if _, err := os.Stat(filepath.Join(readyPath, "README.md")); err != nil {
+			prepare.Status = "FAIL"
+			prepare.Error = fmt.Sprintf("ready checkout missing README: %v", err)
+		} else if _, err := os.Stat(filepath.Join(readyPath, "codemesh-run.json")); err != nil {
+			prepare.Status = "FAIL"
+			prepare.Error = fmt.Sprintf("ready metadata missing: %v", err)
+		}
+	}
+	h.record(prepare)
+	if prepare.Status != "PASS" {
+		return
+	}
+
+	dirty := h.executeCommand(commandSpec{
+		Label:   "agent prep dirty source warning",
+		Name:    h.bin,
+		Args:    []string{"agent", "prepare", "dirty-source", "--base", "main"},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if dirty.Status == "PASS" && (!strings.Contains(dirty.Stdout, "warning: dirty-checkout") || valueAfterPrefix(dirty.Stdout, "ready_path: ") == "") {
+		dirty.Status = "FAIL"
+		dirty.Error = "dirty source prep did not warn and still print ready path"
+	}
+	h.record(dirty)
+	if dirty.Status != "PASS" {
+		return
+	}
+
+	envBlocked := h.executeCommand(commandSpec{
+		Label:   "agent prep env blocker",
+		Name:    h.bin,
+		Args:    []string{"agent", "prepare", "required-env-missing"},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if envBlocked.Status != "FAIL" {
+		envBlocked.Status = "FAIL"
+		envBlocked.Error = "env-blocked prep unexpectedly passed"
+	} else if !strings.Contains(envBlocked.Stderr, "blocker: missing-env-file") || !strings.Contains(envBlocked.Stderr, "blocker: missing-env-key") || strings.Contains(envBlocked.Stderr, "=") {
+		envBlocked.Error = "env-blocked prep did not report missing env blockers without values"
+	} else {
+		envBlocked.Status = "PASS"
+		envBlocked.Error = ""
+	}
+	h.record(envBlocked)
+}
+
 func (h *harness) buildBinary() bool {
 	r := h.runCommand(commandSpec{
 		Label:      "build codemesh",
@@ -739,6 +822,15 @@ func (f offlineGitFixtures) Project(name string) *gitFixtureProject {
 		}
 	}
 	return nil
+}
+
+func valueAfterPrefix(output, prefix string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
 }
 
 func (h *harness) createOfflineGitFixtures() (offlineGitFixtures, error) {

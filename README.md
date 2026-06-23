@@ -43,7 +43,7 @@ The CLI e2e harness is documented in [docs/e2e.md](docs/e2e.md).
 
 ## Status
 
-Scaffold plus local state bootstrap, Project Registry tracer bullets, Readiness status reporting, and explicit missing-project hydration. The CLI supports help/version smoke behavior, `codemesh init [workspace-root]`, `codemesh add <path> [--alias name]`, `codemesh scan [workspace-root]`, `codemesh tree`, `codemesh status [project] [--base branch]`, and `codemesh hydrate <project>`.
+Scaffold plus local state bootstrap, Project Registry tracer bullets, Readiness status reporting, explicit missing-project hydration, and first Agent Prep flow. The CLI supports help/version smoke behavior, `codemesh init [workspace-root]`, `codemesh add <path> [--alias name]`, `codemesh scan [workspace-root]`, `codemesh tree`, `codemesh status [project] [--base branch]`, `codemesh hydrate <project>`, and `codemesh agent prepare <project> [--base branch] [--profile name]`.
 
 ## Research
 

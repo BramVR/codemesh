@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInitializeCreatesHomeDatabaseAgentsAndWorkspaceSetting(t *testing.T) {
@@ -327,6 +328,44 @@ func TestAddProjectPersistsProject(t *testing.T) {
 	}
 	if projects[0].Alias != "codemesh" || projects[0].NormalizedRemote != "https://github.com/BramVR/codemesh" || projects[0].CloneURL != "git@github.com:BramVR/codemesh.git" || projects[0].LocalPath != "/tmp/codemesh" {
 		t.Fatalf("project = %#v", projects[0])
+	}
+}
+
+func TestRecordAgentRunPersistsMetadata(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	defer store.Close()
+
+	project, err := store.AddProject(ctx, Project{
+		Alias:            "codemesh",
+		NormalizedRemote: "https://github.com/BramVR/codemesh",
+		LocalPath:        "/tmp/codemesh",
+	})
+	if err != nil {
+		t.Fatalf("AddProject error = %v", err)
+	}
+	createdAt := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
+	if err := store.RecordAgentRun(ctx, AgentRun{
+		ID:            "run-test",
+		ProjectID:     project.ID,
+		WorkspacePath: "/tmp/codemesh-agent",
+		MetadataJSON:  `{"ready_path":"/tmp/codemesh-agent"}`,
+		CreatedAt:     createdAt,
+	}); err != nil {
+		t.Fatalf("RecordAgentRun error = %v", err)
+	}
+
+	var workspacePath, metadataJSON, storedCreatedAt string
+	var projectID int64
+	if err := store.db.QueryRowContext(ctx, `
+select project_id, workspace_path, metadata_json, created_at
+from agent_runs
+where id = ?
+`, "run-test").Scan(&projectID, &workspacePath, &metadataJSON, &storedCreatedAt); err != nil {
+		t.Fatalf("read agent run: %v", err)
+	}
+	if projectID != project.ID || workspacePath != "/tmp/codemesh-agent" || metadataJSON != `{"ready_path":"/tmp/codemesh-agent"}` || storedCreatedAt != createdAt.Format(time.RFC3339) {
+		t.Fatalf("agent run row = projectID %d workspace %q metadata %q created %q", projectID, workspacePath, metadataJSON, storedCreatedAt)
 	}
 }
 

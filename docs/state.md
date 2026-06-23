@@ -19,6 +19,9 @@ Layout:
 <codemesh-home>/
   codemesh.db
   agents/
+    <run-id>/
+      workspace/
+      codemesh-run.json
 ```
 
 `init` creates the home directory, `agents/`, and `codemesh.db`.
@@ -34,7 +37,7 @@ Initial tables:
 - `projects`: Project Registry rows.
 - `machines`: future machine facts.
 - `scans`: future local discovery runs.
-- `agent_runs`: future agent workspace audit rows.
+- `agent_runs`: prepared agent workspace audit rows.
 
 Migrations are idempotent. Re-running `init` must not duplicate migrations or remove existing settings.
 
@@ -104,6 +107,29 @@ Checks:
 - required env keys: `os.LookupEnv` presence only.
 
 CodeMesh never opens env files, reads env variable values, writes env files, stores env values, or prints env values. Missing env diagnostics include only file paths, key names, and warn/block action. `mode: warn` adds warnings; `mode: block` adds blockers.
+
+## Agent Runs
+
+`codemesh agent prepare <project>` creates one run directory under `agents/`.
+
+Run layout:
+
+- `workspace/`: temporary Git clone from the registered clone URL.
+- `codemesh-run.json`: handoff metadata written inside the ready workspace.
+
+Agent Prep resolves the project by alias, chooses the requested base or source policy/default base, fetches that base, and gates the handoff on the policy from the fetched base before cloning. Env file presence is still checked against the local source checkout, without reading file contents, because these files are usually untracked local setup. Readiness blockers stop prep before a run directory or clone is created. Warnings, including dirty source checkout and env warnings, are recorded and printed but do not block.
+
+The clone checks out the requested `--base` when provided. Otherwise it checks out the repo-local policy base, falling back to `main`. CodeMesh uses Git for clone and checkout; it does not copy uncommitted source files, create Git worktrees, or replace Git state.
+
+`codemesh-run.json` records metadata only:
+
+- run id and ready path
+- project alias, normalized remote, redacted clone URL, and source path
+- effective base and profile
+- warnings and blockers from readiness
+- created timestamp
+
+The `agent_runs` SQLite row stores the same metadata JSON for local audit and future cleanup/listing. Secret values are never included; env readiness records only missing file/key names and warn/block diagnostics, and clone URLs in metadata omit userinfo, query strings, and fragments.
 
 ## Secrets
 
