@@ -56,7 +56,7 @@ Each run creates a temp workspace with:
 - an empty temp Git config.
 - local Git fixtures for future Project Registry, Readiness, Hydration, and Agent Prep cases.
 
-The harness does not use GitHub, secrets, GUI automation, AppleScript, the user's `~/.codemesh`, or projects under `~/Projects`.
+The harness does not use GitHub, secrets, GUI automation, AppleScript, the user's normal CodeMesh home, or personal workspace projects.
 
 ## Test Layers
 

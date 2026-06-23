@@ -22,7 +22,7 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 
 ## Safe Local Example
 
-This example uses a temp CodeMesh home and local Git remote only. It does not touch the user's normal `~/.codemesh`, `~/Projects`, GitHub, or secrets.
+This example uses a temp CodeMesh home and local Git remote only. It does not touch the user's normal CodeMesh home, personal workspace, GitHub account, or secrets.
 
 ```sh
 demo="$(mktemp -d)"
