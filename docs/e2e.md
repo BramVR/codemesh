@@ -54,7 +54,9 @@ Offline Git fixtures cover:
 - missing base branch on an otherwise valid local remote.
 - missing required env using fake fixture names such as `CODEMESH_E2E_REQUIRED_ENV`.
 
-Project Registry e2e coverage runs `codemesh scan` against the fixture source workspace, reruns scan to prove idempotent unchanged reporting, and verifies `codemesh tree` shows scanned projects as present with local paths.
+Project Registry e2e coverage runs `codemesh scan` against the fixture source workspace, reruns scan to prove idempotent unchanged reporting, and verifies `codemesh tree` shows scanned projects with normalized local states and paths.
+
+Readiness e2e coverage runs `codemesh status` against the same local Git fixtures, including a dirty source checkout warning and a missing base branch blocker.
 
 ## Packaged Smoke Pattern
 
@@ -120,6 +122,6 @@ From `steipete/oracle`:
 ## Intentionally Skipped For Now
 
 - Poll/wait helpers: no async CodeMesh behavior exists yet.
-- Real command workflows beyond `init` and Project Registry scan/add/tree: Readiness, Hydration, and Agent Prep commands are pending.
+- Real command workflows beyond `init`, Project Registry scan/add/tree, and Readiness status: Hydration and Agent Prep commands are pending.
 - Live/network checks: out of scope for MVP fixture coverage.
 - Screenshot proof: not applicable to the current CLI-only harness.
