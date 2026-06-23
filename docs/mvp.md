@@ -105,6 +105,8 @@ Used by:
 
 ## Commands
 
+The current runnable command surface is maintained in [Command Catalog](commands.md). Future command ideas in research or roadmap docs are planned until they appear in that catalog and top-level CLI help.
+
 ### `codemesh init [workspace-root]`
 
 Creates `~/.codemesh/codemesh.db` and records the default workspace root.
@@ -201,7 +203,7 @@ Initial tables:
 - `scans`
 - `agent_runs`
 
-## First Implementation Phases
+## Implemented MVP Phases
 
 1. Go module, CLI skeleton, config path handling.
 2. SQLite store and migrations.
@@ -212,6 +214,13 @@ Initial tables:
 7. `init`, `add`, `scan`, `tree`, `status`.
 8. Agent Prep, `agent prepare`, `runs`, `clean`.
 9. `hydrate`.
+
+## Planned Later
+
+- machine registration and multi-machine sync
+- synced manifests or remote project indexes
+- secret materialization or env file writing
+- daemon, mount, UI, placeholders, or file-level lazy hydration
 
 ## Non-Goals
 
