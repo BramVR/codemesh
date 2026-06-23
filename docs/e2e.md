@@ -38,7 +38,7 @@ The report includes:
 - `secret_safety`: whether report redaction is active and how many known fake fixture values were redacted.
 - `results`: per-case status, duration, exit code, and captured output for failing or diagnostic cases.
 
-Reports may include fake env key names such as `CODEMESH_E2E_REQUIRED_ENV`, but must not include real secret values or fake fixture secret values.
+Reports may include fake env key names such as `CODEMESH_E2E_REQUIRED_ENV`, but must not include real secret values or fake fixture secret values. The harness checks command output, the JSON report, Agent Prep metadata, and SQLite state store bytes for fake env file/key secret markers.
 
 ## Isolation
 
@@ -90,15 +90,18 @@ Offline Git fixtures cover:
 - dirty source checkout with uncommitted local changes.
 - missing project path with a known local bare remote.
 - missing base branch on an otherwise valid local remote.
-- missing required env using fake fixture names such as `CODEMESH_E2E_REQUIRED_ENV`.
+- fetch failure against an unreachable local remote.
+- invalid project policy diagnostics.
+- missing required env in warn and block modes using fake fixture names such as `CODEMESH_E2E_REQUIRED_ENV`.
+- present env requirements using fake env values and fake env file contents that must not appear in public artifacts or state.
 
 Project Registry e2e coverage runs `codemesh scan` against the fixture source workspace, reruns scan to prove idempotent unchanged reporting, and verifies `codemesh tree` shows scanned projects with normalized local states and paths.
 
-Readiness e2e coverage runs `codemesh status` against the same local Git fixtures, including a dirty source checkout warning and a missing base branch blocker.
+Readiness e2e coverage runs `codemesh tree` and `codemesh status` against the same local Git fixtures. It verifies clean present, missing, dirty warning, missing base blocker, fetch failure stale blocker, invalid Project policy blocker, Env readiness warn/block behavior, and tree/status agreement on normalized states for projects both commands report.
 
 Hydration e2e coverage uses the local bare Git remotes from the offline fixture set. It registers a known project, removes its desired local path to make it missing, runs `codemesh hydrate <project>`, and verifies the real CLI recreates the checkout without reaching GitHub or creating directories for unrelated missing projects.
 
-Agent Prep e2e coverage uses the same local bare Git remotes and isolated CodeMesh home. It scans the fixture sources, runs `codemesh agent prepare <project>` for a clean source checkout, verifies `ready_path` points under CodeMesh-managed agents storage with a real clone and `codemesh-run.json`, checks dirty source checkout warnings do not block prep, and verifies blocking env readiness stops prep with missing file/key diagnostics only.
+Agent Prep e2e coverage uses the same local bare Git remotes and isolated CodeMesh home. It scans the fixture sources, runs `codemesh agent prepare <project>` for a clean source checkout, verifies `ready_path` points under CodeMesh-managed agents storage with a real clone and `codemesh-run.json`, checks dirty source checkout warnings do not block prep, checks Env readiness warn mode still prepares with diagnostics, verifies blocking env readiness stops prep with missing file/key diagnostics only, and confirms present fake env values/file contents are not written to run metadata.
 
 Agent Run cleanup coverage reuses that isolated Agent Prep state. It runs `codemesh runs` to verify stored run metadata, then `codemesh clean --older-than 0d` to verify the guarded runner removes only the prepared workspace under the temp CodeMesh home and updates local metadata.
 

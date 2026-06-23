@@ -37,6 +37,29 @@ func TestCommandRunnerReportsFailureOutputAndSummary(t *testing.T) {
 	}
 }
 
+func TestPrintRedactsFakeSecretsOnFailure(t *testing.T) {
+	h := testHarness(t)
+	var out bytes.Buffer
+	h.output = &out
+
+	h.print(result{
+		Name:     "secret failure",
+		Status:   "FAIL",
+		ExitCode: 1,
+		Error:    "error " + fakeEnvFixtureKeySecret(),
+		Stdout:   "stdout " + fakeEnvFixtureFileSecret(),
+		Stderr:   "stderr " + fakeEnvFixtureKeySecret(),
+	})
+
+	got := out.String()
+	if containsAnySecret(got, fakeEnvFixtureSecrets()) {
+		t.Fatalf("printed output leaked fake secret marker")
+	}
+	if strings.Count(got, "[REDACTED]") != 3 {
+		t.Fatalf("printed output redaction count = %d, want 3:\n%s", strings.Count(got, "[REDACTED]"), got)
+	}
+}
+
 func TestCommandRunnerTimesOut(t *testing.T) {
 	h := testHarness(t)
 	var out bytes.Buffer
@@ -219,8 +242,8 @@ func TestOfflineGitFixturesCreateLocalRemotesAndClones(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fixtures.Projects) != 5 {
-		t.Fatalf("fixture count = %d, want 5", len(fixtures.Projects))
+	if len(fixtures.Projects) != 7 {
+		t.Fatalf("fixture count = %d, want 7", len(fixtures.Projects))
 	}
 
 	clean := fixtures.Project("clean-repo")
@@ -281,6 +304,32 @@ func TestOfflineGitFixturesCreateLocalRemotesAndClones(t *testing.T) {
 	}
 	if !strings.Contains(remotePolicy, "CODEMESH_E2E_REQUIRED_ENV") {
 		t.Fatalf("remote policy missing fake env key:\n%s", remotePolicy)
+	}
+
+	envWarn := fixtures.Project("required-env-warn")
+	if envWarn == nil {
+		t.Fatalf("env warn fixture missing")
+	}
+	if len(envWarn.RequiredEnv) != 1 || envWarn.RequiredEnv[0] != "CODEMESH_E2E_WARN_ENV" {
+		t.Fatalf("warn env = %#v, want fake fixture key", envWarn.RequiredEnv)
+	}
+
+	envPresent := fixtures.Project("required-env-present")
+	if envPresent == nil {
+		t.Fatalf("env present fixture missing")
+	}
+	if len(envPresent.RequiredEnv) != 1 || envPresent.RequiredEnv[0] != "CODEMESH_E2E_PRESENT_ENV" {
+		t.Fatalf("present env = %#v, want fake fixture key", envPresent.RequiredEnv)
+	}
+	envFile, err := os.ReadFile(filepath.Join(envPresent.Source, ".env.local"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(envFile), fakeEnvFixtureFileSecret()) {
+		t.Fatalf("env present fixture file missing fake secret marker")
+	}
+	if containsAnySecret(remotePolicy, fakeEnvFixtureSecrets()) {
+		t.Fatalf("remote missing-env policy unexpectedly contains fake secret marker")
 	}
 }
 
