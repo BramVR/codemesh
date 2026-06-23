@@ -44,7 +44,7 @@ CodeMesh follows a bslog-inspired layering model:
 - Offline integration-style e2e tests run the real CLI against local temp fixtures, mocked local state, and fake env requirements.
 - Live/network e2e checks are intentionally limited and skipped until a feature needs real provider proof.
 
-The current CodeMesh e2e layer sits in the middle. It builds or receives a CLI binary, isolates `CODEMESH_HOME`, `HOME`, Git config, and workspace paths, then creates local Git remotes and clones under the e2e temp directory. These fixtures establish the shape for Project Registry, Readiness, Hydration, and Agent Prep coverage without requiring those commands to exist yet.
+The current CodeMesh e2e layer sits in the middle. It builds or receives a CLI binary, isolates `CODEMESH_HOME`, `HOME`, Git config, and workspace paths, then creates local Git remotes and clones under the e2e temp directory. These fixtures cover Project Registry, Readiness, Hydration, Agent Prep, run listing, and guarded cleanup without GitHub, secrets, or user workspace state.
 
 Offline Git fixtures cover:
 

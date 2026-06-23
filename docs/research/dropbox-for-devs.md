@@ -226,39 +226,42 @@ It should orchestrate existing primitives:
 
 ## MVP Direction
 
+This section is historical research direction. The current runnable command surface is [Command Catalog](../commands.md); commands or behavior below are planned unless the catalog lists them as current.
+
 Build the boring version first:
 
 1. Project inventory.
    - `codemesh add ~/Projects/foo`
-   - records path, remote, branch, package/runtime hints.
+   - current: records path and remote.
+   - planned: branch and package/runtime hints.
 
 2. Machine inventory.
    - `codemesh machine register`
-   - records hostname, OS, arch, workspace root, allowed secret scopes.
+   - planned: records hostname, OS, arch, workspace root, allowed secret scopes.
 
 3. Status.
    - `codemesh status`
-   - shows missing projects, stale default branches, dirty repos, missing env, missing toolchain.
+   - current: shows missing projects, stale default branches, dirty repos, and missing env.
+   - planned: missing toolchain.
 
 4. Bootstrap.
    - `codemesh bootstrap`
-   - creates canonical folders and clones missing repos into correct paths.
+   - planned: creates canonical folders and clones missing repos into correct paths.
 
 5. Policy file.
    - `.codemesh.yml`
-   - repo-local or user-level.
-   - declares local-only paths, env materialization, hydration profile, agent profiles.
+   - current: optional repo-local policy for local-only paths, env readiness, docs intent, and agent defaults.
+   - planned: user-level policy, env materialization, hydration profile, and richer agent profiles.
 
 6. Env materialization.
    - `codemesh env materialize foo`
-   - writes `.env.local` or similar from secret references.
+   - planned: writes `.env.local` or similar from secret references.
    - never stores raw secrets in CodeMesh state.
 
 7. Agent workspace.
    - `codemesh agent prepare foo --profile test`
-   - creates a clean scoped checkout/worktree or temp clone.
-   - verifies freshness.
-   - materializes only approved config.
+   - current: creates a temp clone and verifies readiness/freshness without reading or writing secret values.
+   - planned: worktree options and approved config materialization.
 
 ## Later Bets
 

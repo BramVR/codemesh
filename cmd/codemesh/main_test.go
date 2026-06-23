@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,24 @@ func TestUnknownCommandFails(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "unknown command: unknown") {
 		t.Fatalf("stderr did not explain the failure:\n%s", stderr.String())
+	}
+}
+
+func TestCommandCatalogMatchesTopLevelHelp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"--help"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	helpCommands := commandUsageLines(stdout.String())
+	catalogCommands := catalogCurrentCommands(t)
+	if strings.Join(catalogCommands, "\n") != strings.Join(helpCommands, "\n") {
+		t.Fatalf("docs command catalog drifted from CLI help\ncatalog:\n%s\nhelp:\n%s", strings.Join(catalogCommands, "\n"), strings.Join(helpCommands, "\n"))
 	}
 }
 
@@ -559,6 +578,43 @@ func assertGitStatusClean(t *testing.T, dir string) {
 	if strings.TrimSpace(string(output)) != "" {
 		t.Fatalf("git status not clean:\n%s", output)
 	}
+}
+
+func commandUsageLines(help string) []string {
+	var commands []string
+	inUsage := false
+	for _, line := range strings.Split(help, "\n") {
+		switch {
+		case strings.TrimSpace(line) == "Usage:":
+			inUsage = true
+		case inUsage && strings.TrimSpace(line) == "":
+			return commands
+		case inUsage:
+			command := strings.TrimSpace(line)
+			if strings.HasPrefix(command, "codemesh ") && !strings.Contains(command, "[--help]") && !strings.Contains(command, "[--version]") {
+				commands = append(commands, command)
+			}
+		}
+	}
+	return commands
+}
+
+func catalogCurrentCommands(t *testing.T) []string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "commands.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`(?m)^- ` + "`" + `(codemesh [^` + "`" + `]+)` + "`")
+	matches := re.FindAllStringSubmatch(string(raw), -1)
+	if len(matches) == 0 {
+		t.Fatalf("docs/commands.md did not list current commands")
+	}
+	commands := make([]string, 0, len(matches))
+	for _, match := range matches {
+		commands = append(commands, match[1])
+	}
+	return commands
 }
 
 func createGitRepo(t *testing.T, remote string) string {
