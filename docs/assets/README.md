@@ -1,3 +1,9 @@
+---
+summary: "Committed docs-site visual identity assets and screenshot proof."
+read_when:
+  - "Changing docs-site visual assets, social cards, favicons, or screenshot proof."
+---
+
 # Docs Site Assets
 
 `codemesh-hero.svg`, `social-card.svg`, and `social-card.png` are copied into the local docs-site artifact.

@@ -1,92 +1,126 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-label="CodeMesh workspace graph">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" role="img" aria-label="CodeMesh graph of projects, machines, temp agent workspaces, and readiness signals">
   <defs>
-    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
-      <stop offset="0" stop-color="#0c1117"/>
-      <stop offset="1" stop-color="#151b22"/>
+    <linearGradient id="panel" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#121b22"/>
+      <stop offset="1" stop-color="#0c1319"/>
     </linearGradient>
-    <linearGradient id="cyan" x1="0" x2="1">
-      <stop offset="0" stop-color="#2dd4ff"/>
-      <stop offset="1" stop-color="#7dfc91"/>
+    <linearGradient id="paper" x1="0" x2="1" y1="1" y2="0">
+      <stop offset="0" stop-color="#f8faf7"/>
+      <stop offset="1" stop-color="#eaf2ec"/>
     </linearGradient>
-    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
-      <feGaussianBlur stdDeviation="5" result="blur"/>
-      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#02070a" flood-opacity=".28"/>
     </filter>
   </defs>
-  <rect width="1280" height="720" rx="36" fill="url(#bg)"/>
-  <g fill="none" stroke="#26313c" stroke-width="1">
-    <path d="M80 590h1120M80 510h1120M80 430h1120M80 350h1120M80 270h1120M80 190h1120"/>
-    <path d="M160 120v500M320 120v500M480 120v500M640 120v500M800 120v500M960 120v500M1120 120v500"/>
+
+  <rect width="1280" height="720" rx="28" fill="url(#paper)"/>
+  <rect x="42" y="42" width="1196" height="636" rx="26" fill="url(#panel)" filter="url(#softShadow)"/>
+
+  <g fill="none" stroke="#23313a" stroke-width="1">
+    <path d="M92 596h1096M92 512h1096M92 428h1096M92 344h1096M92 260h1096M92 176h1096"/>
+    <path d="M176 104v532M304 104v532M432 104v532M560 104v532M688 104v532M816 104v532M944 104v532M1072 104v532"/>
   </g>
-  <g transform="translate(82 224)">
-    <rect width="300" height="192" rx="22" fill="#111820" stroke="#41505d" stroke-width="2"/>
-    <rect x="24" y="26" width="252" height="116" rx="10" fill="#0b1015" stroke="#293540"/>
-    <path d="M56 60h66M56 88h112M56 116h86" stroke="#31d6ff" stroke-width="8" stroke-linecap="round"/>
-    <path d="M168 60h72M196 88h44M160 116h80" stroke="#68f36f" stroke-width="7" stroke-linecap="round"/>
-    <path d="M116 168h132" stroke="#2b3742" stroke-width="18" stroke-linecap="round"/>
-    <path d="M148 142h68l20 26H128z" fill="#242f39"/>
+
+  <text x="92" y="116" fill="#dce7e2" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="800">CodeMesh workspace graph</text>
+  <text x="92" y="150" fill="#94a8a0" font-family="Inter, Arial, sans-serif" font-size="18">Local project identity, machine readiness, and temporary agent handoff state.</text>
+
+  <g transform="translate(92 208)">
+    <rect width="262" height="246" rx="18" fill="#f8faf7" stroke="#d9e3dc" stroke-width="2"/>
+    <text x="24" y="38" fill="#121b22" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="800">Canonical workspace</text>
+    <text x="24" y="64" fill="#61746b" font-family="Inter, Arial, sans-serif" font-size="14">Project Registry</text>
+    <g font-family="Menlo, Consolas, monospace" font-size="16" fill="#26352f">
+      <text x="28" y="112">~/Code/codemesh</text>
+      <text x="28" y="152">~/Code/api-worker</text>
+      <text x="28" y="192">~/Code/docs-site</text>
+    </g>
+    <g stroke="#007f9d" stroke-width="4" stroke-linecap="round">
+      <path d="M28 88h164"/>
+      <path d="M28 128h188"/>
+      <path d="M28 168h150"/>
+    </g>
+    <g fill="#158347">
+      <circle cx="222" cy="88" r="8"/>
+      <circle cx="222" cy="128" r="8"/>
+    </g>
+    <circle cx="222" cy="168" r="8" fill="#a86600"/>
+    <text x="24" y="224" fill="#007f9d" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="800">normalized Git remote + alias</text>
   </g>
-  <g stroke="url(#cyan)" stroke-width="5" fill="none" filter="url(#glow)">
-    <path d="M382 320 C470 320 470 190 558 190"/>
-    <path d="M382 320 C484 320 488 320 590 320"/>
-    <path d="M382 320 C470 320 470 450 558 450"/>
-    <path d="M706 320 C780 320 780 184 870 184"/>
-    <path d="M706 320 C782 320 782 320 890 320"/>
-    <path d="M706 320 C780 320 780 456 870 456"/>
+
+  <g fill="none" stroke="#2dd4ff" stroke-width="5" stroke-linecap="round">
+    <path d="M354 330 C436 330 438 202 520 202"/>
+    <path d="M354 330 C436 330 438 330 520 330"/>
+    <path d="M354 330 C436 330 438 458 520 458"/>
   </g>
-  <g transform="translate(540 124)" fill="#151d25" stroke="#50606e" stroke-width="2">
-    <rect width="160" height="132" rx="22"/>
-    <path d="M48 40v48M48 40h52M48 88h52" stroke="#a7b5c2" stroke-width="5" stroke-linecap="round"/>
-    <circle cx="48" cy="40" r="9" fill="#141b22" stroke="#dce7ef" stroke-width="4"/>
-    <circle cx="100" cy="40" r="9" fill="#68f36f" stroke="#68f36f" stroke-width="3"/>
-    <circle cx="100" cy="88" r="9" fill="#141b22" stroke="#a7b5c2" stroke-width="4"/>
-  </g>
-  <g transform="translate(540 254)" fill="#151d25" stroke="#50606e" stroke-width="2">
-    <rect width="160" height="132" rx="22"/>
-    <path d="M48 40v48M48 40h52M48 88h52" stroke="#a7b5c2" stroke-width="5" stroke-linecap="round"/>
-    <circle cx="48" cy="40" r="9" fill="#141b22" stroke="#dce7ef" stroke-width="4"/>
-    <circle cx="100" cy="40" r="9" fill="#68f36f" stroke="#68f36f" stroke-width="3"/>
-    <circle cx="100" cy="88" r="9" fill="#141b22" stroke="#a7b5c2" stroke-width="4"/>
-  </g>
-  <g transform="translate(540 384)" fill="#151d25" stroke="#50606e" stroke-width="2">
-    <rect width="160" height="132" rx="22"/>
-    <path d="M48 40v48M48 40h52M48 88h52" stroke="#a7b5c2" stroke-width="5" stroke-linecap="round"/>
-    <circle cx="48" cy="40" r="9" fill="#141b22" stroke="#dce7ef" stroke-width="4"/>
-    <circle cx="100" cy="40" r="9" fill="#f6b13a" stroke="#f6b13a" stroke-width="3"/>
-    <circle cx="100" cy="88" r="9" fill="#141b22" stroke="#a7b5c2" stroke-width="4"/>
-  </g>
-  <g transform="translate(610 262) rotate(45 80 80)">
-    <rect width="160" height="160" rx="24" fill="#202b34" stroke="#6c7b86" stroke-width="3"/>
-    <g transform="rotate(-45 80 80)" stroke="#2dd4ff" stroke-width="5" fill="#202b34" stroke-linecap="round">
-      <path d="M62 80h36M80 62v36M62 80l-22-20M98 80l22-20M80 98v34"/>
-      <circle cx="62" cy="80" r="9"/>
-      <circle cx="98" cy="80" r="9"/>
-      <circle cx="80" cy="62" r="9"/>
-      <circle cx="80" cy="98" r="9"/>
+
+  <g transform="translate(512 154)">
+    <rect width="226" height="420" rx="22" fill="#16212a" stroke="#41515d" stroke-width="2"/>
+    <text x="24" y="44" fill="#dce7e2" font-family="Inter, Arial, sans-serif" font-size="19" font-weight="800">Machines</text>
+    <text x="24" y="70" fill="#96a8a1" font-family="Inter, Arial, sans-serif" font-size="14">same identity, local state</text>
+
+    <g transform="translate(24 100)">
+      <rect width="178" height="70" rx="12" fill="#101820" stroke="#2dd4ff" stroke-width="2"/>
+      <text x="18" y="30" fill="#f5f8f7" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700">laptop</text>
+      <text x="18" y="52" fill="#68f36f" font-family="Inter, Arial, sans-serif" font-size="13">ready</text>
+      <circle cx="150" cy="35" r="10" fill="#68f36f"/>
+    </g>
+
+    <g transform="translate(24 190)">
+      <rect width="178" height="70" rx="12" fill="#101820" stroke="#2dd4ff" stroke-width="2"/>
+      <text x="18" y="30" fill="#f5f8f7" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700">server</text>
+      <text x="18" y="52" fill="#68f36f" font-family="Inter, Arial, sans-serif" font-size="13">fresh clone</text>
+      <circle cx="150" cy="35" r="10" fill="#68f36f"/>
+    </g>
+
+    <g transform="translate(24 280)">
+      <rect width="178" height="70" rx="12" fill="#101820" stroke="#a86600" stroke-width="2"/>
+      <text x="18" y="30" fill="#f5f8f7" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700">cloud agent</text>
+      <text x="18" y="52" fill="#f6b13a" font-family="Inter, Arial, sans-serif" font-size="13">env missing</text>
+      <path d="M150 24l13 24h-26z" fill="#f6b13a"/>
     </g>
   </g>
-  <g fill="#121920" stroke="#51616e" stroke-width="2">
-    <rect x="885" y="120" width="266" height="126" rx="22"/>
-    <rect x="905" y="146" width="226" height="74" rx="12" fill="#0b1015" stroke="#2a3640"/>
-    <rect x="905" y="284" width="266" height="126" rx="22"/>
-    <rect x="925" y="310" width="226" height="74" rx="12" fill="#0b1015" stroke="#2a3640"/>
-    <rect x="885" y="448" width="266" height="126" rx="22"/>
-    <rect x="905" y="474" width="226" height="74" rx="12" fill="#0b1015" stroke="#2a3640"/>
+
+  <g fill="none" stroke="#68f36f" stroke-width="5" stroke-linecap="round">
+    <path d="M738 266 C802 266 812 206 876 206"/>
+    <path d="M738 334 C802 334 812 334 876 334"/>
+    <path d="M738 462 C802 462 812 466 876 514"/>
   </g>
-  <g stroke-linecap="round" stroke-width="7">
-    <path d="M940 170h68M940 194h118" stroke="#2dd4ff"/>
-    <path d="M960 338h88M960 362h132" stroke="#68f36f"/>
-    <path d="M940 498h70M940 522h124" stroke="#2dd4ff"/>
+
+  <g transform="translate(864 134)">
+    <rect width="324" height="452" rx="22" fill="#f8faf7" stroke="#d7e1da" stroke-width="2"/>
+    <text x="28" y="46" fill="#121b22" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="800">Agent handoff</text>
+    <text x="28" y="72" fill="#61746b" font-family="Inter, Arial, sans-serif" font-size="14">temp workspaces, no secret values</text>
+
+    <g transform="translate(28 108)">
+      <rect width="268" height="80" rx="14" fill="#ffffff" stroke="#cfdcd4" stroke-width="2"/>
+      <text x="18" y="32" fill="#121b22" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">temp clone</text>
+      <text x="18" y="56" fill="#61746b" font-family="Menlo, Consolas, monospace" font-size="13">base: origin/main</text>
+      <path d="M214 26h28M228 12v28" stroke="#007f9d" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="214" cy="26" r="6" fill="#ffffff" stroke="#007f9d" stroke-width="4"/>
+      <circle cx="242" cy="26" r="6" fill="#ffffff" stroke="#158347" stroke-width="4"/>
+    </g>
+
+    <g transform="translate(28 212)">
+      <rect width="268" height="80" rx="14" fill="#ffffff" stroke="#cfdcd4" stroke-width="2"/>
+      <text x="18" y="32" fill="#121b22" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">readiness report</text>
+      <text x="18" y="56" fill="#158347" font-family="Inter, Arial, sans-serif" font-size="13">present / clean / configured</text>
+      <circle cx="230" cy="40" r="16" fill="#158347"/>
+      <path d="M222 40l6 6 12-16" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <g transform="translate(28 316)">
+      <rect width="268" height="80" rx="14" fill="#ffffff" stroke="#cfdcd4" stroke-width="2"/>
+      <text x="18" y="32" fill="#121b22" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="800">env readiness</text>
+      <text x="18" y="56" fill="#a86600" font-family="Inter, Arial, sans-serif" font-size="13">names checked, values never stored</text>
+      <path d="M230 22l22 38h-44z" fill="#f6b13a"/>
+      <path d="M230 34v12" stroke="#121b22" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="230" cy="53" r="2.5" fill="#121b22"/>
+    </g>
   </g>
-  <g transform="translate(574 584)">
-    <rect width="160" height="86" rx="24" fill="#131b22" stroke="#41505d" stroke-width="2"/>
-    <ellipse cx="80" cy="30" rx="42" ry="18" fill="#2dd4ff" opacity=".9"/>
-    <path d="M38 30v34c0 10 19 18 42 18s42-8 42-18V30" fill="none" stroke="#2dd4ff" stroke-width="5"/>
-    <path d="M38 48c0 10 19 18 42 18s42-8 42-18" fill="none" stroke="#8ff8ff" stroke-width="3" opacity=".65"/>
-  </g>
-  <g fill="#f6b13a" filter="url(#glow)">
-    <circle cx="1182" cy="184" r="12"/>
-    <circle cx="1182" cy="326" r="12"/>
-    <circle cx="1182" cy="512" r="12"/>
+
+  <g transform="translate(520 596)">
+    <rect width="220" height="48" rx="14" fill="#101820" stroke="#41515d" stroke-width="2"/>
+    <ellipse cx="62" cy="24" rx="34" ry="12" fill="#2dd4ff"/>
+    <path d="M28 24v10c0 7 15 12 34 12s34-5 34-12V24" fill="none" stroke="#2dd4ff" stroke-width="4"/>
+    <text x="112" y="30" fill="#dce7e2" font-family="Inter, Arial, sans-serif" font-size="15" font-weight="800">local SQLite state</text>
   </g>
 </svg>

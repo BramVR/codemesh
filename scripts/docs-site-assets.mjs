@@ -2,15 +2,15 @@ export function css() {
   return `
 :root[data-theme="dark"]{
   color-scheme:dark;
-  --bg:#0b1117;
-  --paper:#121a22;
-  --paper-2:#18232c;
+  --bg:#0a0f14;
+  --paper:#101820;
+  --paper-2:#16212a;
   --ink:#f5f8f7;
-  --text:#ccd6d3;
-  --muted:#94a49f;
-  --subtle:#6f817b;
-  --line:#26333b;
-  --line-soft:#1b2730;
+  --text:#d3ddd9;
+  --muted:#96a8a1;
+  --subtle:#72857d;
+  --line:#293841;
+  --line-soft:#1b2831;
   --accent:#2dd4ff;
   --green:#68f36f;
   --warn:#f6b13a;
@@ -21,22 +21,22 @@ export function css() {
 }
 :root,:root[data-theme="light"]{
   color-scheme:light;
-  --bg:#f5f7f3;
+  --bg:#f7f8f4;
   --paper:#ffffff;
-  --paper-2:#ecf3ee;
-  --ink:#17201d;
-  --text:#33423c;
-  --muted:#61736c;
-  --subtle:#8a9a93;
-  --line:#d8e2dc;
-  --line-soft:#edf3ef;
-  --accent:#0086a8;
-  --green:#168c45;
-  --warn:#a96700;
-  --soft:rgba(0,134,168,.11);
-  --code:#10181d;
+  --paper-2:#eef4ef;
+  --ink:#121b22;
+  --text:#31423b;
+  --muted:#61746b;
+  --subtle:#8b9a93;
+  --line:#d7e1da;
+  --line-soft:#edf3ee;
+  --accent:#007f9d;
+  --green:#158347;
+  --warn:#a86600;
+  --soft:rgba(0,127,157,.12);
+  --code:#101820;
   --code-border:#2b3a42;
-  --shadow:0 12px 30px rgba(26,38,34,.09);
+  --shadow:0 16px 34px rgba(20,32,28,.1);
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth;scroll-padding-top:26px}
@@ -45,11 +45,11 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-s
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline;text-underline-offset:.22em}
 .shell{display:grid;grid-template-columns:270px minmax(0,1fr);min-height:100vh}
-.sidebar{position:sticky;top:0;height:100vh;overflow:auto;padding:26px 22px;background:color-mix(in srgb,var(--paper) 94%,transparent);border-right:1px solid var(--line);scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+.sidebar{position:sticky;top:0;height:100vh;overflow:auto;padding:26px 22px;background:color-mix(in srgb,var(--paper) 96%,var(--paper-2));border-right:1px solid var(--line);scrollbar-width:thin;scrollbar-color:var(--line) transparent}
 .sidebar-head{display:flex;align-items:center;gap:10px;margin-bottom:22px}
 .brand{display:flex;gap:11px;align-items:center;min-width:0;flex:1;color:var(--ink);text-decoration:none}
 .brand:hover{text-decoration:none}
-.mark{width:36px;height:36px;flex:0 0 36px;border-radius:8px;display:grid;place-items:center;background:var(--ink);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));box-shadow:var(--shadow)}
+.mark{width:36px;height:36px;flex:0 0 36px;border-radius:8px;display:grid;place-items:center;background:var(--ink);color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 32%,var(--line));box-shadow:var(--shadow)}
 .mark svg{width:24px;height:24px}.brand strong{display:block;font-size:1.08rem;line-height:1.05;color:var(--ink)}.brand small{display:block;color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;margin-top:3px}
 .theme-toggle{width:34px;height:34px;display:inline-grid;place-items:center;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);cursor:pointer}
 .theme-toggle:hover{border-color:var(--accent);color:var(--accent);background:var(--soft)}
@@ -64,7 +64,7 @@ main{max-width:1180px;width:100%;padding:44px clamp(20px,5vw,70px) 82px;margin:0
 h1,h2,h3,h4{color:var(--ink);line-height:1.18;letter-spacing:0}h1{font-size:2.38rem;margin:.1em 0 .34em}h2{font-size:1.48rem;margin:2em 0 .55em}h3{font-size:1.12rem;margin:1.55em 0 .35em}h4{font-size:1rem;margin:1.35em 0 .25em}
 .lede{font-size:1.12rem;max-width:68ch}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}.btn{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:8px;padding:10px 15px;font-weight:750;color:var(--ink);background:var(--paper)}.btn.primary{background:var(--ink);border-color:var(--ink);color:var(--bg)}.btn:hover{border-color:var(--accent);color:var(--accent);background:var(--soft);text-decoration:none}.btn.primary:hover{background:var(--accent);border-color:var(--accent);color:#fff}
 .home-hero{display:grid;grid-template-columns:minmax(0,.86fr) minmax(330px,1fr);gap:34px;align-items:center;border-bottom:1px solid var(--line);padding:14px 0 34px;margin-bottom:30px}.home-hero h1{font-size:clamp(2.5rem,5vw,4.3rem);line-height:1.02;margin:0 0 18px;max-width:11ch}.home-hero .lede{font-size:1.16rem}
-.hero-art{min-width:0}.hero-art img{display:block;width:100%;height:auto;border-radius:8px;border:1px solid var(--line);box-shadow:var(--shadow);background:var(--paper)}
+.hero-art{min-width:0}.hero-art img{display:block;width:100%;height:auto;border-radius:8px;border:1px solid color-mix(in srgb,var(--ink) 18%,var(--line));box-shadow:var(--shadow);background:#111820}
 .feature-row{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap;margin-top:0}.feature-pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:999px;padding:6px 11px;background:var(--paper);color:var(--text);font-size:.82rem;font-weight:650;text-decoration:none}.feature-pill:hover{border-color:var(--accent);color:var(--accent);background:var(--soft);text-decoration:none}.feature-pill svg{width:15px;height:15px;color:var(--green);flex:0 0 15px}
 .doc-grid{display:grid;grid-template-columns:minmax(0,72ch) 212px;gap:46px}.doc{min-width:0;overflow-wrap:break-word}.doc h1:first-child{display:none}.doc :is(h2,h3,h4){position:relative}.doc :is(h2,h3,h4) .anchor{position:absolute;left:-1.05em;color:var(--subtle);opacity:0;text-decoration:none}.doc :is(h2,h3,h4):hover .anchor{opacity:.75}
 .doc p{margin:0 0 1.08em}.doc ul,.doc ol{padding-left:1.35rem;margin:0 0 1.18em}.doc li{margin:.28em 0}.doc strong{color:var(--ink)}
@@ -83,7 +83,7 @@ const root=document.documentElement;
 function readTheme(){try{return localStorage.getItem("theme")}catch{return null}}
 function writeTheme(value){try{localStorage.setItem("theme",value)}catch{}}
 function setTheme(value){root.dataset.theme=value;document.querySelectorAll("[data-theme-toggle]").forEach((button)=>button.setAttribute("aria-pressed",value==="dark"?"true":"false"))}
-setTheme(root.dataset.theme==="light"?"light":"dark");
+setTheme(root.dataset.theme==="dark"?"dark":"light");
 document.querySelectorAll("[data-theme-toggle]").forEach((button)=>button.addEventListener("click",()=>{const next=root.dataset.theme==="dark"?"light":"dark";setTheme(next);writeTheme(next)}));
 const sidebar=document.querySelector(".sidebar");
 const toggle=document.querySelector(".nav-toggle");
@@ -104,7 +104,7 @@ document.querySelectorAll(".doc pre").forEach((pre)=>{const button=document.crea
 }
 
 export function preThemeScript() {
-  return `(function(){var t;try{t=localStorage.getItem("theme")}catch(e){}document.documentElement.dataset.theme=t==="light"?"light":"dark"})();`;
+  return `(function(){var t;try{t=localStorage.getItem("theme")}catch(e){}document.documentElement.dataset.theme=t==="dark"?"dark":"light"})();`;
 }
 
 export function themeToggleHtml(extraClass = "") {
