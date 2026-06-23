@@ -24,6 +24,22 @@ Override the report path:
 CODEMESH_E2E_REPORT=/tmp/codemesh-e2e.json make e2e
 ```
 
+## JSON Report
+
+Inspect the report when terminal output is too noisy, CI needs a durable artifact, or a handoff needs proof of the exact e2e mode, binary, isolation roots, and case outcomes. Use `CODEMESH_E2E_REPORT` to write it outside the default `tmp/e2e-report.json` path.
+
+The report includes:
+
+- `started_at`: UTC run start time.
+- `mode`: `source` for the normal source-built runner or `packaged` for `make e2e-packaged`.
+- `binary`: executable path plus whether it was an external packaged binary.
+- `isolation`: isolated `CODEMESH_HOME`, `HOME`, workspace, run directory, and Git config path.
+- `summary`: `pass`, `fail`, `skip`, and `total` counts derived from recorded case results.
+- `secret_safety`: whether report redaction is active and how many known fake fixture values were redacted.
+- `results`: per-case status, duration, exit code, and captured output for failing or diagnostic cases.
+
+Reports may include fake env key names such as `CODEMESH_E2E_REQUIRED_ENV`, but must not include real secret values or fake fixture secret values.
+
 ## Isolation
 
 Each run creates a temp workspace with:

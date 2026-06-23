@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,6 +67,78 @@ func TestTimeoutTiers(t *testing.T) {
 	}
 	if longCommandTimeout <= defaultCommandTimeout {
 		t.Fatalf("long timeout %s must exceed default %s", longCommandTimeout, defaultCommandTimeout)
+	}
+}
+
+func TestWriteReportIncludesAuditMetadataSummaryAndSecretSafety(t *testing.T) {
+	h := testHarness(t)
+	fakeSecret := fakeEnvFixtureSecret()
+	h.bin = filepath.Join(h.tmp, "bin", "codemesh")
+	h.mode = modeSource
+	h.startedAt = time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
+	h.redactions = []string{fakeSecret}
+	h.reportPath = filepath.Join(h.tmp, "reports", "e2e.json")
+	h.results = []result{
+		{Name: "passing case", Status: "PASS", ExitCode: 0},
+		{Name: "failing case", Status: "FAIL", ExitCode: 1, Stderr: "missing CODEMESH_E2E_REQUIRED_ENV, value " + fakeSecret},
+		{Name: "skipped case", Status: "SKIP", Error: "not applicable"},
+	}
+
+	if err := h.writeReport(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(h.reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), fakeSecret) {
+		t.Fatalf("report leaked fake env fixture value:\n%s", data)
+	}
+
+	var got report
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.StartedAt != "2026-06-23T12:00:00Z" {
+		t.Fatalf("started_at = %q, want fixed run start", got.StartedAt)
+	}
+	if got.Mode != modeSource || got.Binary.Path != h.bin || got.Binary.Kind != "built-from-source" || got.Binary.External {
+		t.Fatalf("binary metadata = %#v mode = %q", got.Binary, got.Mode)
+	}
+	if got.Isolation.CodeMeshHome != h.codemeshHome || got.Isolation.Home != h.home || got.Isolation.Workspace != h.workspace || got.Isolation.RunDir != h.runDir {
+		t.Fatalf("isolation metadata = %#v", got.Isolation)
+	}
+	if got.Summary.Pass != 1 || got.Summary.Fail != 1 || got.Summary.Skip != 1 || got.Summary.Total != 3 {
+		t.Fatalf("summary = %#v", got.Summary)
+	}
+	if len(got.Results) != 3 {
+		t.Fatalf("results = %d, want 3", len(got.Results))
+	}
+	if !got.SecretSafety.Enabled || got.SecretSafety.RedactedValues != 1 {
+		t.Fatalf("secret safety = %#v", got.SecretSafety)
+	}
+}
+
+func TestWriteReportDistinguishesPackagedBinary(t *testing.T) {
+	h := testHarness(t)
+	h.bin = filepath.Join(h.tmp, "dist", "codemesh")
+	h.mode = modePackaged
+	h.externalBin = true
+	h.reportPath = filepath.Join(h.tmp, "reports", "packaged.json")
+
+	if err := h.writeReport(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(h.reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got report
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Mode != modePackaged || got.Binary.Path != h.bin || got.Binary.Kind != "external-packaged" || !got.Binary.External {
+		t.Fatalf("packaged metadata = mode %q binary %#v", got.Mode, got.Binary)
 	}
 }
 
