@@ -50,6 +50,7 @@ for (const page of pages) {
 
 fs.writeFileSync(path.join(outDir, "favicon.svg"), faviconSvg(), "utf8");
 copyAsset("codemesh-hero.svg");
+copyAsset("social-card.png");
 copyAsset("social-card.svg");
 fs.writeFileSync(path.join(outDir, ".nojekyll"), "", "utf8");
 fs.writeFileSync(path.join(outDir, "llms.txt"), llmsTxt(), "utf8");
@@ -373,7 +374,7 @@ function layout({ page, html, toc, prev, next, sectionName }) {
   const title = home ? `${productName} - ${productTagline}` : `${page.title} - ${productName}`;
   const description = page.frontmatter.description || (home ? productDescription : `${page.title} documentation for ${productName}.`);
   const canonicalUrl = pageCanonicalUrl(page);
-  const socialImage = `${siteBase}/assets/social-card.svg`;
+  const socialImage = `${siteBase}/assets/social-card.png`;
   return `<!doctype html>
 <html lang="en">
 <head>

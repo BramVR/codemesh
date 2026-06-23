@@ -65,6 +65,7 @@ test("docs-site builds static artifact from public allowlist", () => {
       "llms-full.txt",
       "favicon.svg",
       "assets/codemesh-hero.svg",
+      "assets/social-card.png",
       "assets/social-card.svg",
       ".nojekyll",
     ]) {
@@ -79,6 +80,7 @@ test("docs-site builds static artifact from public allowlist", () => {
     assert.match(index, /data-theme-toggle/);
     assert.match(index, /class="nav-toggle"/);
     assert.match(index, /assets\/codemesh-hero\.svg/);
+    assert.match(index, /https:\/\/bramvr\.github\.io\/codemesh\/assets\/social-card\.png/);
     assert.match(index, /<table>/);
     assert.match(commands, /<a class="toc-l2" href="#entity-heading-path">Entity Heading &lt;path&gt;<\/a>/);
     assert.doesNotMatch(commands, /Entity Heading &amp;lt;path&amp;gt;/);
