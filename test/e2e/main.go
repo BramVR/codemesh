@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 const (
@@ -211,7 +214,7 @@ func (h *harness) run() int {
 	h.caseReadinessStatusFixtureWorkflow()
 	h.caseHydrationFixtureWorkflow()
 	h.caseAgentPrepFixtureWorkflow()
-	h.skip("live network checks", "out of scope for MVP e2e; offline local Git fixtures cover current layer")
+	h.record(result{Name: "offline e2e boundary: live network not required", Status: "PASS", ExitCode: 0})
 
 	if !h.caseSecretSafetyReportAndStateStore() {
 		_ = h.writeReport()
@@ -536,10 +539,18 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 			prepare.Status = "FAIL"
 			prepare.Error = fmt.Sprintf("ready checkout missing README: %v", err)
 			s.updateResult(prepare)
+		} else if _, err := os.Stat(filepath.Join(readyPath, ".git")); err != nil {
+			prepare.Status = "FAIL"
+			prepare.Error = fmt.Sprintf("ready checkout missing .git: %v", err)
+			s.updateResult(prepare)
+		} else if !s.expectGitCheckoutAtBase("agent prep ready checkout base", readyPath, "main") {
+			return
 		} else if _, err := os.Stat(filepath.Join(readyPath, "codemesh-run.json")); err != nil {
 			prepare.Status = "FAIL"
 			prepare.Error = fmt.Sprintf("ready metadata missing: %v", err)
 			s.updateResult(prepare)
+		} else if !s.expectAgentRunMetadata("agent prep state metadata", readyPath, "clean-repo", "main", "codex") {
+			return
 		}
 	}
 	if prepare.Status != "PASS" {
@@ -572,6 +583,11 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 		dirty.Status = "FAIL"
 		dirty.Error = "dirty source prep did not print ready path"
 		s.updateResult(dirty)
+	} else if dirty.Status == "PASS" {
+		dirtyPath := valueAfterPrefix(dirty.Stdout, "ready_path: ")
+		if !s.expectGitCheckoutAtBase("agent prep dirty ready checkout base", dirtyPath, "main") {
+			return
+		}
 	}
 	if dirty.Status != "PASS" {
 		return
@@ -593,13 +609,17 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 	if envWarn.Status != "PASS" || !s.expectOutput(envWarn, "warning: missing-env-file", "warning: missing-env-key", "blockers: none", "ready_path: ") {
 		return
 	}
+	warnPath := s.expectReadyPath("agent prep env warning ready path", envWarn)
+	if warnPath == "" || !s.expectAgentRunMetadata("agent prep env warn state metadata", warnPath, "required-env-warn", "main", "") {
+		return
+	}
 
 	envPresent := s.commandEnv("agent prep env present no secret leak", []string{"CODEMESH_E2E_PRESENT_ENV=" + fakeEnvFixtureKeySecret()}, "agent", "prepare", "required-env-present", "--base", "main")
 	if envPresent.Status != "PASS" || !s.expectOutput(envPresent, "warnings: none", "blockers: none", "ready_path: ") {
 		return
 	}
 	s.expectNoOutput(envPresent, fakeEnvFixtureFileSecret(), fakeEnvFixtureKeySecret())
-	if readyPath := valueAfterPrefix(envPresent.Stdout, "ready_path: "); readyPath != "" {
+	if readyPath := s.expectReadyPath("agent prep env present ready path", envPresent); readyPath != "" {
 		metadataPath := filepath.Join(readyPath, "codemesh-run.json")
 		data, err := os.ReadFile(metadataPath)
 		if err != nil {
@@ -1288,6 +1308,100 @@ func (s *scenario) expectPathMissing(name, path string) bool {
 		return false
 	}
 	return true
+}
+
+func (s *scenario) expectReadyPath(name string, r result) string {
+	readyPath := valueAfterPrefix(r.Stdout, "ready_path: ")
+	if readyPath == "" {
+		s.h.record(result{Name: name, Status: "FAIL", Error: "agent prepare output did not include ready_path", ExitCode: -1})
+	}
+	return readyPath
+}
+
+func (s *scenario) expectGitCheckoutAtBase(name, path, base string) bool {
+	inside, _, err := s.h.exec(path, "git", "rev-parse", "--is-inside-work-tree")
+	if err != nil || strings.TrimSpace(inside) != "true" {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("ready path is not a Git checkout: %v", err), ExitCode: -1})
+		return false
+	}
+	branch, _, err := s.h.exec(path, "git", "branch", "--show-current")
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if strings.TrimSpace(branch) != base {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("ready checkout branch = %q, want %q", strings.TrimSpace(branch), base), ExitCode: -1})
+		return false
+	}
+	return true
+}
+
+func (s *scenario) expectAgentRunMetadata(name, readyPath, projectAlias, base, profile string) bool {
+	fileMetadata, err := readAgentMetadata(filepath.Join(readyPath, "codemesh-run.json"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if fileMetadata.ReadyPath != readyPath || fileMetadata.Project.Alias != projectAlias || fileMetadata.Base != base || fileMetadata.Profile != profile {
+		s.h.record(result{Name: name, Status: "FAIL", Error: "codemesh-run.json metadata does not match prepared workspace", ExitCode: -1})
+		return false
+	}
+	dbMetadata, err := readAgentRunMetadataFromStore(filepath.Join(s.codemeshHome, "codemesh.db"), fileMetadata.RunID)
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if dbMetadata.ReadyPath != readyPath || dbMetadata.Project.Alias != projectAlias || dbMetadata.Base != base || dbMetadata.Profile != profile {
+		s.h.record(result{Name: name, Status: "FAIL", Error: "state-store agent run metadata does not reference prepared workspace", ExitCode: -1})
+		return false
+	}
+	if containsAnySecret(fileMetadata.Raw, fakeEnvFixtureSecrets()) || containsAnySecret(dbMetadata.Raw, fakeEnvFixtureSecrets()) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: "fake env secret marker appeared in agent run metadata", ExitCode: -1})
+		return false
+	}
+	return true
+}
+
+type agentMetadata struct {
+	Raw       string
+	RunID     string `json:"run_id"`
+	ReadyPath string `json:"ready_path"`
+	Project   struct {
+		Alias string `json:"alias"`
+	} `json:"project"`
+	Base    string `json:"base"`
+	Profile string `json:"profile"`
+}
+
+func readAgentMetadata(path string) (agentMetadata, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return agentMetadata{}, err
+	}
+	var metadata agentMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return agentMetadata{}, err
+	}
+	metadata.Raw = string(data)
+	return metadata, nil
+}
+
+func readAgentRunMetadataFromStore(dbPath, runID string) (agentMetadata, error) {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return agentMetadata{}, err
+	}
+	defer db.Close()
+	var metadataJSON string
+	if err := db.QueryRow(`select metadata_json from agent_runs where id = ?`, runID).Scan(&metadataJSON); err != nil {
+		return agentMetadata{}, err
+	}
+	var metadata agentMetadata
+	if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
+		return agentMetadata{}, err
+	}
+	metadata.Raw = metadataJSON
+	return metadata, nil
 }
 
 func (s *scenario) failCommandAssertion(r result, message string) {
