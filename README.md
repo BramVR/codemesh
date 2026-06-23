@@ -53,20 +53,23 @@ For the full current-vs-planned surface, see the [Command Catalog](docs/commands
 ## Testing
 
 ```sh
+make docs:list
 make test
 make e2e
 make e2e-packaged
 ```
 
-The CLI e2e harness is documented in [docs/e2e.md](docs/e2e.md).
+Use `make docs:list` before docs or behavior changes to find relevant `Read when` hints. The CLI e2e harness is documented in [docs/e2e.md](docs/e2e.md).
 
 ## Status
 
 Scaffold plus local state bootstrap, Project Registry tracer bullets, Readiness status reporting, explicit missing-project hydration, Agent Prep, run listing, and guarded cleanup. The current command surface is documented in the [Command Catalog](docs/commands.md) and checked against CLI help.
 
-## Research
+## Docs
 
-- [Dropbox for Devs](docs/research/dropbox-for-devs.md)
 - [Command Catalog](docs/commands.md)
 - [MVP Spec](docs/mvp.md)
 - [Project Policy Reference](docs/project-policy.md)
+- [Local State Model](docs/state.md)
+- [CLI E2E Harness](docs/e2e.md)
+- [Dropbox for Devs research](docs/research/dropbox-for-devs.md)

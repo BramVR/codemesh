@@ -1,6 +1,10 @@
-# Project Policy Reference
+---
+summary: "Repo-local Project Policy reference for defaults, env readiness, include-docs, and no-secret-values behavior."
+read_when:
+  - Changing `.codemesh.yml`, policy parsing, env readiness, include-docs, Agent Prep policy behavior, or no-secret-values handling.
+---
 
-Read when: changing `.codemesh.yml`, policy parsing, env readiness, or Agent Prep policy behavior.
+# Project Policy Reference
 
 Project Policy is optional repo-local metadata. When present, CodeMesh reads `<project>/.codemesh.yml`; when absent, CodeMesh uses built-in defaults.
 

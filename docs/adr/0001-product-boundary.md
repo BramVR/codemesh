@@ -1,3 +1,9 @@
+---
+summary: "Accepted product boundary: CodeMesh augments Git/local filesystems and excludes broad sync, VCS, and secrets scope."
+read_when:
+  - Changing product scope, sync boundaries, Git ownership, file hydration, local-only policy, env readiness, or secret handling.
+---
+
 # ADR 0001: Product Boundary
 
 Status: Accepted

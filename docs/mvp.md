@@ -1,3 +1,9 @@
+---
+summary: "MVP product direction, current modules, command surface, policy, state, phases, and non-goals."
+read_when:
+  - Changing product scope, MVP modules, command direction, Agent Prep, Project Registry, Readiness, Env Readiness, policy, state, or non-goals.
+---
+
 # MVP Spec
 
 ## Goal

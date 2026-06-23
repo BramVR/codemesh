@@ -1,6 +1,10 @@
-# Local State Model
+---
+summary: "Local CodeMesh home, SQLite schema, Project Registry, readiness, policy, env, Agent Runs, and cleanup state model."
+read_when:
+  - Changing CodeMesh home, SQLite schema, migrations, Project Registry storage, readiness state, hydration, Agent Runs, cleanup, or local filesystem behavior.
+---
 
-Read when: changing CodeMesh home, SQLite schema, migrations, or local filesystem behavior.
+# Local State Model
 
 ## Home
 
@@ -64,7 +68,7 @@ Scan reports added, updated, unchanged, and skipped candidates. Skips are runtim
 
 ## Readiness
 
-Project readiness is derived when `tree`, `status`, `hydrate`, or future Agent Prep reads the Project Registry. It is not stored in `projects`.
+Project readiness is derived when `tree`, `status`, `hydrate`, or Agent Prep reads the Project Registry. It is not stored in `projects`.
 
 Normalized states:
 

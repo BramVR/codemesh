@@ -1,6 +1,10 @@
-# Command Catalog
+---
+summary: "Current CLI command catalog, safe examples, and planned command boundary."
+read_when:
+  - Changing CLI commands, CLI help, quickstart examples, MVP command direction, or command-oriented docs.
+---
 
-Read when: changing CLI commands, CLI help, quickstart examples, MVP command direction, or command-oriented docs.
+# Command Catalog
 
 CodeMesh command docs separate current commands from planned behavior. The current command list below is checked against top-level CLI help by `TestCommandCatalogMatchesTopLevelHelp`.
 
