@@ -407,7 +407,9 @@ function layout({ page, html, toc, prev, next, sectionName }) {
   <meta name="description" content="${escapeAttr(description)}">
   <link rel="canonical" href="${escapeAttr(canonicalUrl)}">
   <meta name="robots" content="index, follow">
-  <meta name="theme-color" content="#0b1117">
+  <meta name="theme-color" content="#f7f8f4">
+  <meta name="application-name" content="${productName}">
+  <meta name="apple-mobile-web-app-title" content="${productName}">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="${productName}">
   <meta property="og:title" content="${escapeAttr(title)}">
@@ -465,7 +467,7 @@ function homeHero(rootPrefix) {
   ];
   return `<header class="home-hero">
         <div>
-          <p class="eyebrow">Local-first · Git-backed · agent-ready</p>
+          <p class="eyebrow">Local-first / Git-backed / agent-ready</p>
           <h1>${productName}</h1>
           <p class="lede">${escapeHtml(productDescription)}</p>
           <div class="actions"><a class="btn primary" href="quickstart.html">Quickstart</a><a class="btn" href="install.html">Install</a><a class="btn" href="commands.html">Commands</a><a class="btn" href="${repoBase}" rel="noopener">GitHub</a></div>

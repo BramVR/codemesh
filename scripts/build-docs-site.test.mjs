@@ -48,6 +48,9 @@ test("docs-site builds static artifact from public allowlist", () => {
     const commands = fs.readFileSync(path.join(outDir, "commands.html"), "utf8");
     const trust = fs.readFileSync(path.join(outDir, "trust.html"), "utf8");
     const llmsFull = fs.readFileSync(path.join(outDir, "llms-full.txt"), "utf8");
+    const heroSvg = fs.readFileSync(path.join(outDir, "assets", "codemesh-hero.svg"), "utf8");
+    const socialSvg = fs.readFileSync(path.join(outDir, "assets", "social-card.svg"), "utf8");
+    const favicon = fs.readFileSync(path.join(outDir, "favicon.svg"), "utf8");
 
     for (const rel of [
       "index.html",
@@ -73,6 +76,11 @@ test("docs-site builds static artifact from public allowlist", () => {
     }
 
     assert.match(index, /CodeMesh/);
+    assert.match(index, /<meta name="theme-color" content="#f7f8f4">/);
+    assert.match(index, /<meta name="application-name" content="CodeMesh">/);
+    assert.match(index, /"@type":"SoftwareApplication"/);
+    assert.match(index, /"applicationCategory":"DeveloperApplication"/);
+    assert.match(index, /document\.documentElement\.dataset\.theme=t==="dark"\?"dark":"light"/);
     assert.match(index, /href="quickstart\.html"/);
     assert.match(index, /href="install\.html"/);
     assert.match(index, /href="commands\.html"/);
@@ -81,6 +89,19 @@ test("docs-site builds static artifact from public allowlist", () => {
     assert.match(index, /class="nav-toggle"/);
     assert.match(index, /assets\/codemesh-hero\.svg/);
     assert.match(index, /https:\/\/bramvr\.github\.io\/codemesh\/assets\/social-card\.png/);
+    assert.match(heroSvg, /CodeMesh graph of projects, machines, temp agent workspaces, and readiness signals/);
+    assert.match(heroSvg, /Canonical workspace/);
+    assert.match(heroSvg, /Project Registry/);
+    assert.match(heroSvg, /temp clone/);
+    assert.match(heroSvg, /readiness report/);
+    assert.match(heroSvg, /env readiness/);
+    assert.match(heroSvg, /local SQLite state/);
+    assert.match(heroSvg, /#f6b13a/);
+    assert.match(socialSvg, /Graphite\/ink docs shell with cyan and spring-green signals/);
+    assert.match(socialSvg, /Project Registry \| Readiness \| Agent Prep/);
+    assert.match(socialSvg, /no secret values/);
+    assert.match(favicon, /#2dd4ff/);
+    assert.match(favicon, /#68f36f/);
     assert.match(index, /<table>/);
     assert.match(commands, /<a class="toc-l2" href="#entity-heading-path">Entity Heading &lt;path&gt;<\/a>/);
     assert.doesNotMatch(commands, /Entity Heading &amp;lt;path&amp;gt;/);
