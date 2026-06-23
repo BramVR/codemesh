@@ -109,7 +109,7 @@ export function preThemeScript() {
 
 export function themeToggleHtml(extraClass = "") {
   const className = extraClass ? `theme-toggle ${extraClass}` : "theme-toggle";
-  return `<button class="${className}" type="button" aria-label="Toggle dark mode" aria-pressed="true" data-theme-toggle>
+  return `<button class="${className}" type="button" aria-label="Toggle theme" aria-pressed="true" data-theme-toggle>
     <svg class="moon" viewBox="0 0 20 20" aria-hidden="true"><path d="M14.6 12.1A6.5 6.5 0 0 1 7.4 2.7a6.5 6.5 0 1 0 7.2 9.4z" fill="currentColor"/></svg>
     <svg class="sun" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.4" fill="currentColor"/><g stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.3 4.3l1.4 1.4M14.3 14.3l1.4 1.4M4.3 15.7l1.4-1.4M14.3 5.7l1.4-1.4"/></g></svg>
   </button>`;

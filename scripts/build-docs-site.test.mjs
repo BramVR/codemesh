@@ -84,7 +84,7 @@ test("docs-site builds static artifact from public allowlist", () => {
     assert.match(quickstart, /<small>Previous<\/small>Install/);
     assert.match(quickstart, /<small>Next<\/small>Command Catalog/);
     assert.doesNotMatch(index + llmsFull, /javascript:alert/);
-    assert.doesNotMatch(index, /java\tscript:alert/);
+    assert.doesNotMatch(index + llmsFull, /java\tscript:alert/);
     assert.match(index, /href="https:\/\/example\.com\?a=1&amp;b=2"/);
     assert.doesNotMatch(index, /&amp;amp;b=2/);
     assert.match(index, /\[Custom scheme example\]\(codemesh:thing\)/);
@@ -98,6 +98,35 @@ test("docs-site builds static artifact from public allowlist", () => {
       .join("\n");
     assert.doesNotMatch(quickstartCode, /\/Users\/bram|~\/Projects|~\/\.codemesh|GITHUB_TOKEN|GH_TOKEN|SECRET|TOKEN=/);
     assert.match(quickstartCode, /CODEMESH_HOME/);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("docs-site fails when the public manifest references a missing page", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codemesh-docs-site-missing-page-"));
+  const outDir = path.join(tempRoot, "dist", "docs-site");
+  fs.cpSync(path.join(root, "docs"), path.join(tempRoot, "docs"), { recursive: true });
+  const manifestPath = path.join(tempRoot, "docs", "public-docs.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.sections[0].pages.push("missing.md");
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+
+  try {
+    assert.throws(
+      () =>
+        execFileSync("node", [path.join(root, "scripts", "build-docs-site.mjs")], {
+          cwd: root,
+          env: {
+            ...process.env,
+            CODEMESH_DOCS_SITE_ROOT: tempRoot,
+            CODEMESH_DOCS_SITE_OUT: outDir,
+          },
+          encoding: "utf8",
+          stdio: "pipe",
+        }),
+      /docs-site manifest references missing pages: missing\.md/,
+    );
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

@@ -25,6 +25,7 @@ const allowlist = new Set(sections.flatMap(([, rels]) => rels));
 
 const pages = loadPages().filter((page) => allowlist.has(page.rel));
 const pageMap = new Map(pages.map((page) => [page.rel, page]));
+assertManifestPagesExist();
 const nav = sections
   .map(([name, rels]) => ({ name, pages: rels.map((rel) => pageMap.get(rel)).filter(Boolean) }))
   .filter((section) => section.pages.length);
@@ -94,6 +95,13 @@ function copyAsset(name) {
   fs.copyFileSync(source, target);
 }
 
+function assertManifestPagesExist() {
+  const missing = [...allowlist].filter((rel) => !pageMap.has(rel));
+  if (missing.length) {
+    throw new Error(`docs-site manifest references missing pages: ${missing.join(", ")}`);
+  }
+}
+
 function loadPages() {
   return allMarkdown(docsDir).map((file) => {
     const rel = path.relative(docsDir, file).replaceAll(path.sep, "/");
@@ -128,10 +136,17 @@ function parseFrontmatter(raw) {
 }
 
 function sanitizeUnsafeMarkdownLinks(markdown) {
-  return markdown.replace(/\]\(\s*([A-Za-z][A-Za-z0-9+.-]*:|\/\/)[^)]*\)/g, (match, scheme) => {
-    if (/^(https?:|mailto:|tel:)$/i.test(scheme)) return match;
-    return "](#)";
-  });
+  return markdown.replace(/\]\(([^)]*)\)/g, (match, rawTarget) => (isSafeMarkdownLinkTarget(rawTarget) ? match : "](#)"));
+}
+
+function isSafeMarkdownLinkTarget(rawTarget) {
+  const target = rawTarget.trim();
+  if (!target) return true;
+  if (/[\u0000-\u001F\u007F]/.test(target)) return false;
+  if (target.startsWith("//")) return false;
+  const scheme = target.match(/^([A-Za-z][A-Za-z0-9+.-]*):/);
+  if (!scheme) return true;
+  return /^(https?|mailto|tel)$/i.test(scheme[1]);
 }
 
 function sanitizeMarkdownBody(body) {
