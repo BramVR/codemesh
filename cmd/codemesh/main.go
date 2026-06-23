@@ -237,7 +237,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 }
 
 func parseStatusArgs(args []string, stderr io.Writer) (string, string, bool) {
-	base := "main"
+	var base string
 	var projects []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {

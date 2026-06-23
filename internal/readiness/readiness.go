@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
+	"github.com/BramVR/codemesh/internal/policy"
 	"github.com/BramVR/codemesh/internal/registry"
 	"github.com/BramVR/codemesh/internal/state"
 )
@@ -25,6 +27,7 @@ const (
 type Options struct {
 	BaseBranch  string
 	CheckRemote bool
+	Env         EnvLookup
 }
 
 type Diagnostic struct {
@@ -41,10 +44,17 @@ type ProjectReport struct {
 	Blockers         []Diagnostic
 }
 
+type EnvLookup interface {
+	HasEnvKey(string) bool
+}
+
+type processEnv struct{}
+
 func EvaluateProject(ctx context.Context, project state.Project, opts Options) (ProjectReport, error) {
-	base := strings.TrimSpace(opts.BaseBranch)
+	requestedBase := strings.TrimSpace(opts.BaseBranch)
+	base := requestedBase
 	if base == "" {
-		base = "main"
+		base = policy.Defaults().BaseBranch
 	}
 	report := ProjectReport{
 		Project:    project,
@@ -74,6 +84,20 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 		return report, nil
 	}
 
+	projectPolicy, err := policy.Resolve(project.LocalPath)
+	if err != nil {
+		report.State = StateBlocked
+		report.Blockers = append(report.Blockers, Diagnostic{
+			Code:    "invalid-policy",
+			Message: err.Error(),
+		})
+		return report, nil
+	}
+	if requestedBase == "" {
+		base = projectPolicy.BaseBranch
+	}
+	report.BaseBranch = base
+
 	dirty, err := gitOutput(ctx, project.LocalPath, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		report.State = StateBlocked
@@ -91,6 +115,9 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 		})
 	}
 
+	if checkEnvReadiness(&report, projectPolicy, envLookup(opts.Env)); len(report.Blockers) != 0 {
+		return report, nil
+	}
 	if !opts.CheckRemote {
 		return report, nil
 	}
@@ -160,6 +187,63 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 		}
 	}
 	return report, nil
+}
+
+func checkEnvReadiness(report *ProjectReport, projectPolicy policy.Policy, env EnvLookup) {
+	var missing []Diagnostic
+	for _, requiredFile := range projectPolicy.Env.RequiredFiles {
+		path := filepath.Join(report.Project.LocalPath, requiredFile)
+		info, err := os.Stat(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				missing = append(missing, Diagnostic{
+					Code:    "missing-env-file",
+					Message: fmt.Sprintf("required env file is missing: %s", requiredFile),
+				})
+				continue
+			}
+			missing = append(missing, Diagnostic{
+				Code:    "missing-env-file",
+				Message: fmt.Sprintf("required env file cannot be checked: %s: %v", requiredFile, err),
+			})
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			missing = append(missing, Diagnostic{
+				Code:    "invalid-env-file",
+				Message: fmt.Sprintf("required env file is not a regular file: %s", requiredFile),
+			})
+		}
+	}
+	for _, key := range projectPolicy.Env.RequiredKeys {
+		if !env.HasEnvKey(key) {
+			missing = append(missing, Diagnostic{
+				Code:    "missing-env-key",
+				Message: fmt.Sprintf("required env key is missing: %s", key),
+			})
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+	if projectPolicy.Env.Mode == policy.EnvModeBlock {
+		report.State = StateBlocked
+		report.Blockers = append(report.Blockers, missing...)
+		return
+	}
+	report.Warnings = append(report.Warnings, missing...)
+}
+
+func envLookup(env EnvLookup) EnvLookup {
+	if env != nil {
+		return env
+	}
+	return processEnv{}
+}
+
+func (processEnv) HasEnvKey(key string) bool {
+	_, ok := os.LookupEnv(key)
+	return ok
 }
 
 func validateBaseBranch(ctx context.Context, base string) error {
