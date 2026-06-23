@@ -1,0 +1,90 @@
+#!/bin/sh
+set -eu
+
+root="${1:-.}"
+docs_dir="$root/docs"
+
+echo "Listing all markdown files in docs folder:"
+
+if [ ! -d "$docs_dir" ]; then
+  echo "docs folder missing"
+  exit 1
+fi
+
+if ! find "$docs_dir" -path "$docs_dir/research" -prune -o -type f -name '*.md' -print | sort | (
+  had_errors=0
+  while IFS= read -r file; do
+    rel="${file#"$docs_dir"/}"
+    if ! awk -v rel="$rel" '
+    NR == 1 {
+      if ($0 != "---") {
+        err = "missing front matter"
+        exit
+      }
+      in_front_matter = 1
+      next
+    }
+
+    in_front_matter && $0 == "---" {
+      found_end = 1
+      exit
+    }
+
+    in_front_matter {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      if (line ~ /^summary:/) {
+        summary = line
+        sub(/^summary:[[:space:]]*/, "", summary)
+        gsub(/^["\047]|["\047]$/, "", summary)
+        collecting_read_when = 0
+        next
+      }
+      if (line ~ /^read_when:/) {
+        collecting_read_when = 1
+        next
+      }
+      if (collecting_read_when && line ~ /^-[[:space:]]*/) {
+        item = line
+        sub(/^-[[:space:]]*/, "", item)
+        if (read_when != "") {
+          read_when = read_when "; "
+        }
+        read_when = read_when item
+        next
+      }
+      if (collecting_read_when && line !~ /^[[:space:]]*$/) {
+        collecting_read_when = 0
+      }
+    }
+
+    END {
+      if (err == "" && !found_end) {
+        err = "unterminated front matter"
+      }
+      if (err == "" && summary == "") {
+        err = "summary key missing"
+      }
+      if (err != "") {
+        print rel " - [" err "]"
+        exit 2
+      } else {
+        print rel " - " summary
+        if (read_when != "") {
+          print "  Read when: " read_when
+        }
+      }
+    }
+    ' "$file"; then
+      had_errors=1
+    fi
+  done
+  exit "$had_errors"
+); then
+  echo
+  echo "docs-list found front matter errors" >&2
+  exit 1
+fi
+
+echo
+echo "Reminder: keep docs up to date as behavior changes. When your task matches any \"Read when\" hint above, read that doc before coding, and suggest new coverage when it is missing."

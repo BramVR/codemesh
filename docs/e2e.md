@@ -1,3 +1,9 @@
+---
+summary: "CLI e2e harness, packaged smoke, isolation, report, and proof expectations."
+read_when:
+  - Changing CLI behavior, command examples, e2e fixtures, packaged smoke, report shape, or secret-safety verification.
+---
+
 # CLI E2E Harness
 
 Run:
