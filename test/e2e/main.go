@@ -332,6 +332,24 @@ func (h *harness) caseReadinessStatusFixtureWorkflow() {
 		base.Error = "status output did not report missing base as blocker"
 	}
 	h.record(base)
+
+	envMissing := fixtures.Project("required-env-missing")
+	if envMissing == nil {
+		h.record(result{Name: "readiness status missing env", Status: "FAIL", Error: "required-env-missing fixture missing", ExitCode: -1})
+		return
+	}
+	envResult := h.executeCommand(commandSpec{
+		Label:   "readiness status missing env",
+		Name:    h.bin,
+		Args:    []string{"status", "required-env-missing"},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if envResult.Status == "PASS" && (!strings.Contains(envResult.Stdout, "state: blocked") || !strings.Contains(envResult.Stdout, "blocker: missing-env-file") || !strings.Contains(envResult.Stdout, "blocker: missing-env-key") || strings.Contains(envResult.Stdout, "=")) {
+		envResult.Status = "FAIL"
+		envResult.Error = "status output did not report missing env blockers without values"
+	}
+	h.record(envResult)
 }
 
 func (h *harness) buildBinary() bool {
