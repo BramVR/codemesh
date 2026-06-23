@@ -148,8 +148,68 @@ func TestScanThenTreeShowsDiscoveredProjects(t *testing.T) {
 	if code := run([]string{"tree"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("tree exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "alpha") || !strings.Contains(stdout.String(), "present") || !strings.Contains(stdout.String(), alpha) {
+	if !strings.Contains(stdout.String(), "alpha") || !strings.Contains(stdout.String(), "dirty") || !strings.Contains(stdout.String(), alpha) {
 		t.Fatalf("tree output missing scanned project:\n%s", stdout.String())
+	}
+}
+
+func TestStatusReportsDirtyCheckoutWarning(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	repo := createCommittedLocalRemoteClone(t, "dirty-source")
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("local change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"add", repo}, &stdout, &stderr); code != 0 {
+		t.Fatalf("add exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code := run([]string{"status", "dirty-source", "--base", "main"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("status exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		"project: dirty-source",
+		"state: dirty",
+		"path_present: true",
+		"warning: dirty-checkout",
+		"blockers: none",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("status output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestStatusWithoutProjectSummarizesKnownProjects(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	clean := createCommittedLocalRemoteClone(t, "clean-repo")
+	dirty := createCommittedLocalRemoteClone(t, "dirty-source")
+	if err := os.WriteFile(filepath.Join(dirty, "dirty.txt"), []byte("local change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", clean}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add clean exit code = %d, want 0", code)
+	}
+	if code := run([]string{"add", dirty}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add dirty exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"status"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("status exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "- clean-repo state=present") || !strings.Contains(output, "- dirty-source state=dirty") {
+		t.Fatalf("status summary missing normalized states:\n%s", output)
 	}
 }
 
@@ -184,6 +244,11 @@ func createGitRepoAt(t *testing.T, repo, remote string) string {
 		t.Fatal(err)
 	}
 	runGit(t, repo, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Initial fixture")
 	if remote != "" {
 		runGit(t, repo, "remote", "add", "origin", remote)
 	}
@@ -192,6 +257,23 @@ func createGitRepoAt(t *testing.T, repo, remote string) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+func createCommittedLocalRemoteClone(t *testing.T, name string) string {
+	t.Helper()
+	root := t.TempDir()
+	seed := filepath.Join(root, "seed")
+	remote := filepath.Join(root, "remote.git")
+	source := filepath.Join(root, name)
+	runGit(t, root, "init", "-b", "main", seed)
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("# "+name+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, seed, "add", ".")
+	runGit(t, seed, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Initial fixture")
+	runGit(t, root, "clone", "--bare", seed, remote)
+	runGit(t, root, "clone", remote, source)
+	return source
 }
 
 func runGit(t *testing.T, dir string, args ...string) {

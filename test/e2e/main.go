@@ -172,7 +172,7 @@ func (h *harness) run() int {
 	h.caseOfflineGitFixtureSmoke()
 	h.caseProjectRegistryScanWorkflow()
 	h.caseProjectRegistryFixtureWorkflow()
-	h.skip("readiness fixture workflow", "pending readiness commands; offline fixtures ready")
+	h.caseReadinessStatusFixtureWorkflow()
 	h.skip("hydration fixture workflow", "pending hydration command; offline fixtures ready")
 	h.skip("agent prep fixture workflow", "pending agent prep command; offline fixtures ready")
 	h.skip("live network checks", "out of scope for MVP e2e; offline local Git fixtures cover current layer")
@@ -277,6 +277,61 @@ func (h *harness) caseProjectRegistryFixtureWorkflow() {
 		tree.Error = "tree output did not show clean-repo as present with local path"
 	}
 	h.record(tree)
+}
+
+func (h *harness) caseReadinessStatusFixtureWorkflow() {
+	fixtures, err := h.createOfflineGitFixtures()
+	if err != nil {
+		h.record(result{Name: "readiness status fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	statusHome := filepath.Join(h.tmp, "codemesh-status-home")
+	env := []string{"CODEMESH_HOME=" + statusHome}
+	scan := h.executeCommand(commandSpec{
+		Label:   "readiness status scan fixtures",
+		Name:    h.bin,
+		Args:    []string{"scan", fixtures.Sources},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	h.record(scan)
+	if scan.Status != "PASS" {
+		return
+	}
+
+	dirty := h.executeCommand(commandSpec{
+		Label:   "readiness status dirty source",
+		Name:    h.bin,
+		Args:    []string{"status", "dirty-source", "--base", "main"},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if dirty.Status == "PASS" && (!strings.Contains(dirty.Stdout, "state: dirty") || !strings.Contains(dirty.Stdout, "warning: dirty-checkout") || !strings.Contains(dirty.Stdout, "blockers: none")) {
+		dirty.Status = "FAIL"
+		dirty.Error = "status output did not report dirty checkout as warning"
+	}
+	h.record(dirty)
+	if dirty.Status != "PASS" {
+		return
+	}
+
+	missingBase := fixtures.Project("missing-base-branch")
+	if missingBase == nil {
+		h.record(result{Name: "readiness status missing base", Status: "FAIL", Error: "missing-base-branch fixture missing", ExitCode: -1})
+		return
+	}
+	base := h.executeCommand(commandSpec{
+		Label:   "readiness status missing base",
+		Name:    h.bin,
+		Args:    []string{"status", "missing-base-branch", "--base", missingBase.BaseBranch},
+		Timeout: defaultCommandTimeout,
+		Env:     env,
+	})
+	if base.Status == "PASS" && (!strings.Contains(base.Stdout, "state: blocked") || !strings.Contains(base.Stdout, "blocker: missing-base")) {
+		base.Status = "FAIL"
+		base.Error = "status output did not report missing base as blocker"
+	}
+	h.record(base)
 }
 
 func (h *harness) buildBinary() bool {
