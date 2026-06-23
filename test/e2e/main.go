@@ -468,12 +468,29 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 		h.record(result{Name: "hydration fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
+	if target.Source, err = filepath.EvalSymlinks(target.Source); err != nil {
+		h.record(result{Name: "hydration target canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
 	other, err := h.createClonedFixture(s.fixtures, "hydrate-other", nil)
 	if err != nil {
 		h.record(result{Name: "hydration fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
-	for _, project := range []gitFixtureProject{target, other} {
+	if other.Source, err = filepath.EvalSymlinks(other.Source); err != nil {
+		h.record(result{Name: "hydration other canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	conflict, err := h.createClonedFixture(s.fixtures, "hydrate-conflict", nil)
+	if err != nil {
+		h.record(result{Name: "hydration fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if conflict.Source, err = filepath.EvalSymlinks(conflict.Source); err != nil {
+		h.record(result{Name: "hydration conflict canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	for _, project := range []gitFixtureProject{target, other, conflict} {
 		add := s.command("hydration add "+project.Name, "add", project.Source)
 		if add.Status != "PASS" {
 			return
@@ -487,9 +504,22 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 		h.record(result{Name: "hydration remove other source", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
+	if err := os.RemoveAll(conflict.Source); err != nil {
+		h.record(result{Name: "hydration remove conflict source", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := os.MkdirAll(conflict.Source, 0o755); err != nil {
+		h.record(result{Name: "hydration conflict dir setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	conflictMarker := filepath.Join(conflict.Source, "local.txt")
+	if err := os.WriteFile(conflictMarker, []byte("do not overwrite\n"), 0o644); err != nil {
+		h.record(result{Name: "hydration conflict file setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
 
 	before := s.command("hydration tree before", "tree")
-	if before.Status != "PASS" || !s.expectOutput(before, "hydrate-target missing", "hydrate-other missing") {
+	if before.Status != "PASS" || !s.expectOutput(before, "hydrate-target missing", "hydrate-other missing", "hydrate-conflict blocked") {
 		return
 	}
 
@@ -500,12 +530,44 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 	if !s.expectPathExists("hydrate checkout exists", filepath.Join(target.Source, "README.md")) {
 		return
 	}
+	if err := h.expectGitStatus(target.Source, ""); err != nil {
+		h.record(result{Name: "hydrate checkout usable", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if !s.expectGitCheckoutAtBase("hydrate checkout branch", target.Source, target.BaseBranch) {
+		return
+	}
+	if !s.expectGitOrigin("hydrate checkout origin", target.Source, target.Remote) {
+		return
+	}
 	if !s.expectPathMissing("hydrate no sibling placeholder", other.Source) {
 		return
 	}
 
+	noop := s.command("hydrate already present fixture", "hydrate", "hydrate-target")
+	if noop.Status != "PASS" || !s.expectOutput(noop, "project already present: hydrate-target", "path: "+target.Source) {
+		return
+	}
+
+	conflictResult := s.expectedFailure("hydrate path conflict refusal", "hydrate", "hydrate-conflict")
+	if conflictResult.Status != "FAIL" {
+		conflictResult.Status = "FAIL"
+		conflictResult.Error = "path conflict hydrate unexpectedly passed"
+	} else if !strings.Contains(conflictResult.Stderr, "path conflict") || !strings.Contains(conflictResult.Stderr, conflict.Source) {
+		conflictResult.Error = "path conflict hydrate did not report the unsafe path"
+	} else if got, err := os.ReadFile(conflictMarker); err != nil || string(got) != "do not overwrite\n" {
+		conflictResult.Error = fmt.Sprintf("path conflict marker changed or missing: got %q err %v", got, err)
+	} else {
+		conflictResult.Status = "PASS"
+		conflictResult.Error = ""
+	}
+	s.record(conflictResult)
+	if conflictResult.Status != "PASS" {
+		return
+	}
+
 	after := s.command("hydration tree after", "tree")
-	if after.Status != "PASS" || !s.expectOutput(after, "hydrate-target present", "hydrate-other missing") {
+	if after.Status != "PASS" || !s.expectOutput(after, "hydrate-target present", "hydrate-other missing", "hydrate-conflict blocked") {
 		return
 	}
 
@@ -1331,6 +1393,19 @@ func (s *scenario) expectGitCheckoutAtBase(name, path, base string) bool {
 	}
 	if strings.TrimSpace(branch) != base {
 		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("ready checkout branch = %q, want %q", strings.TrimSpace(branch), base), ExitCode: -1})
+		return false
+	}
+	return true
+}
+
+func (s *scenario) expectGitOrigin(name, path, remote string) bool {
+	origin, _, err := s.h.exec(path, "git", "remote", "get-url", "origin")
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if strings.TrimSpace(origin) != remote {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("origin = %q, want %q", strings.TrimSpace(origin), remote), ExitCode: -1})
 		return false
 	}
 	return true
