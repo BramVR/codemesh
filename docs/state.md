@@ -46,9 +46,14 @@ Stored fields:
 
 - `alias`: human CLI name; defaults to the checkout directory name and must be unique.
 - `normalized_remote`: stable project identity anchor. GitHub SSH and HTTPS remotes normalize to the same value.
+- `clone_url`: last known usable Git remote URL/path for cloning, preserving SSH or local transport when different from normalized identity. HTTP(S) userinfo and URL passwords are stripped before storage so local state does not keep embedded credentials.
 - `local_path`: absolute path to the current checkout on this machine.
 
+When migrating older state, CodeMesh backfills `clone_url` from a present checkout's `origin` when possible. If the checkout is already missing during migration, the normalized remote remains the fallback clone source until the project is re-added or rediscovered.
+
 Presence is derived from the filesystem when reading the registry. The MVP does not store readiness, dirty, stale, env, hydration, or agent-prep state in project rows.
+
+`codemesh hydrate <project>` resolves an existing registry row by alias and clones `clone_url` into `local_path` when that path is absent. Hydration may create the parent directory needed for the desired path, but it must not create placeholder project directories for other missing rows. If `local_path` already contains files, CodeMesh refuses to overwrite it with an actionable path-conflict error. If `local_path` is already a present checkout matching the registered project identity, hydration reports that no clone was needed.
 
 `codemesh scan [workspace-root]` walks a requested workspace root for local Git checkouts and upserts discovered projects by normalized remote. If a known remote appears at a new absolute path, scan updates `local_path` and keeps the existing alias. New projects use the checkout directory name as the alias, with deterministic numeric suffixes when another project already owns that alias.
 
@@ -56,7 +61,7 @@ Scan reports added, updated, unchanged, and skipped candidates. Skips are runtim
 
 ## Readiness
 
-Project readiness is derived when `tree`, `status`, or future Agent Prep reads the Project Registry. It is not stored in `projects`.
+Project readiness is derived when `tree`, `status`, `hydrate`, or future Agent Prep reads the Project Registry. It is not stored in `projects`.
 
 Normalized states:
 

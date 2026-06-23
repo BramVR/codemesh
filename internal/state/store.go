@@ -5,8 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -46,6 +49,7 @@ type Project struct {
 	ID               int64
 	Alias            string
 	NormalizedRemote string
+	CloneURL         string
 	LocalPath        string
 }
 
@@ -154,8 +158,17 @@ create table if not exists schema_migrations (
 			return fmt.Errorf("record migration 1: %w", err)
 		}
 	}
-	if err := applyMigration(ctx, tx, 2, migration2); err != nil {
+	if _, err := applyMigration(ctx, tx, 2, migration2); err != nil {
 		return err
+	}
+	appliedMigration3, err := applyMigration(ctx, tx, 3, migration3)
+	if err != nil {
+		return err
+	}
+	if appliedMigration3 {
+		if err := backfillCloneURLs(ctx, tx); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
@@ -163,28 +176,198 @@ create table if not exists schema_migrations (
 	return nil
 }
 
+func backfillCloneURLs(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `
+select id, normalized_remote, clone_url, local_path
+from projects
+`)
+	if err != nil {
+		return fmt.Errorf("list projects for clone URL backfill: %w", err)
+	}
+	defer rows.Close()
+
+	type backfill struct {
+		id       int64
+		cloneURL string
+	}
+	var updates []backfill
+	for rows.Next() {
+		var id int64
+		var normalizedRemote, cloneURL, localPath string
+		if err := rows.Scan(&id, &normalizedRemote, &cloneURL, &localPath); err != nil {
+			return fmt.Errorf("scan project for clone URL backfill: %w", err)
+		}
+		if cloneURL != "" && cloneURL != normalizedRemote {
+			continue
+		}
+		origin, ok := gitOriginURL(ctx, localPath)
+		if !ok {
+			continue
+		}
+		normalizedOrigin, err := normalizeRemoteForStore(origin, localPath)
+		if err != nil || normalizedOrigin != normalizedRemote {
+			continue
+		}
+		backfilled := cloneURLForStore(origin, localPath)
+		if backfilled == "" || backfilled == cloneURL {
+			continue
+		}
+		updates = append(updates, backfill{id: id, cloneURL: backfilled})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate projects for clone URL backfill: %w", err)
+	}
+	for _, update := range updates {
+		if _, err := tx.ExecContext(ctx, `
+update projects
+set clone_url = ?, updated_at = ?
+where id = ?
+`, update.cloneURL, time.Now().UTC().Format(time.RFC3339), update.id); err != nil {
+			return fmt.Errorf("backfill project clone URL: %w", err)
+		}
+	}
+	return nil
+}
+
+func gitOriginURL(ctx context.Context, localPath string) (string, bool) {
+	info, err := os.Stat(localPath)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", localPath, "config", "--get", "remote.origin.url")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	origin := strings.TrimSpace(string(output))
+	return origin, origin != ""
+}
+
+func cloneURLForStore(remote, baseDir string) string {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return remote
+	}
+	if isSCPLikeCloneURL(remote) {
+		return remote
+	}
+	parsed, err := url.Parse(remote)
+	if err == nil && parsed.Scheme != "" {
+		if parsed.User != nil {
+			if parsed.Scheme == "http" || parsed.Scheme == "https" {
+				parsed.User = nil
+				return parsed.String()
+			}
+			if _, hasPassword := parsed.User.Password(); hasPassword {
+				parsed.User = url.User(parsed.User.Username())
+				return parsed.String()
+			}
+		}
+		return remote
+	}
+	if baseDir != "" && !filepath.IsAbs(remote) {
+		return filepath.Clean(filepath.Join(baseDir, remote))
+	}
+	return remote
+}
+
+func normalizeRemoteForStore(remote, baseDir string) (string, error) {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return "", errors.New("remote is required")
+	}
+	if user, host, path, ok := splitSCPLikeCloneURL(remote); ok {
+		if host == "github.com" {
+			return normalizeGitHubPathForStore(path)
+		}
+		path = strings.TrimPrefix(path, "/")
+		path = strings.TrimSuffix(path, ".git")
+		return fmt.Sprintf("ssh://%s@%s/%s", user, host, path), nil
+	}
+
+	parsed, err := url.Parse(remote)
+	if err == nil && parsed.Scheme != "" {
+		host := strings.ToLower(parsed.Hostname())
+		if host == "github.com" {
+			return normalizeGitHubPathForStore(parsed.Path)
+		}
+		if parsed.Scheme == "file" {
+			return filepath.Clean(parsed.Path), nil
+		}
+		host = strings.ToLower(parsed.Host)
+		path := strings.TrimSuffix(parsed.EscapedPath(), ".git")
+		if parsed.User != nil {
+			return fmt.Sprintf("%s://%s@%s%s", parsed.Scheme, parsed.User.Username(), host, path), nil
+		}
+		return fmt.Sprintf("%s://%s%s", parsed.Scheme, host, path), nil
+	}
+
+	if baseDir != "" && !filepath.IsAbs(remote) {
+		return filepath.Clean(filepath.Join(baseDir, remote)), nil
+	}
+	abs, err := filepath.Abs(remote)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs), nil
+}
+
+func isSCPLikeCloneURL(remote string) bool {
+	_, _, _, ok := splitSCPLikeCloneURL(remote)
+	return ok
+}
+
+func splitSCPLikeCloneURL(remote string) (string, string, string, bool) {
+	if strings.Contains(remote, "://") {
+		return "", "", "", false
+	}
+	at := strings.Index(remote, "@")
+	if at <= 0 {
+		return "", "", "", false
+	}
+	rest := remote[at+1:]
+	colon := strings.Index(rest, ":")
+	if colon <= 0 || colon == len(rest)-1 {
+		return "", "", "", false
+	}
+	user := remote[:at]
+	host := strings.ToLower(rest[:colon])
+	path := rest[colon+1:]
+	return user, host, path, true
+}
+
+func normalizeGitHubPathForStore(path string) (string, error) {
+	path = strings.TrimPrefix(path, "/")
+	path = strings.TrimSuffix(path, "/")
+	path = strings.TrimSuffix(path, ".git")
+	if path == "" || !strings.Contains(path, "/") {
+		return "", fmt.Errorf("invalid GitHub remote path %q", path)
+	}
+	return "https://github.com/" + path, nil
+}
+
 type migrationTx interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func applyMigration(ctx context.Context, tx migrationTx, version int, statements []string) error {
+func applyMigration(ctx context.Context, tx migrationTx, version int, statements []string) (bool, error) {
 	var exists int
 	if err := tx.QueryRowContext(ctx, `select count(*) from schema_migrations where version = ?`, version).Scan(&exists); err != nil {
-		return fmt.Errorf("check migration %d: %w", version, err)
+		return false, fmt.Errorf("check migration %d: %w", version, err)
 	}
 	if exists != 0 {
-		return nil
+		return false, nil
 	}
 	for _, stmt := range statements {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("apply migration %d: %w", version, err)
+			return false, fmt.Errorf("apply migration %d: %w", version, err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `insert into schema_migrations(version, applied_at) values(?, ?)`, version, time.Now().UTC().Format(time.RFC3339)); err != nil {
-		return fmt.Errorf("record migration %d: %w", version, err)
+		return false, fmt.Errorf("record migration %d: %w", version, err)
 	}
-	return nil
+	return true, nil
 }
 
 func (s *SQLiteStore) SetSetting(ctx context.Context, key, value string) error {
@@ -205,6 +388,9 @@ func (s *SQLiteStore) AddProject(ctx context.Context, project Project) (Project,
 	}
 	if project.NormalizedRemote == "" {
 		return Project{}, errors.New("project normalized remote is required")
+	}
+	if project.CloneURL == "" {
+		project.CloneURL = project.NormalizedRemote
 	}
 	if project.LocalPath == "" {
 		return Project{}, errors.New("project local path is required")
@@ -229,9 +415,9 @@ func (s *SQLiteStore) AddProject(ctx context.Context, project Project) (Project,
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := s.db.ExecContext(ctx, `
-insert into projects(alias, normalized_remote, local_path, created_at, updated_at)
-values(?, ?, ?, ?, ?)
-`, project.Alias, project.NormalizedRemote, project.LocalPath, now, now)
+insert into projects(alias, normalized_remote, clone_url, local_path, created_at, updated_at)
+values(?, ?, ?, ?, ?, ?)
+`, project.Alias, project.NormalizedRemote, project.CloneURL, project.LocalPath, now, now)
 	if err != nil {
 		return Project{}, fmt.Errorf("add project %q: %w", project.Alias, err)
 	}
@@ -250,29 +436,33 @@ func (s *SQLiteStore) UpsertProject(ctx context.Context, project Project) (Proje
 	if project.NormalizedRemote == "" {
 		return Project{}, "", errors.New("project normalized remote is required")
 	}
+	if project.CloneURL == "" {
+		project.CloneURL = project.NormalizedRemote
+	}
 	if project.LocalPath == "" {
 		return Project{}, "", errors.New("project local path is required")
 	}
 
 	var existing Project
 	err := s.db.QueryRowContext(ctx, `
-select id, alias, normalized_remote, local_path
+select id, alias, normalized_remote, clone_url, local_path
 from projects
 where normalized_remote = ?
 order by id
 limit 1
-`, project.NormalizedRemote).Scan(&existing.ID, &existing.Alias, &existing.NormalizedRemote, &existing.LocalPath)
+`, project.NormalizedRemote).Scan(&existing.ID, &existing.Alias, &existing.NormalizedRemote, &existing.CloneURL, &existing.LocalPath)
 	if err == nil {
-		if existing.LocalPath == project.LocalPath {
+		if existing.LocalPath == project.LocalPath && existing.CloneURL == project.CloneURL {
 			return existing, ProjectUpsertUnchanged, nil
 		}
 		if _, err := s.db.ExecContext(ctx, `
 update projects
-set local_path = ?, updated_at = ?
+set clone_url = ?, local_path = ?, updated_at = ?
 where id = ?
-`, project.LocalPath, time.Now().UTC().Format(time.RFC3339), existing.ID); err != nil {
+`, project.CloneURL, project.LocalPath, time.Now().UTC().Format(time.RFC3339), existing.ID); err != nil {
 			return Project{}, "", fmt.Errorf("update project %q path: %w", existing.Alias, err)
 		}
+		existing.CloneURL = project.CloneURL
 		existing.LocalPath = project.LocalPath
 		return existing, ProjectUpsertUpdated, nil
 	}
@@ -289,7 +479,7 @@ where id = ?
 
 func (s *SQLiteStore) ListProjects(ctx context.Context) ([]Project, error) {
 	rows, err := s.db.QueryContext(ctx, `
-select id, alias, normalized_remote, local_path
+select id, alias, normalized_remote, clone_url, local_path
 from projects
 order by alias
 `)
@@ -301,7 +491,7 @@ order by alias
 	var projects []Project
 	for rows.Next() {
 		var project Project
-		if err := rows.Scan(&project.ID, &project.Alias, &project.NormalizedRemote, &project.LocalPath); err != nil {
+		if err := rows.Scan(&project.ID, &project.Alias, &project.NormalizedRemote, &project.CloneURL, &project.LocalPath); err != nil {
 			return nil, fmt.Errorf("scan project: %w", err)
 		}
 		projects = append(projects, project)
@@ -408,4 +598,9 @@ where id not in (
   )
 )`,
 	`create unique index if not exists projects_normalized_remote_unique on projects(normalized_remote)`,
+}
+
+var migration3 = []string{
+	`alter table projects add column clone_url text not null default ''`,
+	`update projects set clone_url = normalized_remote where clone_url = ''`,
 }

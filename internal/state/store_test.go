@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -176,6 +177,127 @@ values
 	if projects[0].LocalPath != "/tmp/new" {
 		t.Fatalf("surviving path = %q, want latest path", projects[0].LocalPath)
 	}
+	if projects[0].CloneURL != "https://github.com/BramVR/codemesh" {
+		t.Fatalf("surviving clone URL = %q, want normalized fallback", projects[0].CloneURL)
+	}
+}
+
+func TestMigrateBackfillsCloneURLFromPresentCheckoutOrigin(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "codemesh.db")
+	checkout := filepath.Join(t.TempDir(), "checkout")
+	runGit(t, filepath.Dir(checkout), "init", "-b", "main", checkout)
+	runGit(t, checkout, "remote", "add", "origin", "git@github.com:BramVR/codemesh.git")
+
+	db := openRawDB(t, dbPath)
+	if _, err := db.Exec(`create table schema_migrations (version integer primary key, applied_at text not null)`); err != nil {
+		t.Fatalf("create schema_migrations fixture: %v", err)
+	}
+	for _, stmt := range migration1 {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("apply migration 1 fixture: %v", err)
+		}
+	}
+	for _, stmt := range migration2 {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("apply migration 2 fixture: %v", err)
+		}
+	}
+	if _, err := db.Exec(`insert into schema_migrations(version, applied_at) values(1, ?), (2, ?)`, "2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z"); err != nil {
+		t.Fatalf("record migration fixtures: %v", err)
+	}
+	if _, err := db.Exec(`
+insert into projects(alias, normalized_remote, local_path, created_at, updated_at)
+values ('codemesh', 'https://github.com/BramVR/codemesh', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+`, checkout); err != nil {
+		t.Fatalf("insert old project fixture: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open error = %v", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate error = %v", err)
+	}
+
+	projects, err := store.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects error = %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("project count = %d, want 1", len(projects))
+	}
+	if projects[0].CloneURL != "git@github.com:BramVR/codemesh.git" {
+		t.Fatalf("clone URL = %q, want SSH origin", projects[0].CloneURL)
+	}
+}
+
+func TestMigrateSkipsCloneURLBackfillWhenOriginIdentityDiffers(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "codemesh.db")
+	checkout := filepath.Join(t.TempDir(), "checkout")
+	runGit(t, filepath.Dir(checkout), "init", "-b", "main", checkout)
+	runGit(t, checkout, "remote", "add", "origin", "git@github.com:BramVR/fork.git")
+	createOldProjectDatabase(t, dbPath, checkout, "https://github.com/BramVR/codemesh")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open error = %v", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate error = %v", err)
+	}
+
+	projects, err := store.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects error = %v", err)
+	}
+	if projects[0].CloneURL != "https://github.com/BramVR/codemesh" {
+		t.Fatalf("clone URL = %q, want normalized fallback", projects[0].CloneURL)
+	}
+}
+
+func TestMigrateDoesNotKeepBackfillingCloneURLAfterMigration3(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	defer store.Close()
+	checkout := filepath.Join(t.TempDir(), "checkout")
+	runGit(t, filepath.Dir(checkout), "init", "-b", "main", checkout)
+	runGit(t, checkout, "remote", "add", "origin", "git@github.com:BramVR/codemesh.git")
+	if _, err := store.AddProject(ctx, Project{
+		Alias:            "codemesh",
+		NormalizedRemote: "https://github.com/BramVR/codemesh",
+		CloneURL:         "https://github.com/BramVR/codemesh",
+		LocalPath:        checkout,
+	}); err != nil {
+		t.Fatalf("AddProject error = %v", err)
+	}
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate error = %v", err)
+	}
+
+	projects, err := store.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects error = %v", err)
+	}
+	if projects[0].CloneURL != "https://github.com/BramVR/codemesh" {
+		t.Fatalf("clone URL = %q, want unchanged after migration 3 already applied", projects[0].CloneURL)
+	}
+}
+
+func TestCloneURLForStoreStripsURLPasswords(t *testing.T) {
+	got := cloneURLForStore("ssh://git:secret@example.invalid/org/repo.git", "")
+
+	if got != "ssh://git@example.invalid/org/repo.git" {
+		t.Fatalf("clone URL = %q, want password stripped", got)
+	}
 }
 
 func TestAddProjectPersistsProject(t *testing.T) {
@@ -186,6 +308,7 @@ func TestAddProjectPersistsProject(t *testing.T) {
 	project, err := store.AddProject(ctx, Project{
 		Alias:            "codemesh",
 		NormalizedRemote: "https://github.com/BramVR/codemesh",
+		CloneURL:         "git@github.com:BramVR/codemesh.git",
 		LocalPath:        "/tmp/codemesh",
 	})
 	if err != nil {
@@ -202,7 +325,7 @@ func TestAddProjectPersistsProject(t *testing.T) {
 	if projects[0].ID != project.ID {
 		t.Fatalf("project id = %d, want %d", projects[0].ID, project.ID)
 	}
-	if projects[0].Alias != "codemesh" || projects[0].NormalizedRemote != "https://github.com/BramVR/codemesh" || projects[0].LocalPath != "/tmp/codemesh" {
+	if projects[0].Alias != "codemesh" || projects[0].NormalizedRemote != "https://github.com/BramVR/codemesh" || projects[0].CloneURL != "git@github.com:BramVR/codemesh.git" || projects[0].LocalPath != "/tmp/codemesh" {
 		t.Fatalf("project = %#v", projects[0])
 	}
 }
@@ -257,6 +380,7 @@ func TestUpsertProjectByRemoteUpdatesPathWithoutDuplicate(t *testing.T) {
 	first, action, err := store.UpsertProject(ctx, Project{
 		Alias:            "codemesh",
 		NormalizedRemote: "https://github.com/BramVR/codemesh",
+		CloneURL:         "git@github.com:BramVR/codemesh.git",
 		LocalPath:        "/tmp/old",
 	})
 	if err != nil {
@@ -269,6 +393,7 @@ func TestUpsertProjectByRemoteUpdatesPathWithoutDuplicate(t *testing.T) {
 	second, action, err := store.UpsertProject(ctx, Project{
 		Alias:            "ignored",
 		NormalizedRemote: "https://github.com/BramVR/codemesh",
+		CloneURL:         "ssh://git@github.com/BramVR/codemesh.git",
 		LocalPath:        "/tmp/new",
 	})
 	if err != nil {
@@ -293,6 +418,9 @@ func TestUpsertProjectByRemoteUpdatesPathWithoutDuplicate(t *testing.T) {
 	}
 	if projects[0].LocalPath != "/tmp/new" {
 		t.Fatalf("local path = %q, want updated path", projects[0].LocalPath)
+	}
+	if projects[0].CloneURL != "ssh://git@github.com/BramVR/codemesh.git" {
+		t.Fatalf("clone URL = %q, want updated SSH URL", projects[0].CloneURL)
 	}
 }
 
@@ -334,5 +462,44 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 	}
 	if got := info.Mode().Perm(); got != want {
 		t.Fatalf("%s mode = %o, want %o", path, got, want)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, output)
+	}
+}
+
+func createOldProjectDatabase(t *testing.T, dbPath, checkout, normalizedRemote string) {
+	t.Helper()
+	db := openRawDB(t, dbPath)
+	if _, err := db.Exec(`create table schema_migrations (version integer primary key, applied_at text not null)`); err != nil {
+		t.Fatalf("create schema_migrations fixture: %v", err)
+	}
+	for _, stmt := range migration1 {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("apply migration 1 fixture: %v", err)
+		}
+	}
+	for _, stmt := range migration2 {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("apply migration 2 fixture: %v", err)
+		}
+	}
+	if _, err := db.Exec(`insert into schema_migrations(version, applied_at) values(1, ?), (2, ?)`, "2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z"); err != nil {
+		t.Fatalf("record migration fixtures: %v", err)
+	}
+	if _, err := db.Exec(`
+insert into projects(alias, normalized_remote, local_path, created_at, updated_at)
+values ('codemesh', ?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+`, normalizedRemote, checkout); err != nil {
+		t.Fatalf("insert old project fixture: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

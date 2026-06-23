@@ -16,6 +16,7 @@ import (
 const version = "0.0.0-dev"
 
 const statusReadinessTimeout = 30 * time.Second
+const hydrateTimeout = 10 * time.Minute
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -41,11 +42,45 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runTree(args[1:], stdout, stderr)
 	case "status":
 		return runStatus(args[1:], stdout, stderr)
+	case "hydrate":
+		return runHydrate(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[0])
 		printHelp(stderr)
 		return 2
 	}
+}
+
+func runHydrate(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printHydrateHelp(stdout)
+		return 0
+	}
+	if len(args) != 1 {
+		fmt.Fprint(stderr, "hydrate requires exactly one project\n\n")
+		printHydrateHelp(stderr)
+		return 2
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), hydrateTimeout)
+	defer cancel()
+	result, err := registry.New(store).Hydrate(ctx, args[0])
+	if err != nil {
+		fmt.Fprintf(stderr, "hydrate project: %v\n", err)
+		return 1
+	}
+	if result.AlreadyPresent {
+		fmt.Fprintf(stdout, "project already present: %s\npath: %s\n", result.Project.Alias, result.Project.LocalPath)
+		return 0
+	}
+	fmt.Fprintf(stdout, "hydrated project: %s\npath: %s\nremote: %s\n", result.Project.Alias, result.Project.LocalPath, result.Project.NormalizedRemote)
+	return 0
 }
 
 func runAdd(args []string, stdout, stderr io.Writer) int {
@@ -363,6 +398,7 @@ Usage:
   codemesh scan [workspace-root]
   codemesh tree
   codemesh status [project] [--base branch]
+  codemesh hydrate <project>
 
 Commands:
   init       create local CodeMesh state
@@ -370,9 +406,10 @@ Commands:
   scan       scan a workspace root for Git projects
   tree       show the canonical workspace
   status     report project readiness
+  hydrate    clone a missing project into its desired path
 
 Planned MVP commands:
-  hydrate, agent prepare, runs, clean
+  agent prepare, runs, clean
 `)
 }
 
@@ -424,5 +461,16 @@ Usage:
 
 Project defaults to all known projects.
 Base defaults to main.
+`)
+}
+
+func printHydrateHelp(w io.Writer) {
+	fmt.Fprint(w, `Hydrate one missing project.
+
+Usage:
+  codemesh hydrate <project>
+
+Clones the registered remote into the desired local path.
+Refuses existing non-empty non-Git paths.
 `)
 }
