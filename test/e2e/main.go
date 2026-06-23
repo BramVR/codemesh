@@ -411,7 +411,9 @@ func (h *harness) caseProjectRegistryAliasPathStateWorkflow() {
 	) {
 		return
 	}
-	s.expectProjectSchemaNoPresenceColumns("project registry presence derived state schema")
+	if !s.expectProjectSchemaNoPresenceColumns("project registry presence derived state schema") {
+		return
+	}
 }
 
 func (h *harness) caseReadinessStatusFixtureWorkflow() {
