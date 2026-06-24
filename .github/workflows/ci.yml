@@ -2,25 +2,9 @@ name: ci
 
 on:
   pull_request:
-    paths:
-      - "cmd/**"
-      - "internal/**"
-      - "test/**"
-      - "go.mod"
-      - "go.sum"
-      - "Makefile"
-      - ".github/workflows/ci.yml"
   push:
     branches:
       - main
-    paths:
-      - "cmd/**"
-      - "internal/**"
-      - "test/**"
-      - "go.mod"
-      - "go.sum"
-      - "Makefile"
-      - ".github/workflows/ci.yml"
   workflow_dispatch:
 
 permissions:

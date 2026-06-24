@@ -204,12 +204,6 @@ test("pages workflow builds, smoke-tests, and safely skips disabled Pages", () =
     "branches:",
     "- main",
     "workflow_dispatch:",
-    '"docs/**"',
-    '"scripts/build-docs-site.mjs"',
-    '"scripts/build-docs-site.test.mjs"',
-    '"scripts/docs-site-assets.mjs"',
-    '"Makefile"',
-    '".github/workflows/pages.yml"',
     "run: make docs-site",
     "run: make docs-site-test",
     "actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c",
@@ -246,6 +240,7 @@ test("pages workflow builds, smoke-tests, and safely skips disabled Pages", () =
 
   assert.match(workflow, /if: github\.event_name != 'pull_request' && github\.ref == 'refs\/heads\/main'/);
   assert.match(workflow, /permissions:\n\s+contents: read\n\s+pages: write\n\s+id-token: write/);
+  assert.doesNotMatch(workflow, /paths:/);
 });
 
 test("ci workflow runs full Go gate on source changes", () => {
@@ -257,13 +252,6 @@ test("ci workflow runs full Go gate on source changes", () => {
     "branches:",
     "- main",
     "workflow_dispatch:",
-    '"cmd/**"',
-    '"internal/**"',
-    '"test/**"',
-    '"go.mod"',
-    '"go.sum"',
-    '"Makefile"',
-    '".github/workflows/ci.yml"',
     "actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c",
     "go-version-file: go.mod",
     "run: make test",
@@ -274,6 +262,7 @@ test("ci workflow runs full Go gate on source changes", () => {
   }
 
   assert.match(workflow, /permissions:\n\s+contents: read/);
+  assert.doesNotMatch(workflow, /paths:/);
 });
 
 test("docs-site keeps non-public docs and traversal links out of public artifacts", () => {
