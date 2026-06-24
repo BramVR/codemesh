@@ -110,11 +110,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh api "repos/${GITHUB_REPOSITORY}/pages" >/dev/null 2>&1; then
+          set +e
+          pages_response="$(gh api "repos/${GITHUB_REPOSITORY}/pages" 2>&1)"
+          pages_check_exit="$?"
+          set -e
+
+          if [ "$pages_check_exit" -eq 0 ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$pages_response" | grep -q "HTTP 404"; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Pages is not enabled; built and smoke-tested docs-site artifact without deploying. Enable GitHub Pages with source 'GitHub Actions' in repository settings, then rerun this workflow."
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Pages is not enabled or not accessible; built and smoke-tested docs-site artifact without deploying. Enable GitHub Pages with source 'GitHub Actions' in repository settings, then rerun this workflow."
+            echo "Pages configuration check failed unexpectedly; not deploying." >&2
+            exit "$pages_check_exit"
           fi
 
       - name: Configure Pages
