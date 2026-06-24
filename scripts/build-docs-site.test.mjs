@@ -248,6 +248,34 @@ test("pages workflow builds, smoke-tests, and safely skips disabled Pages", () =
   assert.match(workflow, /permissions:\n\s+contents: read\n\s+pages: write\n\s+id-token: write/);
 });
 
+test("ci workflow runs full Go gate on source changes", () => {
+  const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "ci.yml"), "utf8");
+
+  for (const expected of [
+    "pull_request:",
+    "push:",
+    "branches:",
+    "- main",
+    "workflow_dispatch:",
+    '"cmd/**"',
+    '"internal/**"',
+    '"test/**"',
+    '"go.mod"',
+    '"go.sum"',
+    '"Makefile"',
+    '".github/workflows/ci.yml"',
+    "actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c",
+    "go-version-file: go.mod",
+    "run: make test",
+    "run: make e2e",
+    "run: make e2e-packaged",
+  ]) {
+    assert.ok(workflow.includes(expected), `workflow should include ${expected}`);
+  }
+
+  assert.match(workflow, /permissions:\n\s+contents: read/);
+});
+
 test("docs-site keeps non-public docs and traversal links out of public artifacts", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codemesh-docs-site-non-public-"));
   const outDir = path.join(tempRoot, "dist", "docs-site");
