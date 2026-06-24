@@ -21,8 +21,8 @@ Expected result:
 - fresh temporary clone from the correct remote/base
 - source checkout warnings surfaced
 - env readiness checked
-- project docs discovered
-- ready workspace path printed
+- project docs discovered from the prepared clone
+- ready workspace path and `handoff_docs: N` count printed
 - run metadata stored for cleanup and audit
 
 ## Core Modules
@@ -172,8 +172,9 @@ Rules:
 - checkout requested base or policy/default base
 - warn if source checkout is dirty
 - warn or block on env based on policy
+- resolve default and policy-selected handoff docs from the prepared clone
 - write `codemesh-run.json`
-- print ready path
+- print ready path and handoff doc count
 
 ### `codemesh runs`
 

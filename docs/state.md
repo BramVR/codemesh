@@ -117,7 +117,7 @@ The clone checks out the requested `--base` when provided. Otherwise it checks o
 - run id and ready path
 - project alias, normalized remote, redacted clone URL, and source path
 - effective base and profile
-- handoff docs as project-relative paths available in the prepared clone, with source metadata such as `default` or `policy`
+- handoff docs as project-relative paths available in the prepared clone, with source metadata such as `default` or `policy` and the original policy pattern when applicable
 - warnings and blockers from readiness
 - created timestamp
 
@@ -125,9 +125,11 @@ The `agent_runs` SQLite row stores the same metadata JSON for local audit and fu
 
 Unmatched policy handoff doc patterns are warnings, not blockers. They indicate stale or overly broad project policy without preventing a fresh agent workspace.
 
+Default handoff docs are resolved from the prepared clone after checkout: `AGENTS.md`, `CONTEXT.md`, `README.md`, and Markdown files directly under `docs/adr/`. Policy-selected docs are additive and also resolve from the prepared clone, so source-only uncommitted docs are not recorded unless they exist on the selected base.
+
 `codemesh runs` reads `agent_runs` and lists prepared runs from local metadata. The user-facing row includes project alias, base, profile, created time, and workspace path so temporary workspaces are auditable without inspecting SQLite.
 
-`codemesh agent prepare` prints only a handoff doc count. The detailed selected paths and source metadata live in `codemesh-run.json`.
+`codemesh agent prepare` prints only `handoff_docs: N`, where `N` is the selected-doc count. The detailed selected paths and source metadata live in `codemesh-run.json`.
 
 `codemesh clean --older-than <age>` removes only matching Agent Run directories created under `<codemesh-home>/agents`. Age is evaluated from the stored `created_at` timestamp. After successful deletion, CodeMesh removes the matching `agent_runs` rows so `runs` no longer reports cleaned workspaces.
 
