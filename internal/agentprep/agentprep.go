@@ -163,10 +163,11 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	handoffDocs, err := handoffDocs(readyPath, readyPolicy.IncludeDocs)
+	handoffDocs, handoffWarnings, err := handoffDocs(readyPath, readyPolicy.IncludeDocs)
 	if err != nil {
 		return Result{}, err
 	}
+	diagnostics.Warnings = append(diagnostics.Warnings, handoffWarnings...)
 
 	now := p.now().UTC()
 	metadata := Metadata{
@@ -395,10 +396,10 @@ func addEnvDiagnostics(sourcePath string, projectPolicy policy.Policy, diagnosti
 	diagnostics.Warnings = append(diagnostics.Warnings, missing...)
 }
 
-func handoffDocs(root string, policyPatterns []string) ([]HandoffDoc, error) {
+func handoffDocs(root string, policyPatterns []string) ([]HandoffDoc, []Diagnostic, error) {
 	docs, err := defaultHandoffDocs(root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return appendPolicyHandoffDocs(root, docs, policyPatterns)
 }
@@ -446,32 +447,50 @@ func defaultHandoffDocs(root string) ([]HandoffDoc, error) {
 	return docs, nil
 }
 
-func appendPolicyHandoffDocs(root string, docs []HandoffDoc, patterns []string) ([]HandoffDoc, error) {
+func appendPolicyHandoffDocs(root string, docs []HandoffDoc, patterns []string) ([]HandoffDoc, []Diagnostic, error) {
 	seen := make(map[string]bool, len(docs))
 	for _, doc := range docs {
 		seen[doc.Path] = true
 	}
+	var warnings []Diagnostic
 	for _, pattern := range patterns {
 		matches, err := policyHandoffDocMatches(root, pattern)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		found := false
 		for _, rel := range matches {
 			if seen[rel] {
+				found = true
 				continue
 			}
 			ok, err := handoffDocExists(root, rel)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if !ok {
 				continue
 			}
+			found = true
 			docs = append(docs, HandoffDoc{Path: rel, Source: "policy", Pattern: pattern})
 			seen[rel] = true
 		}
+		if !found && (len(matches) != 0 || validPolicyHandoffPattern(pattern)) {
+			warnings = append(warnings, Diagnostic{
+				Code:    "handoff-doc-missing",
+				Message: fmt.Sprintf("policy handoff doc matched no files: %s", pattern),
+			})
+		}
 	}
-	return docs, nil
+	return docs, warnings, nil
+}
+
+func validPolicyHandoffPattern(pattern string) bool {
+	clean, ok := cleanHandoffRel(pattern)
+	if !ok {
+		return false
+	}
+	return !strings.ContainsAny(clean, "*?[") || validHandoffGlob(clean)
 }
 
 func policyHandoffDocMatches(root, pattern string) ([]string, error) {

@@ -133,6 +133,9 @@ func TestPrepareAppendsPolicyHandoffDocsWithPatternsAndStableDedupe(t *testing.T
 	if err != nil {
 		t.Fatalf("Prepare error = %v", err)
 	}
+	if len(result.Diagnostics.Warnings) != 0 || len(result.Diagnostics.Blockers) != 0 {
+		t.Fatalf("diagnostics = %#v, want none", result.Diagnostics)
+	}
 	want := []HandoffDoc{
 		{Path: "AGENTS.md", Source: "default"},
 		{Path: "README.md", Source: "default"},
@@ -151,6 +154,36 @@ func TestPrepareAppendsPolicyHandoffDocsWithPatternsAndStableDedupe(t *testing.T
 	}
 	if strings.Contains(store.runs[0].MetadataJSON, "policy runbook no metadata leak") {
 		t.Fatal("stored metadata leaked policy-selected doc contents")
+	}
+}
+
+func TestPrepareWarnsWhenPolicyHandoffDocsAreMissing(t *testing.T) {
+	project := createFixtureProject(t, "missing-policy-handoff-docs")
+	writeFile(t, filepath.Join(project.LocalPath, ".codemesh.yml"), `agent:
+  include_docs:
+    - docs/missing.md
+    - docs/missing/**
+`)
+	runGit(t, project.LocalPath, "add", ".codemesh.yml")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Add stale handoff docs policy")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	store := newMemoryStore(project)
+	preparer := testPreparer(t.TempDir(), store)
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+
+	if err != nil {
+		t.Fatalf("Prepare error = %v", err)
+	}
+	if !hasDiagnostic(result.Diagnostics.Warnings, "handoff-doc-missing") {
+		t.Fatalf("warnings = %#v, want handoff-doc-missing", result.Diagnostics.Warnings)
+	}
+	if len(result.Diagnostics.Blockers) != 0 {
+		t.Fatalf("blockers = %#v, want none", result.Diagnostics.Blockers)
+	}
+	metadata := readMetadata(t, result.ReadyPath)
+	if !hasDiagnostic(metadata.Diagnostics.Warnings, "handoff-doc-missing") {
+		t.Fatalf("metadata warnings = %#v, want handoff-doc-missing", metadata.Diagnostics.Warnings)
 	}
 }
 

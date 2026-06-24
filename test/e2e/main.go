@@ -865,7 +865,7 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 	}
 
 	policyDocs := s.command("agent prep policy handoff docs", "agent", "prepare", "policy-docs", "--base", "main")
-	if policyDocs.Status != "PASS" || !s.expectOutput(policyDocs, "handoff_docs: 7") {
+	if policyDocs.Status != "PASS" || !s.expectOutput(policyDocs, "warning: handoff-doc-missing", "blockers: none", "handoff_docs: 7") {
 		return
 	}
 	if policyPath := s.expectReadyPath("agent prep policy docs ready path", policyDocs); policyPath != "" {
@@ -878,6 +878,9 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 			{Path: "docs/notes/deep/n.md", Source: "policy", Pattern: "docs/notes/**"},
 			{Path: "docs/notes/z.md", Source: "policy", Pattern: "docs/notes/**"},
 		}) {
+			return
+		}
+		if !s.expectAgentRunDiagnostics("agent prep policy handoff missing diagnostics", policyPath, []string{"handoff-doc-missing"}, nil) {
 			return
 		}
 	}
@@ -1380,7 +1383,7 @@ func (h *harness) createOfflineGitFixtures() (offlineGitFixtures, error) {
 		if err := os.WriteFile(filepath.Join(deepNotesDir, "n.md"), []byte("note nested "+fakeHandoffDocContentMarker()+"\n"), 0o644); err != nil {
 			return err
 		}
-		policy := []byte("agent:\n  include_docs:\n    - README.md\n    - .git/config\n    - docs/runbook.md\n    - docs/notes/**\n    - docs/./runbook.md\n")
+		policy := []byte("agent:\n  include_docs:\n    - README.md\n    - .git/config\n    - docs/runbook.md\n    - docs/notes/**\n    - docs/missing/**\n    - docs/./runbook.md\n")
 		return os.WriteFile(filepath.Join(path, ".codemesh.yml"), policy, 0o644)
 	}
 	if project, err := h.createClonedFixtureWithSeed(fixtures, "policy-docs", writePolicyHandoffDocs, nil); err != nil {
@@ -1805,6 +1808,28 @@ func (s *scenario) expectAgentRunHandoffDocs(name, readyPath string, want []agen
 	return true
 }
 
+func (s *scenario) expectAgentRunDiagnostics(name, readyPath string, warningCodes, blockerCodes []string) bool {
+	fileMetadata, err := readAgentMetadata(filepath.Join(readyPath, "codemesh-run.json"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	dbMetadata, err := readAgentRunMetadataFromStore(filepath.Join(s.codemeshHome, "codemesh.db"), fileMetadata.RunID)
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if !agentDiagnosticsContain(fileMetadata.Diagnostics.Warnings, warningCodes) || !agentDiagnosticsContain(dbMetadata.Diagnostics.Warnings, warningCodes) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("diagnostic warnings file=%#v db=%#v want=%#v", fileMetadata.Diagnostics.Warnings, dbMetadata.Diagnostics.Warnings, warningCodes), ExitCode: -1})
+		return false
+	}
+	if !agentDiagnosticsContain(fileMetadata.Diagnostics.Blockers, blockerCodes) || !agentDiagnosticsContain(dbMetadata.Diagnostics.Blockers, blockerCodes) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("diagnostic blockers file=%#v db=%#v want=%#v", fileMetadata.Diagnostics.Blockers, dbMetadata.Diagnostics.Blockers, blockerCodes), ExitCode: -1})
+		return false
+	}
+	return true
+}
+
 func (s *scenario) expectProjectRowCount(name string, want int) bool {
 	projects, err := readProjectRowsFromStore(filepath.Join(s.codemeshHome, "codemesh.db"))
 	if err != nil {
@@ -1886,12 +1911,22 @@ type agentMetadata struct {
 	Base        string            `json:"base"`
 	Profile     string            `json:"profile"`
 	HandoffDocs []agentHandoffDoc `json:"handoff_docs"`
+	Diagnostics agentDiagnostics  `json:"diagnostics"`
 }
 
 type agentHandoffDoc struct {
 	Path    string `json:"path"`
 	Source  string `json:"source"`
 	Pattern string `json:"pattern,omitempty"`
+}
+
+type agentDiagnostics struct {
+	Warnings []agentDiagnostic `json:"warnings"`
+	Blockers []agentDiagnostic `json:"blockers"`
+}
+
+type agentDiagnostic struct {
+	Code string `json:"code"`
 }
 
 type projectRow struct {
@@ -1938,6 +1973,25 @@ func agentHandoffDocsEqual(got, want []agentHandoffDoc) bool {
 	}
 	for i := range want {
 		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func agentDiagnosticsContain(diagnostics []agentDiagnostic, codes []string) bool {
+	if len(codes) == 0 {
+		return len(diagnostics) == 0
+	}
+	for _, code := range codes {
+		found := false
+		for _, diagnostic := range diagnostics {
+			if diagnostic.Code == code {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return false
 		}
 	}
