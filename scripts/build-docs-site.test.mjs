@@ -212,6 +212,8 @@ test("pages workflow builds, smoke-tests, and safely skips disabled Pages", () =
     '".github/workflows/pages.yml"',
     "run: make docs-site",
     "run: make docs-site-test",
+    "actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c",
+    "go-version-file: go.mod",
     "run: make test",
     "run: make e2e",
     "run: make e2e-packaged",
