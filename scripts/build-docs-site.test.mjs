@@ -195,6 +195,47 @@ test("docs-site emits LLM metadata with canonical and source URLs", () => {
   }
 });
 
+test("pages workflow builds, smoke-tests, and safely skips disabled Pages", () => {
+  const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "pages.yml"), "utf8");
+
+  for (const expected of [
+    "pull_request:",
+    "push:",
+    "branches:",
+    "- main",
+    "workflow_dispatch:",
+    '"docs/**"',
+    '"scripts/build-docs-site.mjs"',
+    '"scripts/build-docs-site.test.mjs"',
+    '"scripts/docs-site-assets.mjs"',
+    '"Makefile"',
+    '".github/workflows/pages.yml"',
+    "run: make docs-site",
+    "run: make docs-site-test",
+    "dist/docs-site/index.html",
+    "dist/docs-site/sitemap.xml",
+    "dist/docs-site/robots.txt",
+    "dist/docs-site/llms.txt",
+    "dist/docs-site/llms-full.txt",
+    "dist/docs-site/favicon.svg",
+    "dist/docs-site/assets/codemesh-hero.svg",
+    "dist/docs-site/assets/social-card.png",
+    "dist/docs-site/.nojekyll",
+    "application/ld+json",
+    "SoftwareApplication",
+    "gh api \"repos/${GITHUB_REPOSITORY}/pages\"",
+    "Pages is not enabled or not accessible; built and smoke-tested docs-site artifact without deploying.",
+    "actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d",
+    "actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9",
+    "actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128",
+  ]) {
+    assert.ok(workflow.includes(expected), `workflow should include ${expected}`);
+  }
+
+  assert.match(workflow, /if: github\.event_name != 'pull_request' && github\.ref == 'refs\/heads\/main'/);
+  assert.match(workflow, /permissions:\n\s+contents: read\n\s+pages: write\n\s+id-token: write/);
+});
+
 test("docs-site keeps non-public docs and traversal links out of public artifacts", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codemesh-docs-site-non-public-"));
   const outDir = path.join(tempRoot, "dist", "docs-site");
