@@ -265,6 +265,7 @@ func runAgentPrepare(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "profile: %s\n", result.Profile)
 	}
 	printAgentDiagnostics(stdout, result.Diagnostics)
+	fmt.Fprintf(stdout, "handoff_docs: %d\n", len(result.Metadata.HandoffDocs))
 	fmt.Fprintf(stdout, "ready_path: %s\n", result.ReadyPath)
 	return 0
 }

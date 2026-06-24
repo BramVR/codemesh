@@ -58,6 +58,106 @@ func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
 	}
 }
 
+func TestPrepareRecordsDefaultHandoffDocsFromPreparedClone(t *testing.T) {
+	project := createFixtureProject(t, "default-handoff-docs")
+	writeFile(t, filepath.Join(project.LocalPath, "AGENTS.md"), "agent instructions from selected base\n")
+	if err := os.MkdirAll(filepath.Join(project.LocalPath, "docs", "adr"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(project.LocalPath, "docs", "adr", "0002-second.md"), "second adr\n")
+	writeFile(t, filepath.Join(project.LocalPath, "docs", "adr", "0001-first.md"), "first adr\n")
+	runGit(t, project.LocalPath, "add", ".")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Add handoff docs")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	localOnlyContext := "local source checkout only context content"
+	writeFile(t, filepath.Join(project.LocalPath, "CONTEXT.md"), localOnlyContext+"\n")
+	store := newMemoryStore(project)
+	preparer := testPreparer(filepath.Join(t.TempDir(), "home[glob]"), store)
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+
+	if err != nil {
+		t.Fatalf("Prepare error = %v", err)
+	}
+	want := []HandoffDoc{
+		{Path: "AGENTS.md", Source: "default"},
+		{Path: "README.md", Source: "default"},
+		{Path: "docs/adr/0001-first.md", Source: "default"},
+		{Path: "docs/adr/0002-second.md", Source: "default"},
+	}
+	if !handoffDocsEqual(result.Metadata.HandoffDocs, want) {
+		t.Fatalf("handoff docs = %#v, want %#v", result.Metadata.HandoffDocs, want)
+	}
+	metadata := readMetadata(t, result.ReadyPath)
+	if !handoffDocsEqual(metadata.HandoffDocs, want) {
+		t.Fatalf("file handoff docs = %#v, want %#v", metadata.HandoffDocs, want)
+	}
+	if strings.Contains(store.runs[0].MetadataJSON, localOnlyContext) {
+		t.Fatal("stored metadata leaked local source checkout doc contents")
+	}
+}
+
+func TestPrepareRecordsHandoffDocsFromRequestedBase(t *testing.T) {
+	project := createFixtureProject(t, "handoff-doc-base")
+	runGit(t, project.LocalPath, "checkout", "-b", "docs-base")
+	writeFile(t, filepath.Join(project.LocalPath, "CONTEXT.md"), "context from requested base\n")
+	runGit(t, project.LocalPath, "add", ".")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Add base context")
+	runGit(t, project.LocalPath, "push", "origin", "docs-base")
+	runGit(t, project.LocalPath, "checkout", "main")
+	preparer := testPreparer(t.TempDir(), newMemoryStore(project))
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "docs-base"})
+
+	if err != nil {
+		t.Fatalf("Prepare error = %v", err)
+	}
+	want := []HandoffDoc{
+		{Path: "CONTEXT.md", Source: "default"},
+		{Path: "README.md", Source: "default"},
+	}
+	if !handoffDocsEqual(result.Metadata.HandoffDocs, want) {
+		t.Fatalf("handoff docs = %#v, want %#v", result.Metadata.HandoffDocs, want)
+	}
+}
+
+func TestPrepareDoesNotFollowHandoffDocSymlinks(t *testing.T) {
+	project := createFixtureProject(t, "handoff-doc-symlinks")
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(outside, "AGENTS.md"), "outside agent docs\n")
+	adrOutside := filepath.Join(outside, "adr")
+	if err := os.MkdirAll(adrOutside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(adrOutside, "0001-outside.md"), "outside adr\n")
+	if err := os.Symlink(filepath.Join(outside, "AGENTS.md"), filepath.Join(project.LocalPath, "AGENTS.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(project.LocalPath, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(adrOutside, filepath.Join(project.LocalPath, "docs", "adr")); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, project.LocalPath, "add", ".")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Add symlinked docs")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	preparer := testPreparer(t.TempDir(), newMemoryStore(project))
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+
+	if err != nil {
+		t.Fatalf("Prepare error = %v", err)
+	}
+	want := []HandoffDoc{{Path: "README.md", Source: "default"}}
+	if !handoffDocsEqual(result.Metadata.HandoffDocs, want) {
+		t.Fatalf("handoff docs = %#v, want %#v", result.Metadata.HandoffDocs, want)
+	}
+}
+
 func TestPrepareUsesPolicyBaseWhenRequestBaseUnset(t *testing.T) {
 	project := createFixtureProject(t, "policy-base")
 	runGit(t, project.LocalPath, "checkout", "-b", "release/agent")
@@ -317,6 +417,18 @@ func readMetadata(t *testing.T, readyPath string) Metadata {
 		t.Fatal(err)
 	}
 	return metadata
+}
+
+func handoffDocsEqual(got, want []HandoffDoc) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func hasDiagnostic(diagnostics []Diagnostic, code string) bool {

@@ -450,6 +450,9 @@ func TestAgentPreparePrintsReadyPathAndWritesRunMetadata(t *testing.T) {
 	if !strings.Contains(output, "ready_path: ") {
 		t.Fatalf("stdout missing ready path:\n%s", output)
 	}
+	if !strings.Contains(output, "handoff_docs: 1") {
+		t.Fatalf("stdout missing handoff doc count:\n%s", output)
+	}
 	readyPath := valueAfterPrefix(t, output, "ready_path: ")
 	if _, err := os.Stat(filepath.Join(readyPath, "README.md")); err != nil {
 		t.Fatalf("ready checkout missing README: %v", err)

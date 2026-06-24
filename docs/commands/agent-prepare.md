@@ -17,7 +17,7 @@ codemesh agent prepare <project> [--base branch] [--profile name]
 
 ## Purpose
 
-Prepare a temporary agent workspace for one registered project. CodeMesh checks readiness, creates a temp clone under CodeMesh-managed agent storage, records run metadata, and prints `ready_path`.
+Prepare a temporary agent workspace for one registered project. CodeMesh checks readiness, creates a temp clone under CodeMesh-managed agent storage, records run metadata, and prints `handoff_docs` plus `ready_path`.
 
 When `--base` is omitted, CodeMesh lets Agent Prep choose its current default base. `--profile` records the intended agent profile in run metadata.
 

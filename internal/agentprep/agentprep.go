@@ -49,13 +49,14 @@ type Result struct {
 }
 
 type Metadata struct {
-	RunID       string      `json:"run_id"`
-	ReadyPath   string      `json:"ready_path"`
-	Project     ProjectInfo `json:"project"`
-	Base        string      `json:"base"`
-	Profile     string      `json:"profile"`
-	Diagnostics Diagnostics `json:"diagnostics"`
-	CreatedAt   string      `json:"created_at"`
+	RunID       string       `json:"run_id"`
+	ReadyPath   string       `json:"ready_path"`
+	Project     ProjectInfo  `json:"project"`
+	Base        string       `json:"base"`
+	Profile     string       `json:"profile"`
+	HandoffDocs []HandoffDoc `json:"handoff_docs"`
+	Diagnostics Diagnostics  `json:"diagnostics"`
+	CreatedAt   string       `json:"created_at"`
 }
 
 type ProjectInfo struct {
@@ -65,6 +66,11 @@ type ProjectInfo struct {
 	SourcePath string `json:"source_path"`
 	LocalPath  string `json:"local_path"`
 	ProjectID  int64  `json:"project_id,omitempty"`
+}
+
+type HandoffDoc struct {
+	Path   string `json:"path"`
+	Source string `json:"source"`
 }
 
 type Diagnostics struct {
@@ -150,6 +156,10 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	if err := gitClone(ctx, cloneURL, base, readyPath); err != nil {
 		return Result{}, err
 	}
+	handoffDocs, err := defaultHandoffDocs(readyPath)
+	if err != nil {
+		return Result{}, err
+	}
 
 	now := p.now().UTC()
 	metadata := Metadata{
@@ -165,6 +175,7 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		},
 		Base:        base,
 		Profile:     strings.TrimSpace(req.Profile),
+		HandoffDocs: handoffDocs,
 		Diagnostics: diagnostics,
 		CreatedAt:   now.Format(time.RFC3339),
 	}
@@ -375,6 +386,79 @@ func addEnvDiagnostics(sourcePath string, projectPolicy policy.Policy, diagnosti
 		return
 	}
 	diagnostics.Warnings = append(diagnostics.Warnings, missing...)
+}
+
+func defaultHandoffDocs(root string) ([]HandoffDoc, error) {
+	docs := make([]HandoffDoc, 0)
+	for _, path := range []string{"AGENTS.md", "CONTEXT.md", "README.md"} {
+		ok, err := handoffDocExists(root, path)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			docs = append(docs, HandoffDoc{Path: path, Source: "default"})
+		}
+	}
+	adrDir := filepath.Join(root, "docs", "adr")
+	info, err := os.Lstat(adrDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return docs, nil
+		}
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return docs, nil
+	}
+	entries, err := os.ReadDir(adrDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
+			continue
+		}
+		rel := filepath.Join("docs", "adr", entry.Name())
+		ok, err := handoffDocExists(root, rel)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			path := filepath.ToSlash(rel)
+			docs = append(docs, HandoffDoc{Path: path, Source: "default"})
+		}
+	}
+	return docs, nil
+}
+
+func handoffDocExists(root, rel string) (bool, error) {
+	clean := filepath.Clean(rel)
+	if filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return false, nil
+	}
+	parts := strings.Split(filepath.ToSlash(clean), "/")
+	current := root
+	for i, part := range parts {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return false, nil
+			}
+			return false, fmt.Errorf("check handoff doc %q: %w", filepath.ToSlash(clean), err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return false, nil
+		}
+		if i < len(parts)-1 {
+			if !info.IsDir() {
+				return false, nil
+			}
+			continue
+		}
+		return info.Mode().IsRegular(), nil
+	}
+	return false, nil
 }
 
 func gitClone(ctx context.Context, cloneURL, base, readyPath string) error {
