@@ -10,7 +10,9 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -69,8 +71,9 @@ type ProjectInfo struct {
 }
 
 type HandoffDoc struct {
-	Path   string `json:"path"`
-	Source string `json:"source"`
+	Path    string `json:"path"`
+	Source  string `json:"source"`
+	Pattern string `json:"pattern,omitempty"`
 }
 
 type Diagnostics struct {
@@ -156,7 +159,11 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	if err := gitClone(ctx, cloneURL, base, readyPath); err != nil {
 		return Result{}, err
 	}
-	handoffDocs, err := defaultHandoffDocs(readyPath)
+	readyPolicy, err := policy.Resolve(readyPath)
+	if err != nil {
+		return Result{}, err
+	}
+	handoffDocs, err := handoffDocs(readyPath, readyPolicy.IncludeDocs)
 	if err != nil {
 		return Result{}, err
 	}
@@ -388,6 +395,14 @@ func addEnvDiagnostics(sourcePath string, projectPolicy policy.Policy, diagnosti
 	diagnostics.Warnings = append(diagnostics.Warnings, missing...)
 }
 
+func handoffDocs(root string, policyPatterns []string) ([]HandoffDoc, error) {
+	docs, err := defaultHandoffDocs(root)
+	if err != nil {
+		return nil, err
+	}
+	return appendPolicyHandoffDocs(root, docs, policyPatterns)
+}
+
 func defaultHandoffDocs(root string) ([]HandoffDoc, error) {
 	docs := make([]HandoffDoc, 0)
 	for _, path := range []string{"AGENTS.md", "CONTEXT.md", "README.md"} {
@@ -431,12 +446,136 @@ func defaultHandoffDocs(root string) ([]HandoffDoc, error) {
 	return docs, nil
 }
 
-func handoffDocExists(root, rel string) (bool, error) {
-	clean := filepath.Clean(rel)
+func appendPolicyHandoffDocs(root string, docs []HandoffDoc, patterns []string) ([]HandoffDoc, error) {
+	seen := make(map[string]bool, len(docs))
+	for _, doc := range docs {
+		seen[doc.Path] = true
+	}
+	for _, pattern := range patterns {
+		matches, err := policyHandoffDocMatches(root, pattern)
+		if err != nil {
+			return nil, err
+		}
+		for _, rel := range matches {
+			if seen[rel] {
+				continue
+			}
+			ok, err := handoffDocExists(root, rel)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				continue
+			}
+			docs = append(docs, HandoffDoc{Path: rel, Source: "policy", Pattern: pattern})
+			seen[rel] = true
+		}
+	}
+	return docs, nil
+}
+
+func policyHandoffDocMatches(root, pattern string) ([]string, error) {
+	clean, ok := cleanHandoffRel(pattern)
+	if !ok {
+		return nil, nil
+	}
+	if !strings.ContainsAny(clean, "*?[") {
+		return []string{clean}, nil
+	}
+	if !validHandoffGlob(clean) {
+		return nil, nil
+	}
+	var matches []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		cleanRel, ok := cleanHandoffRel(rel)
+		if !ok {
+			return nil
+		}
+		if matchHandoffGlob(clean, cleanRel) {
+			matches = append(matches, cleanRel)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(matches)
+	return matches, nil
+}
+
+func validHandoffGlob(pattern string) bool {
+	for _, segment := range strings.Split(pattern, "/") {
+		if segment == "**" {
+			continue
+		}
+		if _, err := path.Match(segment, ""); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func matchHandoffGlob(pattern, rel string) bool {
+	patternParts := strings.Split(pattern, "/")
+	relParts := strings.Split(rel, "/")
+	var match func(int, int) bool
+	match = func(patternIndex, relIndex int) bool {
+		if patternIndex == len(patternParts) {
+			return relIndex == len(relParts)
+		}
+		if patternParts[patternIndex] == "**" {
+			for nextRelIndex := relIndex; nextRelIndex <= len(relParts); nextRelIndex++ {
+				if match(patternIndex+1, nextRelIndex) {
+					return true
+				}
+			}
+			return false
+		}
+		if relIndex == len(relParts) {
+			return false
+		}
+		ok, err := path.Match(patternParts[patternIndex], relParts[relIndex])
+		if err != nil || !ok {
+			return false
+		}
+		return match(patternIndex+1, relIndex+1)
+	}
+	return match(0, 0)
+}
+
+func cleanHandoffRel(rel string) (string, bool) {
+	clean := filepath.Clean(filepath.FromSlash(rel))
 	if filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	slashPath := filepath.ToSlash(clean)
+	for _, part := range strings.Split(slashPath, "/") {
+		if part == ".git" {
+			return "", false
+		}
+	}
+	return slashPath, true
+}
+
+func handoffDocExists(root, rel string) (bool, error) {
+	clean, ok := cleanHandoffRel(rel)
+	if !ok {
 		return false, nil
 	}
-	parts := strings.Split(filepath.ToSlash(clean), "/")
+	parts := strings.Split(clean, "/")
 	current := root
 	for i, part := range parts {
 		current = filepath.Join(current, part)
@@ -445,7 +584,7 @@ func handoffDocExists(root, rel string) (bool, error) {
 			if errors.Is(err, os.ErrNotExist) {
 				return false, nil
 			}
-			return false, fmt.Errorf("check handoff doc %q: %w", filepath.ToSlash(clean), err)
+			return false, fmt.Errorf("check handoff doc %q: %w", clean, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return false, nil

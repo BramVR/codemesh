@@ -252,7 +252,7 @@ func (h *harness) caseProjectRegistryScanWorkflow() {
 	if rerun.Status != "PASS" || !s.expectOutput(rerun, "unchanged: clean-repo") {
 		return
 	}
-	if !s.expectProjectRowCount("project registry scan idempotent state rows", 6) {
+	if !s.expectProjectRowCount("project registry scan idempotent state rows", 7) {
 		return
 	}
 
@@ -620,7 +620,7 @@ func (h *harness) caseNegativeCLIWorkflow() {
 	}
 
 	scan := s.command("negative cli scan fixtures", "scan", s.fixtures.Sources)
-	if scan.Status != "PASS" || !s.expectProjectRowCount("negative cli baseline state rows", 6) {
+	if scan.Status != "PASS" || !s.expectProjectRowCount("negative cli baseline state rows", 7) {
 		return
 	}
 
@@ -628,7 +628,7 @@ func (h *harness) caseNegativeCLIWorkflow() {
 	if !s.expectFailure(unknownProject, 1, "unknown project: ghost-project") {
 		return
 	}
-	if !s.expectProjectRowCount("negative cli unknown project state unchanged", 6) {
+	if !s.expectProjectRowCount("negative cli unknown project state unchanged", 7) {
 		return
 	}
 	if !s.expectPathMissing("negative cli unknown project no filesystem mutation", filepath.Join(s.fixtures.Sources, "ghost-project")) {
@@ -665,7 +665,7 @@ func (h *harness) caseNegativeCLIWorkflow() {
 	if !s.expectFailure(hydrateConflict, 1, "hydrate project: path conflict", conflict.Source) {
 		return
 	}
-	if !s.expectProjectRowCount("negative cli hydrate conflict state unchanged", 7) {
+	if !s.expectProjectRowCount("negative cli hydrate conflict state unchanged", 8) {
 		return
 	}
 	if got, err := os.ReadFile(conflictMarker); err != nil || string(got) != "keep me\n" {
@@ -862,6 +862,24 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 	afterClean := s.command("agent runs list after clean", "runs")
 	if afterClean.Status != "PASS" || !s.expectOutput(afterClean, "(empty)") {
 		return
+	}
+
+	policyDocs := s.command("agent prep policy handoff docs", "agent", "prepare", "policy-docs", "--base", "main")
+	if policyDocs.Status != "PASS" || !s.expectOutput(policyDocs, "handoff_docs: 7") {
+		return
+	}
+	if policyPath := s.expectReadyPath("agent prep policy docs ready path", policyDocs); policyPath != "" {
+		if !s.expectAgentRunHandoffDocs("agent prep policy handoff docs metadata", policyPath, []agentHandoffDoc{
+			{Path: "AGENTS.md", Source: "default"},
+			{Path: "README.md", Source: "default"},
+			{Path: "docs/adr/0001-default.md", Source: "default"},
+			{Path: "docs/runbook.md", Source: "policy", Pattern: "docs/runbook.md"},
+			{Path: "docs/notes/a.md", Source: "policy", Pattern: "docs/notes/**"},
+			{Path: "docs/notes/deep/n.md", Source: "policy", Pattern: "docs/notes/**"},
+			{Path: "docs/notes/z.md", Source: "policy", Pattern: "docs/notes/**"},
+		}) {
+			return
+		}
 	}
 
 	dirty := s.command("agent prep dirty source warning", "agent", "prepare", "dirty-source", "--base", "main")
@@ -1327,6 +1345,45 @@ func (h *harness) createOfflineGitFixtures() (offlineGitFixtures, error) {
 		return os.WriteFile(filepath.Join(adrDir, "0001-fixture.md"), []byte("adr docs "+fakeHandoffDocContentMarker()+"\n"), 0o644)
 	}
 	if project, err := h.createClonedFixtureWithSeed(fixtures, "clean-repo", writeDefaultHandoffDocs, nil); err != nil {
+		return fixtures, err
+	} else {
+		fixtures.Projects = append(fixtures.Projects, project)
+	}
+	writePolicyHandoffDocs := func(path string) error {
+		if err := os.WriteFile(filepath.Join(path, "AGENTS.md"), []byte("agent docs "+fakeHandoffDocContentMarker()+"\n"), 0o644); err != nil {
+			return err
+		}
+		adrDir := filepath.Join(path, "docs", "adr")
+		if err := os.MkdirAll(adrDir, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(adrDir, "0001-default.md"), []byte("adr docs "+fakeHandoffDocContentMarker()+"\n"), 0o644); err != nil {
+			return err
+		}
+		notesDir := filepath.Join(path, "docs", "notes")
+		if err := os.MkdirAll(notesDir, 0o755); err != nil {
+			return err
+		}
+		deepNotesDir := filepath.Join(notesDir, "deep")
+		if err := os.MkdirAll(deepNotesDir, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(path, "docs", "runbook.md"), []byte("runbook "+fakeHandoffDocContentMarker()+"\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(notesDir, "z.md"), []byte("note z "+fakeHandoffDocContentMarker()+"\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(notesDir, "a.md"), []byte("note a "+fakeHandoffDocContentMarker()+"\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(deepNotesDir, "n.md"), []byte("note nested "+fakeHandoffDocContentMarker()+"\n"), 0o644); err != nil {
+			return err
+		}
+		policy := []byte("agent:\n  include_docs:\n    - README.md\n    - .git/config\n    - docs/runbook.md\n    - docs/notes/**\n    - docs/./runbook.md\n")
+		return os.WriteFile(filepath.Join(path, ".codemesh.yml"), policy, 0o644)
+	}
+	if project, err := h.createClonedFixtureWithSeed(fixtures, "policy-docs", writePolicyHandoffDocs, nil); err != nil {
 		return fixtures, err
 	} else {
 		fixtures.Projects = append(fixtures.Projects, project)
@@ -1832,8 +1889,9 @@ type agentMetadata struct {
 }
 
 type agentHandoffDoc struct {
-	Path   string `json:"path"`
-	Source string `json:"source"`
+	Path    string `json:"path"`
+	Source  string `json:"source"`
+	Pattern string `json:"pattern,omitempty"`
 }
 
 type projectRow struct {

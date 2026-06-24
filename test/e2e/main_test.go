@@ -242,8 +242,8 @@ func TestOfflineGitFixturesCreateLocalRemotesAndClones(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fixtures.Projects) != 7 {
-		t.Fatalf("fixture count = %d, want 7", len(fixtures.Projects))
+	if len(fixtures.Projects) != 8 {
+		t.Fatalf("fixture count = %d, want 8", len(fixtures.Projects))
 	}
 
 	clean := fixtures.Project("clean-repo")

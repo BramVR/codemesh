@@ -97,6 +97,63 @@ func TestPrepareRecordsDefaultHandoffDocsFromPreparedClone(t *testing.T) {
 	}
 }
 
+func TestPrepareAppendsPolicyHandoffDocsWithPatternsAndStableDedupe(t *testing.T) {
+	project := createFixtureProject(t, "policy-handoff-docs")
+	writeFile(t, filepath.Join(project.LocalPath, "AGENTS.md"), "default agent doc\n")
+	if err := os.MkdirAll(filepath.Join(project.LocalPath, "docs", "adr"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(project.LocalPath, "docs", "guides"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(project.LocalPath, "docs", "guides", "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(project.LocalPath, "docs", "adr", "0001-default.md"), "default adr\n")
+	writeFile(t, filepath.Join(project.LocalPath, "docs", "runbook.md"), "policy runbook no metadata leak\n")
+	writeFile(t, filepath.Join(project.LocalPath, "docs", "guides", "b.md"), "policy guide b\n")
+	writeFile(t, filepath.Join(project.LocalPath, "docs", "guides", "a.md"), "policy guide a\n")
+	writeFile(t, filepath.Join(project.LocalPath, "docs", "guides", "deep", "c.md"), "policy guide c\n")
+	writeFile(t, filepath.Join(project.LocalPath, ".codemesh.yml"), `agent:
+  include_docs:
+    - AGENTS.md
+    - .git/config
+    - docs/runbook.md
+    - docs/guides/**
+    - docs/./runbook.md
+`)
+	runGit(t, project.LocalPath, "add", ".")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Add policy handoff docs")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	store := newMemoryStore(project)
+	preparer := testPreparer(t.TempDir(), store)
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+
+	if err != nil {
+		t.Fatalf("Prepare error = %v", err)
+	}
+	want := []HandoffDoc{
+		{Path: "AGENTS.md", Source: "default"},
+		{Path: "README.md", Source: "default"},
+		{Path: "docs/adr/0001-default.md", Source: "default"},
+		{Path: "docs/runbook.md", Source: "policy", Pattern: "docs/runbook.md"},
+		{Path: "docs/guides/a.md", Source: "policy", Pattern: "docs/guides/**"},
+		{Path: "docs/guides/b.md", Source: "policy", Pattern: "docs/guides/**"},
+		{Path: "docs/guides/deep/c.md", Source: "policy", Pattern: "docs/guides/**"},
+	}
+	if !handoffDocsEqual(result.Metadata.HandoffDocs, want) {
+		t.Fatalf("handoff docs = %#v, want %#v", result.Metadata.HandoffDocs, want)
+	}
+	metadata := readMetadata(t, result.ReadyPath)
+	if !handoffDocsEqual(metadata.HandoffDocs, want) {
+		t.Fatalf("file handoff docs = %#v, want %#v", metadata.HandoffDocs, want)
+	}
+	if strings.Contains(store.runs[0].MetadataJSON, "policy runbook no metadata leak") {
+		t.Fatal("stored metadata leaked policy-selected doc contents")
+	}
+}
+
 func TestPrepareRecordsHandoffDocsFromRequestedBase(t *testing.T) {
 	project := createFixtureProject(t, "handoff-doc-base")
 	runGit(t, project.LocalPath, "checkout", "-b", "docs-base")
