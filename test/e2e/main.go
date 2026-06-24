@@ -831,6 +831,15 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 			s.updateResult(prepare)
 		} else if !s.expectAgentRunMetadata("agent prep state metadata", readyPath, "clean-repo", "main", "codex") {
 			return
+		} else if !s.expectOutput(prepare, "handoff_docs: 4") {
+			return
+		} else if !s.expectAgentRunHandoffDocs("agent prep default handoff docs", readyPath, []agentHandoffDoc{
+			{Path: "AGENTS.md", Source: "default"},
+			{Path: "CONTEXT.md", Source: "default"},
+			{Path: "README.md", Source: "default"},
+			{Path: "docs/adr/0001-fixture.md", Source: "default"},
+		}) {
+			return
 		}
 	}
 	if prepare.Status != "PASS" {
@@ -1269,6 +1278,10 @@ func fakeEnvFixtureKeySecret() string {
 	return strings.Join([]string{"e2e", "fixture", "env", "key", "secret"}, "-")
 }
 
+func fakeHandoffDocContentMarker() string {
+	return strings.Join([]string{"e2e", "handoff", "doc", "content"}, "-")
+}
+
 func (f offlineGitFixtures) Project(name string) *gitFixtureProject {
 	for i := range f.Projects {
 		if f.Projects[i].Name == name {
@@ -1300,7 +1313,20 @@ func (h *harness) createOfflineGitFixtures() (offlineGitFixtures, error) {
 		return fixtures, err
 	}
 
-	if project, err := h.createClonedFixture(fixtures, "clean-repo", nil); err != nil {
+	writeDefaultHandoffDocs := func(path string) error {
+		if err := os.WriteFile(filepath.Join(path, "AGENTS.md"), []byte("agent docs "+fakeHandoffDocContentMarker()+"\n"), 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(path, "CONTEXT.md"), []byte("context docs "+fakeHandoffDocContentMarker()+"\n"), 0o644); err != nil {
+			return err
+		}
+		adrDir := filepath.Join(path, "docs", "adr")
+		if err := os.MkdirAll(adrDir, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(adrDir, "0001-fixture.md"), []byte("adr docs "+fakeHandoffDocContentMarker()+"\n"), 0o644)
+	}
+	if project, err := h.createClonedFixtureWithSeed(fixtures, "clean-repo", writeDefaultHandoffDocs, nil); err != nil {
 		return fixtures, err
 	} else {
 		fixtures.Projects = append(fixtures.Projects, project)
@@ -1700,6 +1726,28 @@ func (s *scenario) expectAgentRunMetadata(name, readyPath, projectAlias, base, p
 	return true
 }
 
+func (s *scenario) expectAgentRunHandoffDocs(name, readyPath string, want []agentHandoffDoc) bool {
+	fileMetadata, err := readAgentMetadata(filepath.Join(readyPath, "codemesh-run.json"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	dbMetadata, err := readAgentRunMetadataFromStore(filepath.Join(s.codemeshHome, "codemesh.db"), fileMetadata.RunID)
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if !agentHandoffDocsEqual(fileMetadata.HandoffDocs, want) || !agentHandoffDocsEqual(dbMetadata.HandoffDocs, want) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("handoff docs file=%#v db=%#v want=%#v", fileMetadata.HandoffDocs, dbMetadata.HandoffDocs, want), ExitCode: -1})
+		return false
+	}
+	if strings.Contains(fileMetadata.Raw, fakeHandoffDocContentMarker()) || strings.Contains(dbMetadata.Raw, fakeHandoffDocContentMarker()) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: "handoff doc contents appeared in agent run metadata", ExitCode: -1})
+		return false
+	}
+	return true
+}
+
 func (s *scenario) expectProjectRowCount(name string, want int) bool {
 	projects, err := readProjectRowsFromStore(filepath.Join(s.codemeshHome, "codemesh.db"))
 	if err != nil {
@@ -1778,8 +1826,14 @@ type agentMetadata struct {
 	Project   struct {
 		Alias string `json:"alias"`
 	} `json:"project"`
-	Base    string `json:"base"`
-	Profile string `json:"profile"`
+	Base        string            `json:"base"`
+	Profile     string            `json:"profile"`
+	HandoffDocs []agentHandoffDoc `json:"handoff_docs"`
+}
+
+type agentHandoffDoc struct {
+	Path   string `json:"path"`
+	Source string `json:"source"`
 }
 
 type projectRow struct {
@@ -1818,6 +1872,18 @@ func readAgentRunMetadataFromStore(dbPath, runID string) (agentMetadata, error) 
 	}
 	metadata.Raw = metadataJSON
 	return metadata, nil
+}
+
+func agentHandoffDocsEqual(got, want []agentHandoffDoc) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func readProjectRowsFromStore(dbPath string) ([]projectRow, error) {
