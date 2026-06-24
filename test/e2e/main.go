@@ -903,6 +903,49 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 		return
 	}
 
+	dirtyFixture := s.fixture("dirty-source")
+	if dirtyFixture == nil {
+		s.h.record(result{Name: "agent prep source-only doc setup", Status: "FAIL", Error: "dirty-source fixture missing", ExitCode: -1})
+		return
+	}
+	sourceOnlyRel := filepath.ToSlash(filepath.Join("docs", "adr", "9999-source-only.md"))
+	sourceOnlyMarker := fakeSourceOnlyHandoffDocMarker()
+	dirtySourceDoc := filepath.Join(dirtyFixture.Source, filepath.FromSlash(sourceOnlyRel))
+	if err := os.MkdirAll(filepath.Dir(dirtySourceDoc), 0o755); err != nil {
+		s.h.record(result{Name: "agent prep source-only doc setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := os.WriteFile(dirtySourceDoc, []byte("# Source-only ADR\n\n"+sourceOnlyMarker+"\n"), 0o644); err != nil {
+		s.h.record(result{Name: "agent prep source-only doc setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if dirtyStatus, err := s.h.gitStatus(dirtyFixture.Source); err != nil {
+		s.h.record(result{Name: "agent prep source-only doc dirty status", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	} else if !strings.Contains(dirtyStatus, sourceOnlyRel) && !strings.Contains(dirtyStatus, filepath.FromSlash("docs/")) {
+		s.h.record(result{Name: "agent prep source-only doc dirty status", Status: "FAIL", Error: "source-only doc did not make source checkout dirty", ExitCode: -1})
+		return
+	}
+	dirtySourceOnly := s.command("agent prep ignores source-only handoff doc", "agent", "prepare", "dirty-source", "--base", "main")
+	if dirtySourceOnly.Status != "PASS" || !s.expectOutput(dirtySourceOnly, "warning: dirty-checkout", "blockers: none", "handoff_docs: 1") {
+		return
+	}
+	dirtySourceOnlyPath := s.expectReadyPath("agent prep source-only ready path", dirtySourceOnly)
+	if dirtySourceOnlyPath == "" {
+		return
+	}
+	if !s.expectAgentRunHandoffDocs("agent prep source-only handoff docs from prepared clone", dirtySourceOnlyPath, []agentHandoffDoc{
+		{Path: "README.md", Source: "default"},
+	}) {
+		return
+	}
+	if !s.expectAgentRunMetadataExcludes("agent prep source-only doc absent from metadata", dirtySourceOnlyPath, sourceOnlyRel, sourceOnlyMarker) {
+		return
+	}
+	if !s.expectStateStoreExcludes("agent prep source-only doc absent from sqlite", sourceOnlyRel, sourceOnlyMarker) {
+		return
+	}
+
 	envBlocked := s.expectedFailure("agent prep env blocker", "agent", "prepare", "required-env-missing")
 	if envBlocked.Status != "FAIL" {
 		envBlocked.Status = "FAIL"
@@ -1301,6 +1344,10 @@ func fakeEnvFixtureKeySecret() string {
 
 func fakeHandoffDocContentMarker() string {
 	return strings.Join([]string{"e2e", "handoff", "doc", "content"}, "-")
+}
+
+func fakeSourceOnlyHandoffDocMarker() string {
+	return strings.Join([]string{"e2e", "source", "only", "handoff", "doc"}, "-")
 }
 
 func (f offlineGitFixtures) Project(name string) *gitFixtureProject {
@@ -1826,6 +1873,41 @@ func (s *scenario) expectAgentRunDiagnostics(name, readyPath string, warningCode
 	if !agentDiagnosticsContain(fileMetadata.Diagnostics.Blockers, blockerCodes) || !agentDiagnosticsContain(dbMetadata.Diagnostics.Blockers, blockerCodes) {
 		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("diagnostic blockers file=%#v db=%#v want=%#v", fileMetadata.Diagnostics.Blockers, dbMetadata.Diagnostics.Blockers, blockerCodes), ExitCode: -1})
 		return false
+	}
+	return true
+}
+
+func (s *scenario) expectAgentRunMetadataExcludes(name, readyPath string, fragments ...string) bool {
+	fileMetadata, err := readAgentMetadata(filepath.Join(readyPath, "codemesh-run.json"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	dbMetadata, err := readAgentRunMetadataFromStore(filepath.Join(s.codemeshHome, "codemesh.db"), fileMetadata.RunID)
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	for _, fragment := range fragments {
+		if strings.Contains(fileMetadata.Raw, fragment) || strings.Contains(dbMetadata.Raw, fragment) {
+			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("agent run metadata included %q", fragment), ExitCode: -1})
+			return false
+		}
+	}
+	return true
+}
+
+func (s *scenario) expectStateStoreExcludes(name string, fragments ...string) bool {
+	data, err := os.ReadFile(filepath.Join(s.codemeshHome, "codemesh.db"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	for _, fragment := range fragments {
+		if strings.Contains(string(data), fragment) {
+			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("state store included %q", fragment), ExitCode: -1})
+			return false
+		}
 	}
 	return true
 }
