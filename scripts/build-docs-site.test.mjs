@@ -236,9 +236,11 @@ test("pages workflow builds, smoke-tests, and safely skips disabled Pages", () =
   assert.match(workflow, /if: github\.event_name != 'pull_request' && github\.ref == 'refs\/heads\/main'/);
   assert.match(workflow, /permissions:\n\s+contents: read\n\s+pages: write\n\s+id-token: write/);
   assert.doesNotMatch(workflow, /paths:/);
+  assert.equal(countOccurrences(workflow, 'grep -q "CodeMesh" dist/docs-site/index.html'), 2);
+  assert.equal(countOccurrences(workflow, 'grep -q "https://bramvr.github.io/codemesh/" dist/docs-site/index.html'), 2);
 });
 
-test("ci workflow runs full Go gate on source changes", () => {
+test("ci workflow runs full Go gate on every PR and main push", () => {
   const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "ci.yml"), "utf8");
 
   for (const expected of [
@@ -549,6 +551,10 @@ function readPublicTextArtifacts(dir) {
 
 function privateSentinel(...parts) {
   return parts.join("_");
+}
+
+function countOccurrences(value, needle) {
+  return value.split(needle).length - 1;
 }
 
 function escapeRegExp(value) {

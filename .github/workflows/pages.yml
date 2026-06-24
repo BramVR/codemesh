@@ -79,6 +79,8 @@ jobs:
       - name: Smoke-test deploy artifact
         run: |
           test -s dist/docs-site/index.html
+          grep -q "CodeMesh" dist/docs-site/index.html
+          grep -q "https://bramvr.github.io/codemesh/" dist/docs-site/index.html
           test -s dist/docs-site/sitemap.xml
           test -s dist/docs-site/robots.txt
           test -s dist/docs-site/llms.txt
