@@ -195,6 +195,73 @@ test("docs-site emits LLM metadata with canonical and source URLs", () => {
   }
 });
 
+test("pages workflow builds, smoke-tests, and safely skips disabled Pages", () => {
+  const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "pages.yml"), "utf8");
+
+  for (const expected of [
+    "pull_request:",
+    "push:",
+    "branches:",
+    "- main",
+    "workflow_dispatch:",
+    "run: make docs-site",
+    "run: make docs-site-test",
+    "dist/docs-site/index.html",
+    "dist/docs-site/sitemap.xml",
+    "dist/docs-site/robots.txt",
+    "dist/docs-site/llms.txt",
+    "dist/docs-site/llms-full.txt",
+    "dist/docs-site/favicon.svg",
+    "dist/docs-site/assets/codemesh-hero.svg",
+    "dist/docs-site/assets/social-card.png",
+    "dist/docs-site/assets/social-card.svg",
+    "dist/docs-site/.nojekyll",
+    'grep -q "CodeMesh" dist/docs-site/index.html',
+    'grep -q "https://bramvr.github.io/codemesh/" dist/docs-site/index.html',
+    'grep -q "application/ld+json" dist/docs-site/index.html',
+    'grep -q "SoftwareApplication" dist/docs-site/index.html',
+    "application/ld+json",
+    "SoftwareApplication",
+    "gh api \"repos/${GITHUB_REPOSITORY}/pages\"",
+    "HTTP 404",
+    "Pages is not enabled; built and smoke-tested docs-site artifact without deploying.",
+    "Pages configuration check failed unexpectedly; not deploying.",
+    "actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d",
+    "actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9",
+    "actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128",
+  ]) {
+    assert.ok(workflow.includes(expected), `workflow should include ${expected}`);
+  }
+
+  assert.match(workflow, /if: github\.event_name != 'pull_request' && github\.ref == 'refs\/heads\/main'/);
+  assert.match(workflow, /permissions:\n\s+contents: read\n\s+pages: write\n\s+id-token: write/);
+  assert.doesNotMatch(workflow, /paths:/);
+  assert.equal(countOccurrences(workflow, 'grep -q "CodeMesh" dist/docs-site/index.html'), 2);
+  assert.equal(countOccurrences(workflow, 'grep -q "https://bramvr.github.io/codemesh/" dist/docs-site/index.html'), 2);
+});
+
+test("ci workflow runs full Go gate on every PR and main push", () => {
+  const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "ci.yml"), "utf8");
+
+  for (const expected of [
+    "pull_request:",
+    "push:",
+    "branches:",
+    "- main",
+    "workflow_dispatch:",
+    "actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c",
+    "go-version-file: go.mod",
+    "run: make test",
+    "run: make e2e",
+    "run: make e2e-packaged",
+  ]) {
+    assert.ok(workflow.includes(expected), `workflow should include ${expected}`);
+  }
+
+  assert.match(workflow, /permissions:\n\s+contents: read/);
+  assert.doesNotMatch(workflow, /paths:/);
+});
+
 test("docs-site keeps non-public docs and traversal links out of public artifacts", () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codemesh-docs-site-non-public-"));
   const outDir = path.join(tempRoot, "dist", "docs-site");
@@ -484,6 +551,10 @@ function readPublicTextArtifacts(dir) {
 
 function privateSentinel(...parts) {
   return parts.join("_");
+}
+
+function countOccurrences(value, needle) {
+  return value.split(needle).length - 1;
 }
 
 function escapeRegExp(value) {

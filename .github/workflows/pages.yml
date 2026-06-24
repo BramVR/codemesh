@@ -1,0 +1,130 @@
+name: pages
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and smoke-test Project Site
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+
+      - name: Build Project Site
+        run: make docs-site
+
+      - name: Run docs-site tests
+        run: make docs-site-test
+
+      - name: Smoke-test build output
+        run: |
+          test -s dist/docs-site/index.html
+          grep -q "CodeMesh" dist/docs-site/index.html
+          grep -q "https://bramvr.github.io/codemesh/" dist/docs-site/index.html
+          test -s dist/docs-site/sitemap.xml
+          test -s dist/docs-site/robots.txt
+          test -s dist/docs-site/llms.txt
+          test -s dist/docs-site/llms-full.txt
+          test -s dist/docs-site/favicon.svg
+          test -s dist/docs-site/assets/codemesh-hero.svg
+          test -s dist/docs-site/assets/social-card.png
+          test -s dist/docs-site/assets/social-card.svg
+          test -f dist/docs-site/.nojekyll
+          grep -q "application/ld+json" dist/docs-site/index.html
+          grep -q "SoftwareApplication" dist/docs-site/index.html
+
+  deploy:
+    name: Deploy Project Site
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+
+      - name: Build Project Site
+        run: make docs-site
+
+      - name: Smoke-test deploy artifact
+        run: |
+          test -s dist/docs-site/index.html
+          grep -q "CodeMesh" dist/docs-site/index.html
+          grep -q "https://bramvr.github.io/codemesh/" dist/docs-site/index.html
+          test -s dist/docs-site/sitemap.xml
+          test -s dist/docs-site/robots.txt
+          test -s dist/docs-site/llms.txt
+          test -s dist/docs-site/llms-full.txt
+          test -s dist/docs-site/favicon.svg
+          test -s dist/docs-site/assets/codemesh-hero.svg
+          test -s dist/docs-site/assets/social-card.png
+          test -s dist/docs-site/assets/social-card.svg
+          test -f dist/docs-site/.nojekyll
+          grep -q "application/ld+json" dist/docs-site/index.html
+          grep -q "SoftwareApplication" dist/docs-site/index.html
+
+      - name: Check Pages configuration
+        id: pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          pages_response="$(gh api "repos/${GITHUB_REPOSITORY}/pages" 2>&1)"
+          pages_check_exit="$?"
+          set -e
+
+          if [ "$pages_check_exit" -eq 0 ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$pages_response" | grep -q "HTTP 404"; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Pages is not enabled; built and smoke-tested docs-site artifact without deploying. Enable GitHub Pages with source 'GitHub Actions' in repository settings, then rerun this workflow."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Pages configuration check failed unexpectedly; not deploying." >&2
+            exit "$pages_check_exit"
+          fi
+
+      - name: Configure Pages
+        if: steps.pages.outputs.enabled == 'true'
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Upload artifact
+        if: steps.pages.outputs.enabled == 'true'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: dist/docs-site
+
+      - name: Deploy
+        if: steps.pages.outputs.enabled == 'true'
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
