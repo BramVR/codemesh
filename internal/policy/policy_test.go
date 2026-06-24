@@ -63,6 +63,33 @@ func TestResolveValidPolicy(t *testing.T) {
 	}
 }
 
+func TestResolveInvalidIncludeDocsPathReturnsActionableError(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry string
+	}{
+		{name: "absolute", entry: "/tmp/outside.md"},
+		{name: "parent escape", entry: "../outside.md"},
+		{name: "nested parent escape", entry: "docs/../../outside.md"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writePolicy(t, root, "agent:\n  include_docs:\n    - "+tt.entry+"\n")
+
+			_, err := Resolve(root)
+			if err == nil {
+				t.Fatal("Resolve error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), ".codemesh.yml") ||
+				!strings.Contains(err.Error(), "agent.include_docs") ||
+				!strings.Contains(err.Error(), tt.entry) {
+				t.Fatalf("error is not actionable: %v", err)
+			}
+		})
+	}
+}
+
 func TestDocumentedPolicyExampleParses(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), "docs", "project-policy.md"))
 	if err != nil {

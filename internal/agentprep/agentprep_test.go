@@ -288,6 +288,47 @@ func TestPrepareStopsOnReadinessBlockerBeforeWorkspacePrep(t *testing.T) {
 	}
 }
 
+func TestPrepareStopsOnInvalidPolicyIncludeDocsBeforeWorkspacePrep(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry string
+	}{
+		{name: "absolute", entry: "/tmp/outside.md"},
+		{name: "parent escape", entry: "../outside.md"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := createFixtureProject(t, "blocked-include-docs-"+strings.ReplaceAll(tt.name, " ", "-"))
+			writeFile(t, filepath.Join(project.LocalPath, ".codemesh.yml"), "agent:\n  include_docs:\n    - "+tt.entry+"\n")
+			runGit(t, project.LocalPath, "add", ".codemesh.yml")
+			runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Add invalid handoff docs policy")
+			runGit(t, project.LocalPath, "push", "origin", "main")
+			home := t.TempDir()
+			store := newMemoryStore(project)
+			preparer := testPreparer(home, store)
+
+			result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+
+			if err == nil {
+				t.Fatal("Prepare error = nil, want invalid policy blocker")
+			}
+			if len(result.Diagnostics.Blockers) != 1 || result.Diagnostics.Blockers[0].Code != "invalid-policy" {
+				t.Fatalf("blockers = %#v, want invalid-policy", result.Diagnostics.Blockers)
+			}
+			message := result.Diagnostics.Blockers[0].Message
+			if !strings.Contains(message, "agent.include_docs") || !strings.Contains(message, tt.entry) {
+				t.Fatalf("blocker message = %q, want field and invalid entry", message)
+			}
+			if _, statErr := os.Stat(filepath.Join(home, "agents", "run-test")); !os.IsNotExist(statErr) {
+				t.Fatalf("run dir exists or stat failed: %v", statErr)
+			}
+			if len(store.runs) != 0 {
+				t.Fatalf("recorded runs = %d, want 0", len(store.runs))
+			}
+		})
+	}
+}
+
 func TestPrepareRemovesRunDirectoryWhenCloneFails(t *testing.T) {
 	project := createFixtureProject(t, "clone-fails")
 	project.CloneURL = "https://example.invalid/missing.git"

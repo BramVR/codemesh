@@ -112,6 +112,9 @@ func ParseBytes(path string, data []byte) (Policy, error) {
 	if err := validateStrings(path, "agent.include_docs", raw.Agent.IncludeDocs); err != nil {
 		return Policy{}, err
 	}
+	if err := validateIncludeDocs(path, raw.Agent.IncludeDocs); err != nil {
+		return Policy{}, err
+	}
 	p.Env.RequiredFiles = append([]string(nil), raw.Agent.Env.RequiredFiles...)
 	p.Env.RequiredKeys = append([]string(nil), raw.Agent.Env.RequiredKeys...)
 	p.IncludeDocs = append([]string(nil), raw.Agent.IncludeDocs...)
@@ -145,6 +148,16 @@ func validateRequiredKeys(path string, values []string) error {
 	for i, value := range values {
 		if strings.Contains(value, "=") || strings.TrimSpace(value) != value {
 			return fmt.Errorf("invalid %s: agent.env.required_keys[%d] must be an env key name, not a value assignment", path, i)
+		}
+	}
+	return nil
+}
+
+func validateIncludeDocs(path string, values []string) error {
+	for i, value := range values {
+		clean := filepath.Clean(filepath.FromSlash(value))
+		if filepath.IsAbs(value) || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("invalid %s: agent.include_docs[%d] %q must be relative to the project checkout", path, i, value)
 		}
 	}
 	return nil
