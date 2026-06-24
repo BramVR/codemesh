@@ -22,6 +22,8 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 
 Each linked reference page documents the current syntax, purpose, safe local examples, and current limitations. If a command does not appear in this list, it is not part of the runnable MVP surface.
 
+`codemesh agent prepare` prints the ready workspace path plus `handoff_docs: N`, where `N` is the count of selected handoff docs. The detailed handoff doc metadata is path-only in `codemesh-run.json`; CodeMesh does not copy docs, embed doc contents, or read doc contents into metadata.
+
 ## Safe Local Example
 
 This example uses a temp CodeMesh home and local Git remote only. It does not touch the user's normal CodeMesh home, personal workspace, GitHub account, or secrets.
