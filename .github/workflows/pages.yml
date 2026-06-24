@@ -48,6 +48,15 @@ jobs:
       - name: Run docs-site tests
         run: make docs-site-test
 
+      - name: Run Go tests
+        run: make test
+
+      - name: Run e2e tests
+        run: make e2e
+
+      - name: Run packaged e2e tests
+        run: make e2e-packaged
+
       - name: Smoke-test build output
         run: |
           test -s dist/docs-site/index.html
