@@ -48,6 +48,9 @@ func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
 	if metadata.Base != "main" || metadata.Profile != "codex" || metadata.ReadyPath != result.ReadyPath {
 		t.Fatalf("metadata base/profile/path = %#v", metadata)
 	}
+	if metadata.ResolvedCommit == "" || metadata.ReadinessDecision != "ready" {
+		t.Fatalf("metadata commit/decision = %#v", metadata)
+	}
 	if len(metadata.Diagnostics.Warnings) != 0 || len(metadata.Diagnostics.Blockers) != 0 {
 		t.Fatalf("metadata diagnostics = %#v, want none", metadata.Diagnostics)
 	}
@@ -56,6 +59,227 @@ func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
 	}
 	if store.runs[0].WorkspacePath != result.ReadyPath {
 		t.Fatalf("stored workspace path = %q, want %q", store.runs[0].WorkspacePath, result.ReadyPath)
+	}
+}
+
+func TestPrepareMissingSourceCheckoutClonesFromRegisteredRemote(t *testing.T) {
+	project := createFixtureProject(t, "missing-source-prep")
+	if err := os.RemoveAll(project.LocalPath); err != nil {
+		t.Fatal(err)
+	}
+	store := newMemoryStore(project)
+	preparer := testPreparer(t.TempDir(), store)
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main", Profile: "codex"})
+
+	if err != nil {
+		t.Fatalf("Prepare error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(result.ReadyPath, ".git")); err != nil {
+		t.Fatalf("ready checkout missing .git: %v", err)
+	}
+	if branch := strings.TrimSpace(gitOutputTest(t, result.ReadyPath, "branch", "--show-current")); branch != "main" {
+		t.Fatalf("ready checkout branch = %q, want main", branch)
+	}
+	if hasDiagnostic(result.Diagnostics.Blockers, "missing-path") {
+		t.Fatalf("blockers = %#v, want missing source path ignored for remote prep", result.Diagnostics.Blockers)
+	}
+	metadata := readMetadata(t, result.ReadyPath)
+	if metadata.Project.SourcePath != project.LocalPath || metadata.Project.Remote != project.NormalizedRemote {
+		t.Fatalf("metadata project = %#v", metadata.Project)
+	}
+	if metadata.ResolvedCommit == "" || metadata.ReadinessDecision != "ready" {
+		t.Fatalf("metadata commit/decision = %#v", metadata)
+	}
+	if len(store.runs) != 1 || !strings.Contains(store.runs[0].MetadataJSON, `"readiness_decision": "ready"`) {
+		t.Fatalf("stored runs = %#v", store.runs)
+	}
+}
+
+func TestPrepareMissingSourceCheckoutUsesRemotePolicyBaseWhenRequestBaseUnset(t *testing.T) {
+	project := createFixtureProject(t, "missing-source-policy-base")
+	runGit(t, project.LocalPath, "checkout", "-b", "release/agent")
+	writeFile(t, filepath.Join(project.LocalPath, "release.txt"), "release\n")
+	runGit(t, project.LocalPath, "add", ".")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Release branch")
+	runGit(t, project.LocalPath, "push", "origin", "release/agent")
+	runGit(t, project.LocalPath, "checkout", "main")
+	writeFile(t, filepath.Join(project.LocalPath, ".codemesh.yml"), "agent:\n  base: release/agent\n")
+	runGit(t, project.LocalPath, "add", ".codemesh.yml")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Agent policy")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	if err := os.RemoveAll(project.LocalPath); err != nil {
+		t.Fatal(err)
+	}
+	store := newMemoryStore(project)
+	preparer := testPreparer(t.TempDir(), store)
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias})
+
+	if err != nil {
+		t.Fatalf("Prepare error = %v", err)
+	}
+	if result.Base != "release/agent" {
+		t.Fatalf("Base = %q, want release/agent", result.Base)
+	}
+	if branch := strings.TrimSpace(gitOutputTest(t, result.ReadyPath, "branch", "--show-current")); branch != "release/agent" {
+		t.Fatalf("ready checkout branch = %q, want release/agent", branch)
+	}
+	if len(store.runs) != 1 {
+		t.Fatalf("recorded runs = %d, want 1", len(store.runs))
+	}
+}
+
+func TestPrepareMissingSourceCheckoutStillAppliesRemoteEnvPolicy(t *testing.T) {
+	project := createFixtureProject(t, "missing-source-env-policy")
+	writeFile(t, filepath.Join(project.LocalPath, ".codemesh.yml"), "agent:\n  env:\n    mode: block\n    required_keys:\n      - CODEMESH_TEST_REQUIRED\n")
+	runGit(t, project.LocalPath, "add", ".codemesh.yml")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Require env key")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	if err := os.RemoveAll(project.LocalPath); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	store := newMemoryStore(project)
+	preparer := testPreparer(home, store)
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+
+	if err == nil {
+		t.Fatal("Prepare error = nil, want remote env policy blocker")
+	}
+	if !hasDiagnostic(result.Diagnostics.Blockers, "missing-env-key") {
+		t.Fatalf("blockers = %#v, want missing-env-key", result.Diagnostics.Blockers)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, "agents", "run-test")); !os.IsNotExist(statErr) {
+		t.Fatalf("run dir exists or stat failed: %v", statErr)
+	}
+	if len(store.runs) != 0 {
+		t.Fatalf("recorded runs = %d, want 0", len(store.runs))
+	}
+}
+
+func TestPrepareMissingSourceCheckoutReportsMissingBase(t *testing.T) {
+	project := createFixtureProject(t, "missing-source-missing-base")
+	if err := os.RemoveAll(project.LocalPath); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	store := newMemoryStore(project)
+	preparer := testPreparer(home, store)
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "missing-base"})
+
+	if err == nil {
+		t.Fatal("Prepare error = nil, want missing-base blocker")
+	}
+	if !hasDiagnostic(result.Diagnostics.Blockers, "missing-base") {
+		t.Fatalf("blockers = %#v, want missing-base", result.Diagnostics.Blockers)
+	}
+	if hasDiagnostic(result.Diagnostics.Blockers, "fetch-failed") {
+		t.Fatalf("blockers = %#v, want no fetch-failed for missing branch", result.Diagnostics.Blockers)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, "agents", "run-test")); !os.IsNotExist(statErr) {
+		t.Fatalf("run dir exists or stat failed: %v", statErr)
+	}
+	if len(store.runs) != 0 {
+		t.Fatalf("recorded runs = %d, want 0", len(store.runs))
+	}
+}
+
+func TestPrepareMissingSourceCheckoutRequiresExactBaseRef(t *testing.T) {
+	project := createFixtureProject(t, "missing-source-exact-base")
+	runGit(t, project.LocalPath, "checkout", "-b", "release/main")
+	writeFile(t, filepath.Join(project.LocalPath, "release.txt"), "release\n")
+	runGit(t, project.LocalPath, "add", ".")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Release branch")
+	runGit(t, project.LocalPath, "push", "origin", "release/main")
+	runGit(t, project.NormalizedRemote, "branch", "-D", "main")
+	if err := os.RemoveAll(project.LocalPath); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	store := newMemoryStore(project)
+	preparer := testPreparer(home, store)
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+
+	if err == nil {
+		t.Fatal("Prepare error = nil, want missing-base blocker")
+	}
+	if !hasDiagnostic(result.Diagnostics.Blockers, "missing-base") {
+		t.Fatalf("blockers = %#v, want missing-base for exact refs/heads/main", result.Diagnostics.Blockers)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, "agents", "run-test")); !os.IsNotExist(statErr) {
+		t.Fatalf("run dir exists or stat failed: %v", statErr)
+	}
+	if len(store.runs) != 0 {
+		t.Fatalf("recorded runs = %d, want 0", len(store.runs))
+	}
+}
+
+func TestPrepareMissingSourceCheckoutReportsInvalidRemotePolicy(t *testing.T) {
+	project := createFixtureProject(t, "missing-source-invalid-policy")
+	writeFile(t, filepath.Join(project.LocalPath, ".codemesh.yml"), "agent:\n  include_docs:\n    - /tmp/outside.md\n")
+	runGit(t, project.LocalPath, "add", ".codemesh.yml")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Add invalid policy")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	if err := os.RemoveAll(project.LocalPath); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	store := newMemoryStore(project)
+	preparer := testPreparer(home, store)
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+
+	if err == nil {
+		t.Fatal("Prepare error = nil, want invalid-policy blocker")
+	}
+	if !hasDiagnostic(result.Diagnostics.Blockers, "invalid-policy") {
+		t.Fatalf("blockers = %#v, want invalid-policy", result.Diagnostics.Blockers)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, "agents", "run-test")); !os.IsNotExist(statErr) {
+		t.Fatalf("run dir exists or stat failed: %v", statErr)
+	}
+	if len(store.runs) != 0 {
+		t.Fatalf("recorded runs = %d, want 0", len(store.runs))
+	}
+}
+
+func TestPrepareMissingSourceCheckoutDoesNotFollowPolicySymlink(t *testing.T) {
+	project := createFixtureProject(t, "missing-source-policy-symlink")
+	outsidePolicy := filepath.Join(t.TempDir(), "outside-policy.yml")
+	writeFile(t, outsidePolicy, "agent:\n  env:\n    mode: block\n    required_keys:\n      - CODEMESH_TEST_REQUIRED\n")
+	if err := os.Symlink(outsidePolicy, filepath.Join(project.LocalPath, ".codemesh.yml")); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, project.LocalPath, "add", ".codemesh.yml")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Add policy symlink")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	if err := os.RemoveAll(project.LocalPath); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	store := newMemoryStore(project)
+	preparer := testPreparer(home, store)
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+
+	if err == nil {
+		t.Fatal("Prepare error = nil, want invalid-policy blocker")
+	}
+	if !hasDiagnostic(result.Diagnostics.Blockers, "invalid-policy") {
+		t.Fatalf("blockers = %#v, want invalid-policy from symlink blob", result.Diagnostics.Blockers)
+	}
+	if hasDiagnostic(result.Diagnostics.Blockers, "missing-env-key") {
+		t.Fatalf("blockers = %#v, followed symlinked local policy", result.Diagnostics.Blockers)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, "agents", "run-test")); !os.IsNotExist(statErr) {
+		t.Fatalf("run dir exists or stat failed: %v", statErr)
+	}
+	if len(store.runs) != 0 {
+		t.Fatalf("recorded runs = %d, want 0", len(store.runs))
 	}
 }
 

@@ -450,6 +450,65 @@ func (h *harness) caseLiveGitHubRemoteSmoke(cfg liveConfig) {
 		return
 	}
 
+	prepare := h.executeCommand(commandSpec{
+		Label:   "live github agent prepare missing project",
+		Name:    h.bin,
+		Args:    []string{"agent", "prepare", "live-github", "--base", defaultBranch, "--profile", "codex"},
+		Timeout: longCommandTimeout,
+	})
+	h.recordLiveGitHubDuration("codemesh_agent_prepare", prepare)
+	if prepare.Status != "PASS" {
+		if h.recordLiveGitHubCommandSkipOrFail(cfg, prepare, remote) {
+			return
+		}
+		h.record(prepare)
+		return
+	}
+	h.record(prepare)
+	if !h.expectLiveCommandOutput(prepare, "agent workspace ready", "project: live-github", "base: "+defaultBranch, "profile: codex", "blockers: none", "handoff_docs: ", "ready_path: ") {
+		return
+	}
+	readyPath := valueAfterPrefix(prepare.Stdout, "ready_path: ")
+	if !h.expectLiveAgentWorkspace(remote, seedPath, readyPath, defaultBranch) {
+		return
+	}
+
+	runs := h.executeCommand(commandSpec{
+		Label:   "live github runs reads prepared agent run",
+		Name:    h.bin,
+		Args:    []string{"runs"},
+		Timeout: defaultCommandTimeout,
+	})
+	h.recordLiveGitHubDuration("codemesh_runs", runs)
+	if runs.Status != "PASS" {
+		h.record(runs)
+		return
+	}
+	h.record(runs)
+	if !h.expectLiveCommandOutput(runs, "project=live-github", "base="+defaultBranch, "profile=codex", "workspace="+readyPath) {
+		return
+	}
+
+	clean := h.executeCommand(commandSpec{
+		Label:   "live github clean prepared agent run",
+		Name:    h.bin,
+		Args:    []string{"clean", "--older-than", "0d"},
+		Timeout: defaultCommandTimeout,
+	})
+	h.recordLiveGitHubDuration("codemesh_clean", clean)
+	if clean.Status != "PASS" {
+		h.record(clean)
+		return
+	}
+	h.record(clean)
+	if !h.expectLiveCommandOutput(clean, "deleted: 1", "kept: 0") {
+		return
+	}
+	if _, err := os.Stat(readyPath); !errors.Is(err, os.ErrNotExist) {
+		h.record(result{Name: "live github clean removed managed agent workspace", Status: "FAIL", Error: fmt.Sprintf("ready path exists or stat failed after clean: %v", err), ExitCode: -1})
+		return
+	}
+
 	hydrate := h.executeCommand(commandSpec{
 		Label:   "live github hydrate missing project",
 		Name:    h.bin,
@@ -648,6 +707,72 @@ func (h *harness) expectGitOrigin(name, path, remote string) bool {
 		return false
 	}
 	return true
+}
+
+func (h *harness) expectLiveAgentWorkspace(remote, registeredSourcePath, readyPath, base string) bool {
+	if readyPath == "" {
+		h.record(result{Name: "live github agent ready path", Status: "FAIL", Error: "agent prepare output did not include ready_path", ExitCode: -1})
+		return false
+	}
+	if !strings.HasPrefix(readyPath, filepath.Join(h.codemeshHome, "agents")+string(filepath.Separator)) {
+		h.record(result{Name: "live github agent managed ready path", Status: "FAIL", Error: "ready_path was not under isolated CodeMesh agents storage", ExitCode: -1})
+		return false
+	}
+	if _, err := os.Stat(registeredSourcePath); !errors.Is(err, os.ErrNotExist) {
+		h.record(result{Name: "live github agent missing source preserved", Status: "FAIL", Error: fmt.Sprintf("registered source path exists or stat failed: %v", err), ExitCode: -1})
+		return false
+	}
+	if !h.expectGitCheckoutAtBase("live github agent checkout branch", readyPath, base) {
+		return false
+	}
+	if !h.expectGitOrigin("live github agent checkout origin", readyPath, remote) {
+		return false
+	}
+	resolvedCommit, _, err := h.exec(readyPath, "git", "rev-parse", "HEAD")
+	if err != nil {
+		h.record(result{Name: "live github agent resolved commit", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	metadataPath := filepath.Join(readyPath, "codemesh-run.json")
+	metadata, err := readAgentMetadata(metadataPath)
+	if err != nil {
+		h.record(result{Name: "live github agent metadata read", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if metadata.ReadyPath != readyPath || metadata.Project.Alias != "live-github" || metadata.Project.Remote != normalizeLiveGitHubRemoteForMetadata(remote) || metadata.Project.CloneURL != remote || metadata.Project.SourcePath != registeredSourcePath {
+		h.record(result{Name: "live github agent metadata project identity", Status: "FAIL", Error: "codemesh-run.json project identity did not match live registered remote", ExitCode: -1})
+		return false
+	}
+	if metadata.Base != base || metadata.Profile != "codex" || metadata.ResolvedCommit != strings.TrimSpace(resolvedCommit) || metadata.ReadinessDecision != "ready" {
+		h.record(result{Name: "live github agent metadata checkout contract", Status: "FAIL", Error: "codemesh-run.json checkout contract did not match prepared workspace", ExitCode: -1})
+		return false
+	}
+	if len(metadata.Diagnostics.Blockers) != 0 {
+		h.record(result{Name: "live github agent metadata readiness", Status: "FAIL", Error: fmt.Sprintf("metadata blockers=%#v", metadata.Diagnostics.Blockers), ExitCode: -1})
+		return false
+	}
+	dbMetadata, err := readAgentRunMetadataFromStore(filepath.Join(h.codemeshHome, "codemesh.db"), metadata.RunID)
+	if err != nil {
+		h.record(result{Name: "live github agent state metadata read", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if dbMetadata.ReadyPath != metadata.ReadyPath || dbMetadata.ResolvedCommit != metadata.ResolvedCommit || dbMetadata.ReadinessDecision != metadata.ReadinessDecision {
+		h.record(result{Name: "live github agent state metadata parity", Status: "FAIL", Error: "state-store metadata did not match codemesh-run.json", ExitCode: -1})
+		return false
+	}
+	h.record(result{Name: "live github agent workspace metadata", Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func normalizeLiveGitHubRemoteForMetadata(remote string) string {
+	parsed, err := url.Parse(remote)
+	if err != nil {
+		return remote
+	}
+	host := strings.ToLower(parsed.Hostname())
+	path := strings.TrimPrefix(parsed.Path, "/")
+	path = strings.TrimSuffix(path, ".git")
+	return parsed.Scheme + "://" + host + "/" + path
 }
 
 func (h *harness) expectLiveGitHubState(remote, localPath string) bool {
@@ -2573,12 +2698,17 @@ type agentMetadata struct {
 	RunID     string `json:"run_id"`
 	ReadyPath string `json:"ready_path"`
 	Project   struct {
-		Alias string `json:"alias"`
+		Alias      string `json:"alias"`
+		Remote     string `json:"remote"`
+		CloneURL   string `json:"clone_url"`
+		SourcePath string `json:"source_path"`
 	} `json:"project"`
-	Base        string            `json:"base"`
-	Profile     string            `json:"profile"`
-	HandoffDocs []agentHandoffDoc `json:"handoff_docs"`
-	Diagnostics agentDiagnostics  `json:"diagnostics"`
+	Base              string            `json:"base"`
+	Profile           string            `json:"profile"`
+	ResolvedCommit    string            `json:"resolved_commit"`
+	ReadinessDecision string            `json:"readiness_decision"`
+	HandoffDocs       []agentHandoffDoc `json:"handoff_docs"`
+	Diagnostics       agentDiagnostics  `json:"diagnostics"`
 }
 
 type agentHandoffDoc struct {
