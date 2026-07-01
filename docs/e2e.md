@@ -75,6 +75,7 @@ The report includes:
 - `started_at`: UTC run start time.
 - `mode`: `source` for the normal source-built runner, `packaged` for `make e2e-packaged`, or `live` for `make e2e-live`.
 - `binary`: executable path plus whether it was an external packaged binary.
+- `host`: OS, architecture, and Go version for the machine that wrote the report.
 - `isolation`: isolated `CODEMESH_HOME`, `HOME`, workspace, run directory, and Git config path.
 - `live`: live opt-in status, strict mode, target labels, skip reasons, GitHub remote URL, discovered default branch, command durations for GitHub status, Agent Prep, Agent Run, runs, cleanup, and hydration smoke steps, per-smoke secret-safety result, and the host-scoped lock path/label when a lock was acquired.
 - `summary`: `pass`, `fail`, `skip`, and `total` counts derived from recorded case results.
@@ -200,6 +201,20 @@ make e2e
 Run `make e2e-packaged` when changing packaging, installed-binary assumptions, source-relative paths, or release-smoke behavior. Run `make e2e-live` when changing the live harness or adding real provider, GUI, network, account, or multi-machine checks. Expect live mode to report `SKIP` unless `CODEMESH_E2E_LIVE=1` is set and free prerequisites are available.
 
 If a command fails, use the printed failure block first. If a machine-readable audit trail is needed, inspect `tmp/e2e-report.json` or set `CODEMESH_E2E_REPORT` to a temp path before running the target.
+
+## Handoff Gates
+
+Before handoff after code changes, run:
+
+```sh
+make test
+make e2e
+make e2e-packaged
+```
+
+Run `make docs-site-test` when docs-site inputs change. Run default `make e2e-live` when changing live, provider, GUI, network, or multi-machine harness behavior; the default expected result is an audited `SKIP` unless live checks are explicitly opted in.
+
+GitHub Actions adds CI-only cross-OS proof. Required PR CI runs `make test`, `make e2e`, and `make e2e-packaged` on Ubuntu and macOS with distinct `CODEMESH_E2E_REPORT` paths for source and packaged modes, then uploads the JSON reports as short-retention artifacts even when a test step fails. Windows required PR CI runs a targeted Go unit smoke, builds `dist/codemesh.exe`, and runs the binary help smoke; Windows e2e remains an explicit tracked skip for issue 92 while POSIX-mode e2e coverage runs on Ubuntu and macOS. Live/network and Peekaboo checks are not part of required PR CI unless a future workflow opts into them explicitly.
 
 ## Adopted Patterns
 

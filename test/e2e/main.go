@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"time"
 
@@ -46,6 +47,7 @@ type report struct {
 	StartedAt    string             `json:"started_at"`
 	Mode         string             `json:"mode"`
 	Binary       reportBinary       `json:"binary"`
+	Host         reportHost         `json:"host"`
 	Isolation    reportIsolation    `json:"isolation"`
 	Live         *reportLive        `json:"live,omitempty"`
 	Summary      reportSummary      `json:"summary"`
@@ -57,6 +59,12 @@ type reportBinary struct {
 	Path     string `json:"path"`
 	Kind     string `json:"kind"`
 	External bool   `json:"external"`
+}
+
+type reportHost struct {
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+	GoVersion string `json:"go_version"`
 }
 
 type reportIsolation struct {
@@ -2021,6 +2029,11 @@ func (h *harness) writeReport() error {
 			Path:     h.bin,
 			Kind:     h.binaryKind(),
 			External: h.externalBin,
+		},
+		Host: reportHost{
+			OS:        runtime.GOOS,
+			Arch:      runtime.GOARCH,
+			GoVersion: runtime.Version(),
 		},
 		Isolation: reportIsolation{
 			CodeMeshHome: h.codemeshHome,
