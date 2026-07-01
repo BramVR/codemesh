@@ -16,18 +16,18 @@ concurrency:
 
 jobs:
   unix-smoke:
-    name: Test CodeMesh CLI (${{ matrix.os-name }})
+    name: Test CodeMesh CLI (${{ matrix.os_name }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os-name: Ubuntu
-            artifact-os: ubuntu
+          - os_name: Ubuntu
+            artifact_os: ubuntu
             runner: ubuntu-latest
-          - os-name: macOS
-            artifact-os: macos
+          - os_name: macOS
+            artifact_os: macos
             runner: macos-latest
     steps:
       - name: Check out
@@ -45,25 +45,25 @@ jobs:
       - name: Run e2e tests
         if: ${{ !cancelled() }}
         env:
-          CODEMESH_E2E_REPORT: tmp/e2e-reports/${{ matrix.artifact-os }}/source.json
+          CODEMESH_E2E_REPORT: tmp/e2e-reports/${{ matrix.artifact_os }}/source.json
         run: make e2e
 
       - name: Run packaged e2e tests
         if: ${{ !cancelled() }}
         env:
-          CODEMESH_E2E_REPORT: tmp/e2e-reports/${{ matrix.artifact-os }}/packaged.json
+          CODEMESH_E2E_REPORT: tmp/e2e-reports/${{ matrix.artifact_os }}/packaged.json
         run: make e2e-packaged
 
       - name: Summarize e2e artifacts
         if: ${{ always() }}
         run: |
-          echo "artifact: codemesh-e2e-${{ matrix.artifact-os }}-source"
-          echo "report: tmp/e2e-reports/${{ matrix.artifact-os }}/source.json"
+          echo "artifact: codemesh-e2e-${{ matrix.artifact_os }}-source"
+          echo "report: tmp/e2e-reports/${{ matrix.artifact_os }}/source.json"
           echo "os: $RUNNER_OS"
           echo "arch: $RUNNER_ARCH"
           go version || true
-          echo "artifact: codemesh-e2e-${{ matrix.artifact-os }}-packaged"
-          echo "report: tmp/e2e-reports/${{ matrix.artifact-os }}/packaged.json"
+          echo "artifact: codemesh-e2e-${{ matrix.artifact_os }}-packaged"
+          echo "report: tmp/e2e-reports/${{ matrix.artifact_os }}/packaged.json"
           echo "os: $RUNNER_OS"
           echo "arch: $RUNNER_ARCH"
           go version || true
@@ -72,8 +72,8 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: codemesh-e2e-${{ matrix.artifact-os }}-source
-          path: tmp/e2e-reports/${{ matrix.artifact-os }}/source.json
+          name: codemesh-e2e-${{ matrix.artifact_os }}-source
+          path: tmp/e2e-reports/${{ matrix.artifact_os }}/source.json
           if-no-files-found: warn
           retention-days: 5
 
@@ -81,8 +81,8 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: codemesh-e2e-${{ matrix.artifact-os }}-packaged
-          path: tmp/e2e-reports/${{ matrix.artifact-os }}/packaged.json
+          name: codemesh-e2e-${{ matrix.artifact_os }}-packaged
+          path: tmp/e2e-reports/${{ matrix.artifact_os }}/packaged.json
           if-no-files-found: warn
           retention-days: 5
 
