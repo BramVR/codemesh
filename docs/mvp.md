@@ -67,6 +67,7 @@ Used by:
 
 - `tree`
 - `status`
+- `doctor`
 - `agent prepare`
 
 ### Env Readiness
@@ -177,6 +178,19 @@ Checks:
 - optional `.codemesh.yml` env requirements
 - optional Command Result JSON output for automation
 
+### `codemesh doctor <project> [--base branch] [--strict] [--json]`
+
+Preflights whether one registered project is ready for agent handoff without creating a temp clone run directory or recording an Agent Run.
+
+Rules:
+
+- use Agent Prep handoff readiness semantics
+- report `green`, `warning`, or `blocked`
+- print actionable warning and blocker diagnostics
+- keep warning-only readiness exit-zero by default
+- make warning-only readiness fail with `--strict`
+- use Command Result JSON when `--json` is passed
+
 ### `codemesh hydrate <project>`
 
 Clones a missing project into its desired local path.
@@ -243,6 +257,7 @@ Initial tables:
 8. Agent Prep, `agent prepare`, `runs`, `clean`.
 9. `hydrate`.
 10. Machine Registry and `machine register`.
+11. Doctor preflight and strict warning failure.
 
 ## Planned Later
 

@@ -43,6 +43,7 @@ codemesh init "$workspace"
 codemesh add "$workspace/demo-project" --alias demo-project
 codemesh tree
 codemesh status demo-project --base main
+codemesh doctor demo-project --base main
 codemesh agent prepare demo-project --base main --profile codex
 codemesh runs
 codemesh clean --older-than 0d
@@ -63,7 +64,7 @@ Use `make docs:list` before docs or behavior changes to find relevant `Read when
 
 ## Status
 
-Scaffold plus local state bootstrap, Project Registry tracer bullets, Readiness status reporting, explicit missing-project hydration, Agent Prep, run listing, and guarded cleanup. The current command surface is documented in the [Command Catalog](docs/commands.md) and checked against CLI help.
+Scaffold plus local state bootstrap, Project Registry tracer bullets, Readiness status reporting, Doctor preflight, explicit missing-project hydration, Agent Prep, run listing, and guarded cleanup. The current command surface is documented in the [Command Catalog](docs/commands.md) and checked against CLI help.
 
 ## Docs
 

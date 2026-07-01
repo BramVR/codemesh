@@ -86,7 +86,7 @@ Scan reports added, updated, unchanged, and skipped candidates. Skips are runtim
 
 ## Readiness
 
-Project readiness is derived when `tree`, `status`, `hydrate`, or Agent Prep reads the Project Registry. It is not stored in `projects`.
+Project readiness is derived when `tree`, `status`, `doctor`, `hydrate`, or Agent Prep reads the Project Registry. It is not stored in `projects`.
 
 Normalized states:
 
@@ -98,7 +98,7 @@ Normalized states:
 
 Diagnostics are split into warnings and blockers. Dirty source checkouts and stale local base branches are warnings so unrelated local work does not prevent temp-clone agent handoff. Missing local paths, fetch failures, and missing requested base branches are blockers for `status` until hydration or base selection exists.
 
-`tree` consumes the same normalized states for local filesystem and dirty-checkout summaries. `status` runs the fuller readiness check, including fetch and base branch validation.
+`tree` consumes the same normalized states for local filesystem and dirty-checkout summaries. `status` runs the fuller readiness check, including fetch and base branch validation. `doctor` consumes the Agent Prep handoff readiness decision and reports whether the handoff is green, warning-only, or blocked without recording an Agent Run.
 
 ## Project Policy
 
@@ -127,6 +127,8 @@ Run layout:
 - `codemesh-run.json`: handoff metadata written inside the ready workspace.
 
 Agent Prep resolves the project by alias, chooses the requested base or repo policy/default base, fetches that base when a source checkout is present, and gates the handoff on the policy from the fetched base before cloning. If the registered desired source path is missing, Agent Prep reads policy from the remote default branch through a temporary Git clone to honor `agent.base`, validates the selected base against the registered clone URL, and prepares from that remote instead of treating the missing path as a blocker. Env readiness still follows the selected-base policy: required keys are checked from the process environment, and required local env files are treated as missing when the source checkout is absent. Env file contents are never read. Readiness blockers stop prep before a run is recorded, and any temporary clone made to read selected-base policy is removed before returning the blocker. Warnings, including dirty source checkout and env warnings, are recorded and printed but do not block.
+
+`codemesh doctor <project>` runs the same handoff readiness gate before Agent Prep's clone/run-recording step. It does not create an agent run directory, write `codemesh-run.json`, or insert an `agent_runs` row. Warning-only readiness exits zero by default and exits non-zero with `--strict`; blockers exit non-zero in both modes.
 
 The clone checks out the requested `--base` when provided. Otherwise it checks out the repo-local policy base, falling back to `main`. CodeMesh uses Git for clone and checkout; it does not copy uncommitted source files, create Git worktrees, or replace Git state.
 

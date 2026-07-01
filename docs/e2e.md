@@ -119,7 +119,7 @@ CodeMesh follows a bslog-inspired layering model:
 - Offline integration-style e2e tests run the real CLI against local temp fixtures, mocked local state, and fake env requirements.
 - Live/network e2e checks are intentionally limited and skipped until a feature needs real provider proof.
 
-The current CodeMesh e2e layer sits in the middle. It builds or receives a CLI binary, isolates `CODEMESH_HOME`, `HOME`, Git config, and workspace paths, then creates local Git remotes and clones under the e2e temp directory. These fixtures cover Project Registry, Readiness, Hydration, Agent Prep, run listing, and guarded cleanup without GitHub, secrets, or user workspace state.
+The current CodeMesh e2e layer sits in the middle. It builds or receives a CLI binary, isolates `CODEMESH_HOME`, `HOME`, Git config, and workspace paths, then creates local Git remotes and clones under the e2e temp directory. These fixtures cover Project Registry, Readiness, Doctor preflight, Hydration, Agent Prep, run listing, and guarded cleanup without GitHub, secrets, or user workspace state.
 
 ## Scenario Shape
 
@@ -157,6 +157,8 @@ Offline Git fixtures cover:
 Project Registry e2e coverage runs `codemesh scan` and `codemesh add` against local fixture workspaces, reruns them to prove no duplicate rows, verifies deterministic discovered aliases, verifies known-remote path updates, and checks State store rows for normalized remote, clone URL, alias, desired local path, temp-only isolation, and derived missing/present behavior.
 
 Readiness e2e coverage runs `codemesh tree` and `codemesh status` against the same local Git fixtures. It verifies clean present, missing, dirty warning, missing base blocker, fetch failure stale blocker, invalid Project policy blocker, Env readiness warn/block behavior, and tree/status agreement on normalized states for projects both commands report.
+
+Doctor preflight e2e coverage runs `codemesh doctor` through the built CLI against local fixtures. It verifies green human output for a clean handoff, strict JSON failure for warning-only dirty checkout readiness, actionable missing-base blockers, and no `agent_runs` rows or agent run directories after doctor checks.
 
 Hydration e2e coverage uses the local bare Git remotes from the offline fixture set. It registers a known project, removes its desired local path to make it missing, runs `codemesh hydrate <project>`, and verifies the real CLI recreates the checkout without reaching GitHub or creating directories for unrelated missing projects.
 
