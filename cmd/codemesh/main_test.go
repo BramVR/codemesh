@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -265,6 +266,91 @@ func TestAddThenTreeShowsPresentProject(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "codemesh") || !strings.Contains(stdout.String(), "present") || !strings.Contains(stdout.String(), repo) {
 		t.Fatalf("tree output missing project state/path:\n%s", stdout.String())
+	}
+}
+
+func TestTreeJSONReportsCanonicalWorkspace(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	present := createCommittedLocalRemoteClone(t, "tree-present")
+	missing := createCommittedLocalRemoteClone(t, "tree-missing")
+	missing, err := filepath.EvalSymlinks(missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", present}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add present exit code = %d, want 0", code)
+	}
+	if code := run([]string{"add", missing}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add missing exit code = %d, want 0", code)
+	}
+	if err := os.RemoveAll(missing); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"tree", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("tree --json exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("tree --json stderr = %q, want empty", stderr.String())
+	}
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Projects []struct {
+				Alias       string `json:"alias"`
+				State       string `json:"state"`
+				Path        string `json:"path"`
+				PathPresent bool   `json:"path_present"`
+				Remote      string `json:"remote"`
+				Base        string `json:"base"`
+				Diagnostics struct {
+					Warnings []struct {
+						Code string `json:"code"`
+					} `json:"warnings"`
+					Blockers []struct {
+						Code string `json:"code"`
+					} `json:"blockers"`
+				} `json:"diagnostics"`
+			} `json:"projects"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("tree --json stdout was not JSON: %v\nstdout:\n%s", err, stdout.String())
+	}
+	if payload.Command != "tree" || payload.ExitClass != "readiness-blocked" {
+		t.Fatalf("tree --json command metadata = %#v", payload)
+	}
+	if len(payload.Payload.Projects) != 2 {
+		t.Fatalf("tree --json project count = %d, want 2", len(payload.Payload.Projects))
+	}
+	byAlias := map[string]struct {
+		State       string
+		Path        string
+		PathPresent bool
+		Remote      string
+		Base        string
+		Blockers    int
+	}{}
+	for _, project := range payload.Payload.Projects {
+		byAlias[project.Alias] = struct {
+			State       string
+			Path        string
+			PathPresent bool
+			Remote      string
+			Base        string
+			Blockers    int
+		}{project.State, project.Path, project.PathPresent, project.Remote, project.Base, len(project.Diagnostics.Blockers)}
+	}
+	if got := byAlias["tree-present"]; got.State != "present" || !got.PathPresent || got.Remote == "" || got.Base != "main" {
+		t.Fatalf("present tree project = %#v", got)
+	}
+	if got := byAlias["tree-missing"]; got.State != "missing" || got.Path != missing || got.PathPresent || got.Blockers != 1 {
+		t.Fatalf("missing tree project = %#v", got)
 	}
 }
 
@@ -734,6 +820,49 @@ func TestHydratePresentProjectReportsNoCloneNeeded(t *testing.T) {
 	assertGitStatusClean(t, source)
 }
 
+func TestHydrateJSONReportsHydratedAndAlreadyPresentOutcomes(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "hydrate-json")
+	source, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	if err := os.RemoveAll(source); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"hydrate", "hydrate-json", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("hydrate --json exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if err := assertHydrateJSON(stdout.Bytes(), "success", "hydrate-json", "hydrated", source, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("hydrate --json stderr = %q, want empty", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"hydrate", "hydrate-json", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("hydrate present --json exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if err := assertHydrateJSON(stdout.Bytes(), "success", "hydrate-json", "already-present", source, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("hydrate present --json stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestHydrateRefusesExistingNonEmptyPath(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "codemesh-home")
 	source := createCommittedLocalRemoteClone(t, "conflict-source")
@@ -767,6 +896,98 @@ func TestHydrateRefusesExistingNonEmptyPath(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(source, "local.txt")); err != nil || string(got) != "do not overwrite\n" {
 		t.Fatalf("conflict file changed or missing: got %q err %v", got, err)
+	}
+}
+
+func TestHydrateJSONReportsPathConflictOutcome(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "hydrate-conflict-json")
+	source, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	if err := os.RemoveAll(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "local.txt"), []byte("do not overwrite\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"hydrate", "hydrate-conflict-json", "--json"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("hydrate conflict --json exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if err := assertHydrateJSON(stdout.Bytes(), "readiness-blocked", "hydrate-conflict-json", "path-conflict", source, true, []string{"path-conflict"}); err != nil {
+		t.Fatal(err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("hydrate conflict --json stderr = %q, want empty", stderr.String())
+	}
+	if got, err := os.ReadFile(filepath.Join(source, "local.txt")); err != nil || string(got) != "do not overwrite\n" {
+		t.Fatalf("conflict file changed or missing: got %q err %v", got, err)
+	}
+}
+
+func TestHydrateJSONReportsUnknownProjectOutcome(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	t.Setenv("CODEMESH_HOME", home)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"hydrate", "ghost-project", "--json"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("hydrate unknown --json exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if err := assertHydrateJSON(stdout.Bytes(), "readiness-blocked", "ghost-project", "unknown-project", "", false, []string{"unknown-project"}); err != nil {
+		t.Fatal(err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("hydrate unknown --json stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestHydrateJSONReportsCloneFailureAsInternalError(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "hydrate-clone-failure")
+	source, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := strings.TrimSpace(runGitOutput(t, source, "remote", "get-url", "origin"))
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	if err := os.RemoveAll(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(remote); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"hydrate", "hydrate-clone-failure", "--json"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("hydrate clone failure --json exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if err := assertHydrateJSON(stdout.Bytes(), "internal-error", "hydrate-clone-failure", "failed", source, true, []string{"hydrate-failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("hydrate clone failure --json stderr = %q, want empty", stderr.String())
 	}
 }
 
@@ -843,6 +1064,83 @@ func TestAgentPreparePrintsReadyPathAndWritesRunMetadata(t *testing.T) {
 	}
 	if !strings.Contains(string(metadataBytes), `"contract_version": 1`) || !strings.Contains(string(metadataBytes), `"producer": {`) {
 		t.Fatalf("metadata missing contract version/producer:\n%s", metadataBytes)
+	}
+}
+
+func TestAgentHelpIncludesPrepareJSONFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"agent", "--help"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("agent help exit code = %d, want 0", code)
+	}
+	if !strings.Contains(stdout.String(), "codemesh agent prepare <project> [--base branch] [--profile name] [--json]") {
+		t.Fatalf("agent help missing prepare JSON flag:\n%s", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestAgentPrepareJSONReportsReadyContract(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "agent-json-ready")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"agent", "prepare", "agent-json-ready", "--base", "main", "--profile", "codex", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("agent prepare --json exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("agent prepare --json stderr = %q, want empty", stderr.String())
+	}
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Project          string `json:"project"`
+			Ready            bool   `json:"ready"`
+			RunID            string `json:"run_id"`
+			Base             string `json:"base"`
+			Profile          string `json:"profile"`
+			HandoffDocsCount int    `json:"handoff_docs_count"`
+			RunContractPath  string `json:"run_contract_path"`
+			ReadyPath        string `json:"ready_path"`
+			ResolvedCommit   string `json:"resolved_commit"`
+			Diagnostics      struct {
+				Warnings []struct {
+					Code string `json:"code"`
+				} `json:"warnings"`
+				Blockers []struct {
+					Code string `json:"code"`
+				} `json:"blockers"`
+			} `json:"diagnostics"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("agent prepare --json stdout was not JSON: %v\nstdout:\n%s", err, stdout.String())
+	}
+	got := payload.Payload
+	if payload.Command != "agent prepare" || payload.ExitClass != "success" || got.Project != "agent-json-ready" || !got.Ready || got.RunID == "" || got.Base != "main" || got.Profile != "codex" || got.HandoffDocsCount != 1 || got.ReadyPath == "" || got.ResolvedCommit == "" {
+		t.Fatalf("agent prepare JSON payload = %#v", payload)
+	}
+	if got.RunContractPath != filepath.Join(got.ReadyPath, "codemesh-run.json") {
+		t.Fatalf("run_contract_path = %q, want metadata under ready path %q", got.RunContractPath, got.ReadyPath)
+	}
+	if len(got.Diagnostics.Warnings) != 0 || len(got.Diagnostics.Blockers) != 0 {
+		t.Fatalf("diagnostics = %#v, want empty", got.Diagnostics)
+	}
+	if _, err := os.Stat(got.RunContractPath); err != nil {
+		t.Fatalf("run contract missing: %v", err)
+	}
+	if strings.Contains(stdout.String(), "agent workspace ready") {
+		t.Fatalf("json output included human prose:\n%s", stdout.String())
 	}
 }
 
@@ -1045,6 +1343,141 @@ func TestAgentPrepareBlocksOnReadinessBlockers(t *testing.T) {
 	}
 }
 
+func TestAgentPrepareJSONReportsReadinessBlocker(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "agent-json-blocked")
+	if err := os.WriteFile(filepath.Join(source, ".codemesh.yml"), []byte("agent:\n  env:\n    mode: block\n    required_files:\n      - .env.local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "add", ".codemesh.yml")
+	runGit(t, source, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Require env")
+	runGit(t, source, "push", "origin", "main")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"agent", "prepare", "agent-json-blocked", "--json"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("agent prepare blocked --json exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("agent prepare blocked --json stderr = %q, want empty", stderr.String())
+	}
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Project          string `json:"project"`
+			Ready            bool   `json:"ready"`
+			Base             string `json:"base"`
+			HandoffDocsCount int    `json:"handoff_docs_count"`
+			RunContractPath  string `json:"run_contract_path,omitempty"`
+			ReadyPath        string `json:"ready_path,omitempty"`
+			Diagnostics      struct {
+				Warnings []struct {
+					Code string `json:"code"`
+				} `json:"warnings"`
+				Blockers []struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"blockers"`
+			} `json:"diagnostics"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("agent prepare blocked --json stdout was not JSON: %v\nstdout:\n%s", err, stdout.String())
+	}
+	got := payload.Payload
+	if payload.Command != "agent prepare" || payload.ExitClass != "readiness-blocked" || got.Project != "agent-json-blocked" || got.Ready || got.Base != "main" || got.HandoffDocsCount != 0 || got.ReadyPath != "" || got.RunContractPath != "" {
+		t.Fatalf("blocked agent prepare JSON payload = %#v", payload)
+	}
+	if len(got.Diagnostics.Blockers) != 1 || got.Diagnostics.Blockers[0].Code != "missing-env-file" || !strings.Contains(got.Diagnostics.Blockers[0].Message, ".env.local") {
+		t.Fatalf("blocked diagnostics = %#v", got.Diagnostics)
+	}
+	if strings.Contains(stdout.String(), "=") {
+		t.Fatalf("blocked JSON output contained an env assignment-looking value:\n%s", stdout.String())
+	}
+	if entries, err := os.ReadDir(filepath.Join(home, "agents")); err == nil && len(entries) != 0 {
+		t.Fatalf("agents dir has entries after blocked prep: %v", entries)
+	}
+}
+
+func TestAgentPrepareJSONReportsUnknownProjectAsJSON(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	t.Setenv("CODEMESH_HOME", home)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"agent", "prepare", "ghost-project", "--json"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("agent prepare unknown --json exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("agent prepare unknown --json stderr = %q, want empty", stderr.String())
+	}
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Project     string `json:"project"`
+			Ready       bool   `json:"ready"`
+			Diagnostics struct {
+				Blockers []struct {
+					Code string `json:"code"`
+				} `json:"blockers"`
+			} `json:"diagnostics"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("agent prepare unknown --json stdout was not JSON: %v\nstdout:\n%s", err, stdout.String())
+	}
+	if payload.Command != "agent prepare" || payload.ExitClass != "readiness-blocked" || payload.Payload.Project != "ghost-project" || payload.Payload.Ready {
+		t.Fatalf("unknown project JSON payload = %#v", payload)
+	}
+	if len(payload.Payload.Diagnostics.Blockers) != 1 || payload.Payload.Diagnostics.Blockers[0].Code != "unknown-project" {
+		t.Fatalf("unknown project diagnostics = %#v", payload.Payload.Diagnostics)
+	}
+}
+
+func TestAgentPrepareBaseRequiresBranchBeforeJSONFlag(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	t.Setenv("CODEMESH_HOME", home)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"agent", "prepare", "ghost-project", "--base", "--json"}, &stdout, &stderr)
+
+	if code != 2 {
+		t.Fatalf("agent prepare exit code = %d, want 2\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "agent prepare --base requires a branch") {
+		t.Fatalf("stderr did not explain missing base:\n%s", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "agent workspace ready") || strings.Contains(stdout.String(), `"command"`) {
+		t.Fatalf("stdout rendered command output instead of usage failure:\n%s", stdout.String())
+	}
+}
+
+func TestAgentPrepareProfileRequiresNameBeforeJSONFlag(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	t.Setenv("CODEMESH_HOME", home)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"agent", "prepare", "ghost-project", "--profile", "--json"}, &stdout, &stderr)
+
+	if code != 2 {
+		t.Fatalf("agent prepare exit code = %d, want 2\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "agent prepare --profile requires a name") {
+		t.Fatalf("stderr did not explain missing profile:\n%s", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "agent workspace ready") || strings.Contains(stdout.String(), `"command"`) {
+		t.Fatalf("stdout rendered command output instead of usage failure:\n%s", stdout.String())
+	}
+}
+
 func TestAddAliasConflictFailsWithActionableError(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "codemesh-home")
 	first := createGitRepo(t, "https://github.com/BramVR/first.git")
@@ -1089,6 +1522,47 @@ func firstRunID(t *testing.T, output string) string {
 	}
 	t.Fatalf("run id missing in output:\n%s", output)
 	return ""
+}
+
+func assertHydrateJSON(data []byte, exitClass, alias, outcome, path string, pathPresent bool, blockerCodes []string) error {
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Project     string `json:"project"`
+			Outcome     string `json:"outcome"`
+			Path        string `json:"path"`
+			PathPresent bool   `json:"path_present"`
+			Remote      string `json:"remote"`
+		} `json:"payload"`
+		Diagnostics struct {
+			Blockers []struct {
+				Code string `json:"code"`
+			} `json:"blockers"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+	if payload.Command != "hydrate" || payload.ExitClass != exitClass {
+		return fmt.Errorf("command metadata = %#v, want command hydrate exit_class %s", payload, exitClass)
+	}
+	got := payload.Payload
+	if got.Project != alias || got.Outcome != outcome || got.Path != path || got.PathPresent != pathPresent {
+		return fmt.Errorf("hydrate payload = %#v", got)
+	}
+	if got.Remote == "" && outcome != "unknown-project" && outcome != "failed" {
+		return fmt.Errorf("hydrate remote empty for outcome %q: %#v", outcome, got)
+	}
+	if len(payload.Diagnostics.Blockers) != len(blockerCodes) {
+		return fmt.Errorf("blockers = %#v, want codes %v", payload.Diagnostics.Blockers, blockerCodes)
+	}
+	for i, want := range blockerCodes {
+		if payload.Diagnostics.Blockers[i].Code != want {
+			return fmt.Errorf("blocker[%d] = %q, want %q", i, payload.Diagnostics.Blockers[i].Code, want)
+		}
+	}
+	return nil
 }
 
 func assertGitStatusClean(t *testing.T, dir string) {
@@ -1272,6 +1746,16 @@ func runGit(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, output)
 	}
+}
+
+func runGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v failed: %v", args, err)
+	}
+	return string(output)
 }
 
 func gitRoot(dir string) (string, error) {

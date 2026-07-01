@@ -12,12 +12,14 @@ permalink: /commands/tree
 ## Syntax
 
 ```sh
-codemesh tree
+codemesh tree [--json]
 ```
 
 ## Purpose
 
 Print the known canonical workspace from the local Project Registry, including each project's readiness state and local path.
+
+Use `--json` to emit the stable Command Result shape with `command`, `exit_class`, `diagnostics`, and `payload.projects`. Each project includes alias, normalized state, local path, path presence, remote, base, and readiness diagnostics. Human output is unchanged when `--json` is omitted.
 
 ## Safe Example
 
@@ -39,6 +41,7 @@ git clone "$remote" "$workspace/demo-project"
 codemesh init "$workspace"
 codemesh add "$workspace/demo-project" --alias demo-project
 codemesh tree
+codemesh tree --json
 ```
 
 ## Current Limitations

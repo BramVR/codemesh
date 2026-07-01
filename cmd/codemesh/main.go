@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -443,8 +445,8 @@ func runHydrate(args []string, stdout, stderr io.Writer) int {
 		printHydrateHelp(stdout)
 		return 0
 	}
-	if len(args) != 1 {
-		fmt.Fprint(stderr, "hydrate requires exactly one project\n\n")
+	hydrateArgs, ok := parseHydrateArgs(args, stderr)
+	if !ok {
 		printHydrateHelp(stderr)
 		return 2
 	}
@@ -457,17 +459,131 @@ func runHydrate(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), hydrateTimeout)
 	defer cancel()
-	result, err := registry.New(store).Hydrate(ctx, args[0])
+	result, err := registry.New(store).Hydrate(ctx, hydrateArgs.Project)
 	if err != nil {
+		if hydrateArgs.JSON {
+			commandResult := newHydrateErrorResult(hydrateArgs.Project, result, err)
+			if err := presentation.RenderJSON(stdout, commandResult); err != nil {
+				fmt.Fprintf(stderr, "encode hydrate result: %v\n", err)
+				return commandresult.ExitInternalError.Code()
+			}
+			return hydrateExitCode(commandResult)
+		}
 		fmt.Fprintf(stderr, "hydrate project: %v\n", err)
 		return 1
 	}
-	if result.AlreadyPresent {
-		fmt.Fprintf(stdout, "project already present: %s\npath: %s\n", result.Project.Alias, result.Project.LocalPath)
-		return 0
+	commandResult := newHydrateResult(result)
+	if hydrateArgs.JSON {
+		if err := presentation.RenderJSON(stdout, commandResult); err != nil {
+			fmt.Fprintf(stderr, "encode hydrate result: %v\n", err)
+			return commandresult.ExitInternalError.Code()
+		}
+		return hydrateExitCode(commandResult)
 	}
-	fmt.Fprintf(stdout, "hydrated project: %s\npath: %s\nremote: %s\n", result.Project.Alias, result.Project.LocalPath, result.Project.NormalizedRemote)
+	if err := presentation.RenderHuman(stdout, commandResult, renderHydratePayloadHuman); err != nil {
+		fmt.Fprintf(stderr, "render hydrate result: %v\n", err)
+		return commandresult.ExitInternalError.Code()
+	}
 	return 0
+}
+
+type parsedHydrateArgs struct {
+	Project string
+	JSON    bool
+}
+
+func parseHydrateArgs(args []string, stderr io.Writer) (parsedHydrateArgs, bool) {
+	var projects []string
+	var jsonOutput bool
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOutput = true
+		default:
+			projects = append(projects, arg)
+		}
+	}
+	if len(projects) != 1 {
+		fmt.Fprint(stderr, "hydrate requires exactly one project\n\n")
+		return parsedHydrateArgs{}, false
+	}
+	return parsedHydrateArgs{Project: projects[0], JSON: jsonOutput}, true
+}
+
+type hydratePayload struct {
+	Project     string `json:"project"`
+	Outcome     string `json:"outcome"`
+	Path        string `json:"path"`
+	PathPresent bool   `json:"path_present"`
+	Remote      string `json:"remote"`
+}
+
+func newHydrateResult(result registry.HydrateResult) commandresult.Result[hydratePayload] {
+	outcome := "hydrated"
+	if result.AlreadyPresent {
+		outcome = "already-present"
+	}
+	return commandresult.New("hydrate", commandresult.ExitSuccess, commandresult.Diagnostics{}, hydratePayload{
+		Project:     result.Project.Alias,
+		Outcome:     outcome,
+		Path:        result.Project.LocalPath,
+		PathPresent: true,
+		Remote:      result.Project.NormalizedRemote,
+	})
+}
+
+func newHydrateErrorResult(projectName string, result registry.HydrateResult, err error) commandresult.Result[hydratePayload] {
+	project := result.Project
+	alias := project.Alias
+	if alias == "" {
+		alias = projectName
+	}
+	payload := hydratePayload{
+		Project: alias,
+		Outcome: "failed",
+		Path:    project.LocalPath,
+		Remote:  project.NormalizedRemote,
+	}
+	if project.LocalPath != "" {
+		if _, statErr := os.Stat(project.LocalPath); statErr == nil {
+			payload.PathPresent = true
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			payload.PathPresent = true
+		}
+	}
+	exitClass := commandresult.ExitInternalError
+	diagnostic := commandresult.Diagnostic{Code: "hydrate-failed", Message: err.Error(), Target: alias}
+	var conflict registry.PathConflictError
+	if errors.As(err, &conflict) {
+		exitClass = commandresult.ExitReadinessBlocked
+		payload.Outcome = "path-conflict"
+		payload.Path = conflict.Path
+		payload.PathPresent = true
+		diagnostic = commandresult.Diagnostic{Code: "path-conflict", Message: err.Error(), Target: conflict.Path}
+	} else if strings.HasPrefix(err.Error(), "unknown project:") {
+		exitClass = commandresult.ExitReadinessBlocked
+		payload.Outcome = "unknown-project"
+		diagnostic = commandresult.Diagnostic{Code: "unknown-project", Message: err.Error(), Target: alias}
+	}
+	return commandresult.New("hydrate", exitClass, commandresult.Diagnostics{
+		Blockers: []commandresult.Diagnostic{diagnostic},
+	}, payload)
+}
+
+func hydrateExitCode(result commandresult.Result[hydratePayload]) int {
+	if result.ExitClass == commandresult.ExitReadinessBlocked {
+		return 1
+	}
+	return result.ExitClass.Code()
+}
+
+func renderHydratePayloadHuman(w io.Writer, payload hydratePayload) error {
+	if payload.Outcome == "already-present" {
+		fmt.Fprintf(w, "project already present: %s\npath: %s\n", payload.Project, payload.Path)
+		return nil
+	}
+	fmt.Fprintf(w, "hydrated project: %s\npath: %s\nremote: %s\n", payload.Project, payload.Path, payload.Remote)
+	return nil
 }
 
 func runAgent(args []string, stdout, stderr io.Writer) int {
@@ -590,7 +706,7 @@ func runAgentPrepare(args []string, stdout, stderr io.Writer) int {
 		printAgentPrepareHelp(stdout)
 		return 0
 	}
-	project, base, profile, ok := parseAgentPrepareArgs(args, stderr)
+	agentArgs, ok := parseAgentPrepareArgs(args, stderr)
 	if !ok {
 		printAgentPrepareHelp(stderr)
 		return 2
@@ -613,57 +729,188 @@ func runAgentPrepare(args []string, stdout, stderr io.Writer) int {
 		AgentsDir: paths.AgentsDir,
 		Producer:  agentcontract.DefaultProducer(version),
 	}.Prepare(ctx, agentprep.Request{
-		Project: project,
-		Base:    base,
-		Profile: profile,
+		Project: agentArgs.Project,
+		Base:    agentArgs.Base,
+		Profile: agentArgs.Profile,
 	})
 	if err != nil {
 		if _, ok := err.(agentprep.BlockedError); ok {
+			if agentArgs.JSON {
+				commandResult := newAgentPrepareResult(agentArgs, result, false)
+				if err := presentation.RenderJSON(stdout, commandResult); err != nil {
+					fmt.Fprintf(stderr, "encode agent prepare result: %v\n", err)
+					return commandresult.ExitInternalError.Code()
+				}
+				return agentPrepareExitCode(commandResult)
+			}
 			printAgentDiagnostics(stderr, result.Diagnostics)
 			return 1
+		}
+		if agentArgs.JSON {
+			commandResult := newAgentPrepareErrorResult(agentArgs, result, err)
+			if err := presentation.RenderJSON(stdout, commandResult); err != nil {
+				fmt.Fprintf(stderr, "encode agent prepare result: %v\n", err)
+				return commandresult.ExitInternalError.Code()
+			}
+			return agentPrepareExitCode(commandResult)
 		}
 		fmt.Fprintf(stderr, "prepare agent workspace: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "agent workspace ready\nproject: %s\nbase: %s\n", project, result.Base)
-	if result.Profile != "" {
-		fmt.Fprintf(stdout, "profile: %s\n", result.Profile)
+	commandResult := newAgentPrepareResult(agentArgs, result, true)
+	if agentArgs.JSON {
+		if err := presentation.RenderJSON(stdout, commandResult); err != nil {
+			fmt.Fprintf(stderr, "encode agent prepare result: %v\n", err)
+			return commandresult.ExitInternalError.Code()
+		}
+		return agentPrepareExitCode(commandResult)
 	}
-	printAgentDiagnostics(stdout, result.Diagnostics)
-	fmt.Fprintf(stdout, "handoff_docs: %d\n", len(result.Metadata.HandoffDocs))
-	fmt.Fprintf(stdout, "ready_path: %s\n", result.ReadyPath)
+	if err := presentation.RenderHuman(stdout, commandResult, renderAgentPreparePayloadHuman); err != nil {
+		fmt.Fprintf(stderr, "render agent prepare result: %v\n", err)
+		return commandresult.ExitInternalError.Code()
+	}
 	return 0
 }
 
-func parseAgentPrepareArgs(args []string, stderr io.Writer) (string, string, string, bool) {
+type parsedAgentPrepareArgs struct {
+	Project string
+	Base    string
+	Profile string
+	JSON    bool
+}
+
+func parseAgentPrepareArgs(args []string, stderr io.Writer) (parsedAgentPrepareArgs, bool) {
 	var base string
 	var profile string
 	var projects []string
+	var jsonOutput bool
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--base":
-			if i+1 >= len(args) {
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
 				fmt.Fprint(stderr, "agent prepare --base requires a branch\n\n")
-				return "", "", "", false
+				return parsedAgentPrepareArgs{}, false
 			}
 			base = args[i+1]
 			i++
 		case "--profile":
-			if i+1 >= len(args) {
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
 				fmt.Fprint(stderr, "agent prepare --profile requires a name\n\n")
-				return "", "", "", false
+				return parsedAgentPrepareArgs{}, false
 			}
 			profile = args[i+1]
 			i++
+		case "--json":
+			jsonOutput = true
 		default:
 			projects = append(projects, args[i])
 		}
 	}
 	if len(projects) != 1 {
 		fmt.Fprint(stderr, "agent prepare requires exactly one project\n\n")
-		return "", "", "", false
+		return parsedAgentPrepareArgs{}, false
 	}
-	return projects[0], base, profile, true
+	return parsedAgentPrepareArgs{Project: projects[0], Base: base, Profile: profile, JSON: jsonOutput}, true
+}
+
+type agentPreparePayload struct {
+	Project          string                    `json:"project"`
+	Ready            bool                      `json:"ready"`
+	RunID            string                    `json:"run_id,omitempty"`
+	Base             string                    `json:"base"`
+	Profile          string                    `json:"profile"`
+	HandoffDocsCount int                       `json:"handoff_docs_count"`
+	RunContractPath  string                    `json:"run_contract_path,omitempty"`
+	ReadyPath        string                    `json:"ready_path,omitempty"`
+	ResolvedCommit   string                    `json:"resolved_commit,omitempty"`
+	Diagnostics      commandresult.Diagnostics `json:"diagnostics"`
+}
+
+func newAgentPrepareResult(args parsedAgentPrepareArgs, result agentprep.Result, ready bool) commandresult.Result[agentPreparePayload] {
+	diagnostics := agentPrepareDiagnostics(result.Diagnostics)
+	exitClass := commandresult.ReadinessExitClass(len(diagnostics.Warnings), len(diagnostics.Blockers))
+	base := result.Base
+	if base == "" {
+		base = args.Base
+	}
+	profile := result.Profile
+	if profile == "" {
+		profile = strings.TrimSpace(args.Profile)
+	}
+	payload := agentPreparePayload{
+		Project:          args.Project,
+		Ready:            ready,
+		Base:             base,
+		Profile:          profile,
+		HandoffDocsCount: len(result.Metadata.HandoffDocs),
+		Diagnostics:      diagnostics,
+	}
+	if ready {
+		payload.RunID = result.RunID
+		payload.ReadyPath = result.ReadyPath
+		payload.RunContractPath = filepath.Join(result.ReadyPath, agentprep.MetadataFileName)
+		payload.ResolvedCommit = result.ResolvedCommit
+	}
+	return commandresult.New("agent prepare", exitClass, diagnostics, payload)
+}
+
+func newAgentPrepareErrorResult(args parsedAgentPrepareArgs, result agentprep.Result, err error) commandresult.Result[agentPreparePayload] {
+	diagnostics := agentPrepareDiagnostics(result.Diagnostics)
+	exitClass := commandresult.ExitInternalError
+	diagnostic := commandresult.Diagnostic{Code: "agent-prepare-failed", Message: err.Error(), Target: args.Project}
+	if strings.HasPrefix(err.Error(), "unknown project:") {
+		exitClass = commandresult.ExitReadinessBlocked
+		diagnostic.Code = "unknown-project"
+	}
+	diagnostics.Blockers = append(diagnostics.Blockers, diagnostic)
+	base := result.Base
+	if base == "" {
+		base = strings.TrimSpace(args.Base)
+	}
+	profile := result.Profile
+	if profile == "" {
+		profile = strings.TrimSpace(args.Profile)
+	}
+	return commandresult.New("agent prepare", exitClass, diagnostics, agentPreparePayload{
+		Project:     args.Project,
+		Ready:       false,
+		Base:        base,
+		Profile:     profile,
+		Diagnostics: diagnostics,
+	})
+}
+
+func agentPrepareDiagnostics(diagnostics agentprep.Diagnostics) commandresult.Diagnostics {
+	return commandresult.Diagnostics{
+		Warnings: agentPrepareDiagnosticList(diagnostics.Warnings),
+		Blockers: agentPrepareDiagnosticList(diagnostics.Blockers),
+	}
+}
+
+func agentPrepareDiagnosticList(items []agentprep.Diagnostic) []commandresult.Diagnostic {
+	diagnostics := make([]commandresult.Diagnostic, 0, len(items))
+	for _, item := range items {
+		diagnostics = append(diagnostics, commandresult.Diagnostic{Code: item.Code, Message: item.Message})
+	}
+	return diagnostics
+}
+
+func agentPrepareExitCode(result commandresult.Result[agentPreparePayload]) int {
+	if result.ExitClass == commandresult.ExitReadinessBlocked {
+		return 1
+	}
+	return result.ExitClass.Code()
+}
+
+func renderAgentPreparePayloadHuman(w io.Writer, payload agentPreparePayload) error {
+	fmt.Fprintf(w, "agent workspace ready\nproject: %s\nbase: %s\n", payload.Project, payload.Base)
+	if payload.Profile != "" {
+		fmt.Fprintf(w, "profile: %s\n", payload.Profile)
+	}
+	printCommandDiagnostics(w, payload.Diagnostics)
+	fmt.Fprintf(w, "handoff_docs: %d\n", payload.HandoffDocsCount)
+	fmt.Fprintf(w, "ready_path: %s\n", payload.ReadyPath)
+	return nil
 }
 
 func printAgentDiagnostics(w io.Writer, diagnostics agentprep.Diagnostics) {
@@ -793,8 +1040,8 @@ func runTree(args []string, stdout, stderr io.Writer) int {
 		printTreeHelp(stdout)
 		return 0
 	}
-	if len(args) > 0 {
-		fmt.Fprint(stderr, "tree accepts no arguments\n\n")
+	treeArgs, ok := parseTreeArgs(args, stderr)
+	if !ok {
 		printTreeHelp(stderr)
 		return 2
 	}
@@ -810,22 +1057,84 @@ func runTree(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "read project registry: %v\n", err)
 		return 1
 	}
-	fmt.Fprintln(stdout, "canonical workspace:")
-	if len(projects) == 0 {
-		fmt.Fprintln(stdout, "(empty)")
-		return 0
+	result, err := buildTreeResult(context.Background(), projects)
+	if err != nil {
+		fmt.Fprintf(stderr, "check project readiness: %v\n", err)
+		return 1
 	}
+	if treeArgs.JSON {
+		if err := presentation.RenderJSON(stdout, result); err != nil {
+			fmt.Fprintf(stderr, "encode tree result: %v\n", err)
+			return commandresult.ExitInternalError.Code()
+		}
+		return result.ExitClass.Code()
+	}
+	if err := presentation.RenderHuman(stdout, result, renderTreePayloadHuman); err != nil {
+		fmt.Fprintf(stderr, "render tree result: %v\n", err)
+		return commandresult.ExitInternalError.Code()
+	}
+	return result.ExitClass.Code()
+}
+
+type parsedTreeArgs struct {
+	JSON bool
+}
+
+func parseTreeArgs(args []string, stderr io.Writer) (parsedTreeArgs, bool) {
+	var jsonOutput bool
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOutput = true
+		default:
+			fmt.Fprintf(stderr, "unknown tree argument: %s\n\n", arg)
+			return parsedTreeArgs{}, false
+		}
+	}
+	return parsedTreeArgs{JSON: jsonOutput}, true
+}
+
+type treePayload struct {
+	Projects []statusProject `json:"projects"`
+}
+
+func buildTreeResult(ctx context.Context, projects []state.Project) (commandresult.Result[treePayload], error) {
+	treeProjects := make([]statusProject, 0, len(projects))
+	warnings := 0
+	blockers := 0
 	for _, project := range projects {
-		ctx, cancel := context.WithTimeout(context.Background(), statusReadinessTimeout)
-		report, err := readiness.EvaluateProject(ctx, project, readiness.Options{CheckRemote: false})
+		projectCtx, cancel := context.WithTimeout(ctx, statusReadinessTimeout)
+		report, err := readiness.EvaluateProject(projectCtx, project, readiness.Options{CheckRemote: false})
 		cancel()
 		if err != nil {
-			fmt.Fprintf(stderr, "check project readiness: %v\n", err)
-			return 1
+			return commandresult.Result[treePayload]{}, err
 		}
-		fmt.Fprintf(stdout, "- %s %s %s\n", report.Project.Alias, report.State, report.Project.LocalPath)
+		diagnostics := statusDiagnostics(report)
+		warnings += len(diagnostics.Warnings)
+		blockers += len(diagnostics.Blockers)
+		treeProjects = append(treeProjects, statusProject{
+			Alias:       report.Project.Alias,
+			State:       string(report.State),
+			Path:        report.Project.LocalPath,
+			PathPresent: report.LocalPathPresent,
+			Remote:      report.Project.NormalizedRemote,
+			Base:        report.BaseBranch,
+			Diagnostics: diagnostics,
+		})
 	}
-	return 0
+	return commandresult.New("tree", commandresult.ReadinessExitClass(warnings, blockers), commandresult.Diagnostics{}, treePayload{Projects: treeProjects}), nil
+}
+
+func renderTreePayloadHuman(w io.Writer, payload treePayload) error {
+	fmt.Fprintln(w, "canonical workspace:")
+	if len(payload.Projects) == 0 {
+		fmt.Fprintln(w, "(empty)")
+		return nil
+	}
+	for _, project := range payload.Projects {
+		fmt.Fprintf(w, "- %s %s %s\n", project.Alias, project.State, project.Path)
+	}
+	return nil
 }
 
 func runStatus(args []string, stdout, stderr io.Writer) int {
@@ -1115,12 +1424,12 @@ Usage:
   codemesh init [workspace-root]
   codemesh add <path> [--alias name]
   codemesh scan [workspace-root]
-  codemesh tree
+  codemesh tree [--json]
   codemesh status [project] [--base branch] [--json]
   codemesh doctor <project> [--base branch] [--strict] [--json]
-  codemesh hydrate <project>
+  codemesh hydrate <project> [--json]
   codemesh machine register [workspace-root] [--json]
-  codemesh agent prepare <project> [--base branch] [--profile name]
+  codemesh agent prepare <project> [--base branch] [--profile name] [--json]
   codemesh agent run <run-id> --label label [--timeout duration] -- <command...>
   codemesh runs
   codemesh clean [--older-than age]
@@ -1176,7 +1485,9 @@ func printTreeHelp(w io.Writer) {
 	fmt.Fprint(w, `Show the canonical workspace.
 
 Usage:
-  codemesh tree
+  codemesh tree [--json]
+
+Use --json for the stable command result shape.
 `)
 }
 
@@ -1208,10 +1519,11 @@ func printHydrateHelp(w io.Writer) {
 	fmt.Fprint(w, `Hydrate one missing project.
 
 Usage:
-  codemesh hydrate <project>
+  codemesh hydrate <project> [--json]
 
 Clones the registered remote into the desired local path.
 Refuses existing non-empty non-Git paths.
+Use --json for the stable command result shape.
 `)
 }
 
@@ -1237,7 +1549,7 @@ func printAgentHelp(w io.Writer) {
 	fmt.Fprint(w, `Prepare and run agent workspaces.
 
 Usage:
-  codemesh agent prepare <project> [--base branch] [--profile name]
+  codemesh agent prepare <project> [--base branch] [--profile name] [--json]
   codemesh agent run <run-id> --label label [--timeout duration] -- <command...>
 `)
 }
@@ -1246,10 +1558,11 @@ func printAgentPrepareHelp(w io.Writer) {
 	fmt.Fprint(w, `Prepare one agent workspace.
 
 Usage:
-  codemesh agent prepare <project> [--base branch] [--profile name]
+  codemesh agent prepare <project> [--base branch] [--profile name] [--json]
 
 Creates a temporary clone under CodeMesh-managed agents storage.
 Prints ready_path when the workspace is ready.
+Use --json for the stable command result shape.
 `)
 }
 

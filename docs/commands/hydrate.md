@@ -12,12 +12,14 @@ permalink: /commands/hydrate
 ## Syntax
 
 ```sh
-codemesh hydrate <project>
+codemesh hydrate <project> [--json]
 ```
 
 ## Purpose
 
 Clone one registered project into its desired local path when that path is missing. Hydration uses the remote already stored in the local Project Registry.
+
+Use `--json` to emit the stable Command Result shape. The payload reports `outcome` as `hydrated`, `already-present`, `path-conflict`, `unknown-project`, or `failed`, plus the project alias, path, path presence, and normalized remote when a registered project was resolved. User-action failures such as path conflicts and unknown projects use exit class `readiness-blocked`; operational clone or tool failures use exit class `internal-error`. Both failure classes return exit code 1 without overwriting local files.
 
 ## Safe Example
 
@@ -40,6 +42,7 @@ codemesh init "$workspace"
 codemesh add "$workspace/demo-project" --alias demo-project
 rm -rf "$workspace/demo-project"
 codemesh hydrate demo-project
+codemesh hydrate demo-project --json
 ```
 
 ## Current Limitations
