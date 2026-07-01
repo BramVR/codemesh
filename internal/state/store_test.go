@@ -293,6 +293,83 @@ func TestMigrateDoesNotKeepBackfillingCloneURLAfterMigration3(t *testing.T) {
 	}
 }
 
+func TestMigrateAddsMachineFactsWithoutLosingExistingState(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "codemesh.db")
+	createOldProjectDatabase(t, dbPath, "/tmp/codemesh", "https://github.com/BramVR/codemesh")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open error = %v", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate error = %v", err)
+	}
+
+	projects, err := store.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects error = %v", err)
+	}
+	if len(projects) != 1 || projects[0].Alias != "codemesh" {
+		t.Fatalf("projects after machine migration = %#v, want existing project preserved", projects)
+	}
+	machine, err := store.RegisterMachine(ctx, MachineFacts{
+		Hostname:      "first-host",
+		OS:            "darwin",
+		Architecture:  "arm64",
+		WorkspaceRoot: "/tmp/workspace",
+	})
+	if err != nil {
+		t.Fatalf("RegisterMachine error = %v", err)
+	}
+	if machine.ID == "" || machine.Hostname != "first-host" || machine.OS != "darwin" || machine.Architecture != "arm64" || machine.WorkspaceRoot != "/tmp/workspace" || machine.CreatedAt.IsZero() || machine.UpdatedAt.IsZero() {
+		t.Fatalf("machine facts = %#v", machine)
+	}
+}
+
+func TestRegisterMachineReusesIDAndUpdatesMutableFacts(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	defer store.Close()
+
+	first, err := store.RegisterMachine(ctx, MachineFacts{
+		Hostname:      "first-host",
+		OS:            "darwin",
+		Architecture:  "arm64",
+		WorkspaceRoot: "/tmp/one",
+	})
+	if err != nil {
+		t.Fatalf("first RegisterMachine error = %v", err)
+	}
+	second, err := store.RegisterMachine(ctx, MachineFacts{
+		Hostname:      "second-host",
+		OS:            "linux",
+		Architecture:  "amd64",
+		WorkspaceRoot: "/tmp/two",
+	})
+	if err != nil {
+		t.Fatalf("second RegisterMachine error = %v", err)
+	}
+
+	if second.ID != first.ID {
+		t.Fatalf("machine ID changed: first %q second %q", first.ID, second.ID)
+	}
+	if second.CreatedAt != first.CreatedAt {
+		t.Fatalf("created_at changed: first %s second %s", first.CreatedAt, second.CreatedAt)
+	}
+	if second.Hostname != "second-host" || second.OS != "linux" || second.Architecture != "amd64" || second.WorkspaceRoot != "/tmp/two" {
+		t.Fatalf("mutable facts not updated: %#v", second)
+	}
+	machines, err := store.ListMachines(ctx)
+	if err != nil {
+		t.Fatalf("ListMachines error = %v", err)
+	}
+	if len(machines) != 1 {
+		t.Fatalf("machine rows = %d, want 1", len(machines))
+	}
+}
+
 func TestListAndDeleteAgentRuns(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -147,6 +148,81 @@ func TestInitHelp(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "codemesh init [workspace-root]") {
 		t.Fatalf("init help missing usage:\n%s", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestMachineRegisterCreatesStableIdentityAndUpdatesFacts(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	firstRoot := filepath.Join(t.TempDir(), "workspace-one")
+	secondRoot := filepath.Join(t.TempDir(), "workspace-two")
+	if err := os.MkdirAll(firstRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(secondRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"machine", "register", firstRoot}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"machine registered", "id: ", "hostname: ", "os: ", "architecture: ", "workspace_root: " + firstRoot, "created_at: ", "updated_at: "} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("machine register output missing %q:\n%s", want, output)
+		}
+	}
+	firstID := valueAfterPrefix(t, output, "id: ")
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"machine", "register", secondRoot}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("machine register rerun exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if secondID := valueAfterPrefix(t, stdout.String(), "id: "); secondID != firstID {
+		t.Fatalf("machine id changed on rerun: first %q second %q", firstID, secondID)
+	}
+	if !strings.Contains(stdout.String(), "workspace_root: "+secondRoot) {
+		t.Fatalf("rerun did not update workspace root:\n%s", stdout.String())
+	}
+}
+
+func TestMachineRegisterJSONOutput(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"machine", "register", workspace, "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("machine register --json exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	var payload struct {
+		ID            string `json:"id"`
+		Hostname      string `json:"hostname"`
+		OS            string `json:"os"`
+		Architecture  string `json:"architecture"`
+		WorkspaceRoot string `json:"workspace_root"`
+		CreatedAt     string `json:"created_at"`
+		UpdatedAt     string `json:"updated_at"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("machine register JSON did not parse: %v\n%s", err, stdout.String())
+	}
+	if payload.ID == "" || payload.Hostname == "" || payload.OS == "" || payload.Architecture == "" || payload.WorkspaceRoot != workspace || payload.CreatedAt == "" || payload.UpdatedAt == "" {
+		t.Fatalf("machine register JSON missing facts: %#v", payload)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())

@@ -221,10 +221,11 @@ Initial tables:
 7. `init`, `add`, `scan`, `tree`, `status`.
 8. Agent Prep, `agent prepare`, `runs`, `clean`.
 9. `hydrate`.
+10. Machine Registry and `machine register`.
 
 ## Planned Later
 
-- machine registration and multi-machine sync
+- multi-machine sync
 - synced manifests or remote project indexes
 - secret materialization or env file writing
 - daemon, mount, UI, placeholders, or file-level lazy hydration

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/BramVR/codemesh/internal/agentprep"
 	"github.com/BramVR/codemesh/internal/agentruns"
 	"github.com/BramVR/codemesh/internal/config"
+	"github.com/BramVR/codemesh/internal/machineregistry"
 	"github.com/BramVR/codemesh/internal/readiness"
 	"github.com/BramVR/codemesh/internal/registry"
 	"github.com/BramVR/codemesh/internal/state"
@@ -48,6 +50,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runStatus(args[1:], stdout, stderr)
 	case "hydrate":
 		return runHydrate(args[1:], stdout, stderr)
+	case "machine":
+		return runMachine(args[1:], stdout, stderr)
 	case "agent":
 		return runAgent(args[1:], stdout, stderr)
 	case "runs":
@@ -59,6 +63,105 @@ func run(args []string, stdout, stderr io.Writer) int {
 		printHelp(stderr)
 		return 2
 	}
+}
+
+func runMachine(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+		printMachineHelp(stdout)
+		return 0
+	}
+	switch args[0] {
+	case "register":
+		return runMachineRegister(args[1:], stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown machine command: %s\n\n", args[0])
+		printMachineHelp(stderr)
+		return 2
+	}
+}
+
+func runMachineRegister(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printMachineRegisterHelp(stdout)
+		return 0
+	}
+	workspaceArg, jsonOutput, ok := parseMachineRegisterArgs(args, stderr)
+	if !ok {
+		printMachineRegisterHelp(stderr)
+		return 2
+	}
+	workspaceRoot, err := config.ResolveWorkspaceRoot(workspaceArg)
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve workspace root: %v\n", err)
+		return 1
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+	machine, err := machineregistry.Registry{Store: store}.Register(context.Background(), workspaceRoot)
+	if err != nil {
+		fmt.Fprintf(stderr, "register machine: %v\n", err)
+		return 1
+	}
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(machineRegisterJSON{
+			ID:            machine.ID,
+			Hostname:      machine.Hostname,
+			OS:            machine.OS,
+			Architecture:  machine.Architecture,
+			WorkspaceRoot: machine.WorkspaceRoot,
+			CreatedAt:     machine.CreatedAt.UTC().Format(time.RFC3339),
+			UpdatedAt:     machine.UpdatedAt.UTC().Format(time.RFC3339),
+		}); err != nil {
+			fmt.Fprintf(stderr, "encode machine registration: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintf(stdout, "machine registered\nid: %s\nhostname: %s\nos: %s\narchitecture: %s\nworkspace_root: %s\ncreated_at: %s\nupdated_at: %s\n",
+		machine.ID,
+		machine.Hostname,
+		machine.OS,
+		machine.Architecture,
+		machine.WorkspaceRoot,
+		machine.CreatedAt.UTC().Format(time.RFC3339),
+		machine.UpdatedAt.UTC().Format(time.RFC3339),
+	)
+	return 0
+}
+
+type machineRegisterJSON struct {
+	ID            string `json:"id"`
+	Hostname      string `json:"hostname"`
+	OS            string `json:"os"`
+	Architecture  string `json:"architecture"`
+	WorkspaceRoot string `json:"workspace_root"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+func parseMachineRegisterArgs(args []string, stderr io.Writer) (string, bool, bool) {
+	var workspaceRoots []string
+	var jsonOutput bool
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOutput = true
+		default:
+			workspaceRoots = append(workspaceRoots, arg)
+		}
+	}
+	if len(workspaceRoots) > 1 {
+		fmt.Fprint(stderr, "machine register accepts at most one workspace root\n\n")
+		return "", false, false
+	}
+	if len(workspaceRoots) == 1 {
+		return workspaceRoots[0], jsonOutput, true
+	}
+	return "", jsonOutput, true
 }
 
 func runRuns(args []string, stdout, stderr io.Writer) int {
@@ -634,6 +737,7 @@ Usage:
   codemesh tree
   codemesh status [project] [--base branch]
   codemesh hydrate <project>
+  codemesh machine register [workspace-root] [--json]
   codemesh agent prepare <project> [--base branch] [--profile name]
   codemesh runs
   codemesh clean [--older-than age]
@@ -645,6 +749,7 @@ Commands:
   tree       show the canonical workspace
   status     report project readiness
   hydrate    clone a missing project into its desired path
+  machine    register this machine locally
   agent      prepare agent workspaces
   runs       list prepared agent runs
   clean      delete old CodeMesh-managed agent runs
@@ -710,6 +815,24 @@ Usage:
 
 Clones the registered remote into the desired local path.
 Refuses existing non-empty non-Git paths.
+`)
+}
+
+func printMachineHelp(w io.Writer) {
+	fmt.Fprint(w, `Register local machine identity.
+
+Usage:
+  codemesh machine register [workspace-root] [--json]
+`)
+}
+
+func printMachineRegisterHelp(w io.Writer) {
+	fmt.Fprint(w, `Register local machine identity.
+
+Usage:
+  codemesh machine register [workspace-root] [--json]
+
+Creates or reuses a persistent local machine ID and updates mutable local facts.
 `)
 }
 

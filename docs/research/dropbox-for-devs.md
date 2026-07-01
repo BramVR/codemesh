@@ -237,7 +237,8 @@ Build the boring version first:
 
 2. Machine inventory.
    - `codemesh machine register`
-   - planned: records hostname, OS, arch, workspace root, allowed secret scopes.
+   - current: records hostname, OS, arch, workspace root, and timestamps in local state.
+   - planned: allowed secret scopes.
 
 3. Status.
    - `codemesh status`

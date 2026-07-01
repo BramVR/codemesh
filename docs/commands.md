@@ -16,6 +16,7 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 - [`codemesh tree`](commands/tree.md)
 - [`codemesh status [project] [--base branch]`](commands/status.md)
 - [`codemesh hydrate <project>`](commands/hydrate.md)
+- [`codemesh machine register [workspace-root] [--json]`](commands/machine-register.md)
 - [`codemesh agent prepare <project> [--base branch] [--profile name]`](commands/agent-prepare.md)
 - [`codemesh runs`](commands/runs.md)
 - [`codemesh clean [--older-than age]`](commands/clean.md)
@@ -60,7 +61,7 @@ Use `codemesh hydrate <project>` after a project is already registered and its d
 
 These directions remain product direction, not runnable commands today:
 
-- machine registration and multi-machine sync
+- multi-machine sync
 - synced manifests or remote project indexes
 - secret materialization or env file writing
 - daemon, mount, UI, placeholders, or file-level lazy hydration

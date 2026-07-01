@@ -12,7 +12,7 @@ CodeMesh augments Git and local filesystems. It does not replace either one.
 
 ## Local First
 
-CodeMesh state is local machine metadata. The MVP uses a local SQLite database under CodeMesh home to store project registry rows, settings, and agent run metadata.
+CodeMesh state is local machine metadata. The MVP uses a local SQLite database under CodeMesh home to store project registry rows, settings, local machine facts, and agent run metadata.
 
 ## Git Remains The Source Of Code Truth
 
