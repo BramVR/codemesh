@@ -101,7 +101,7 @@ Responsibilities:
 - resolve effective project policy
 - run Readiness
 - create temp clone
-- checkout base
+- checkout requested, policy, remote-default, or `main` fallback base
 - discover project docs
 - write run metadata
 - return ready path and diagnostics
@@ -204,7 +204,7 @@ Creates a temp clone under `~/.codemesh/agents`.
 Rules:
 
 - clone from normalized remote
-- checkout requested base or policy/default base
+- checkout requested, policy, remote-default, or `main` fallback base
 - warn if source checkout is dirty
 - warn or block on env based on policy
 - resolve default and policy-selected handoff docs from the prepared clone

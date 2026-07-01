@@ -915,7 +915,7 @@ func (h *harness) caseProjectRegistryScanWorkflow() {
 	if rerun.Status != "PASS" || !s.expectOutput(rerun, "unchanged: clean-repo") {
 		return
 	}
-	if !s.expectProjectRowCount("project registry scan idempotent state rows", 7) {
+	if !s.expectProjectRowCount("project registry scan idempotent state rows", 8) {
 		return
 	}
 
@@ -1458,7 +1458,7 @@ func (h *harness) caseNegativeCLIWorkflow() {
 	}
 
 	scan := s.command("negative cli scan fixtures", "scan", s.fixtures.Sources)
-	if scan.Status != "PASS" || !s.expectProjectRowCount("negative cli baseline state rows", 7) {
+	if scan.Status != "PASS" || !s.expectProjectRowCount("negative cli baseline state rows", 8) {
 		return
 	}
 
@@ -1466,7 +1466,7 @@ func (h *harness) caseNegativeCLIWorkflow() {
 	if !s.expectFailure(unknownProject, 1, "unknown project: ghost-project") {
 		return
 	}
-	if !s.expectProjectRowCount("negative cli unknown project state unchanged", 7) {
+	if !s.expectProjectRowCount("negative cli unknown project state unchanged", 8) {
 		return
 	}
 	if !s.expectPathMissing("negative cli unknown project no filesystem mutation", filepath.Join(s.fixtures.Sources, "ghost-project")) {
@@ -1503,7 +1503,7 @@ func (h *harness) caseNegativeCLIWorkflow() {
 	if !s.expectFailure(hydrateConflict, 1, "hydrate project: path conflict", conflict.Source) {
 		return
 	}
-	if !s.expectProjectRowCount("negative cli hydrate conflict state unchanged", 8) {
+	if !s.expectProjectRowCount("negative cli hydrate conflict state unchanged", 9) {
 		return
 	}
 	if got, err := os.ReadFile(conflictMarker); err != nil || string(got) != "keep me\n" {
@@ -1761,6 +1761,24 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 		}
 	}
 
+	remoteDefault := s.command("agent prep remote default base", "agent", "prepare", "remote-default-dev", "--profile", "codex")
+	if remoteDefault.Status != "PASS" || !s.expectOutput(remoteDefault, "base: develop", "blockers: none", "ready_path: ") {
+		return
+	}
+	remoteDefaultPath := s.expectReadyPath("agent prep remote default ready path", remoteDefault)
+	if remoteDefaultPath == "" {
+		return
+	}
+	if !s.expectGitCheckoutAtBase("agent prep remote default checkout base", remoteDefaultPath, "develop") {
+		return
+	}
+	if !s.expectPathExists("agent prep remote default branch file", filepath.Join(remoteDefaultPath, "develop.txt")) {
+		return
+	}
+	if !s.expectAgentRunMetadata("agent prep remote default metadata", remoteDefaultPath, "remote-default-dev", "develop", "codex") {
+		return
+	}
+
 	dirty := s.command("agent prep dirty source warning", "agent", "prepare", "dirty-source", "--base", "main")
 	if dirty.Status == "PASS" && !s.expectOutput(dirty, "warning: dirty-checkout") {
 		return
@@ -1982,6 +2000,23 @@ func (h *harness) exec(dir string, name string, args ...string) (string, string,
 		h.record(r)
 	}
 	return r.Stdout, r.Stderr, resultError(r)
+}
+
+func (h *harness) gitRefExists(dir, ref string) (bool, error) {
+	r := h.executeCommand(commandSpec{
+		Label:   "git ref exists",
+		Dir:     dir,
+		Name:    "git",
+		Args:    []string{"show-ref", "--verify", "--quiet", ref},
+		Timeout: defaultCommandTimeout,
+	})
+	if r.Status == "PASS" {
+		return true, nil
+	}
+	if r.ExitCode == 1 {
+		return false, nil
+	}
+	return false, resultError(r)
 }
 
 func (h *harness) caseOfflineGitFixtureSmoke() {
@@ -2355,6 +2390,39 @@ func (h *harness) createOfflineGitFixtures() (offlineGitFixtures, error) {
 	if project, err := h.createClonedFixtureWithSeed(fixtures, "policy-docs", writePolicyHandoffDocs, nil); err != nil {
 		return fixtures, err
 	} else {
+		fixtures.Projects = append(fixtures.Projects, project)
+	}
+	if project, err := h.createClonedFixture(fixtures, "remote-default-dev", nil); err != nil {
+		return fixtures, err
+	} else {
+		developExists, err := h.gitRefExists(project.Source, "refs/heads/develop")
+		if err != nil {
+			return fixtures, err
+		}
+		if !developExists {
+			if _, _, err := h.exec(project.Source, "git", "checkout", "-b", "develop"); err != nil {
+				return fixtures, err
+			}
+			if err := os.WriteFile(filepath.Join(project.Source, "develop.txt"), []byte("develop branch\n"), 0o644); err != nil {
+				return fixtures, err
+			}
+			if _, _, err := h.exec(project.Source, "git", "add", "."); err != nil {
+				return fixtures, err
+			}
+			if _, _, err := h.exec(project.Source, "git", "-c", "user.name=CodeMesh E2E", "-c", "user.email=e2e@example.invalid", "commit", "-m", "Develop branch"); err != nil {
+				return fixtures, err
+			}
+			if _, _, err := h.exec(project.Source, "git", "push", "-u", "origin", "develop"); err != nil {
+				return fixtures, err
+			}
+		}
+		if _, _, err := h.exec(project.Remote, "git", "symbolic-ref", "HEAD", "refs/heads/develop"); err != nil {
+			return fixtures, err
+		}
+		if _, _, err := h.exec(project.Source, "git", "checkout", "main"); err != nil {
+			return fixtures, err
+		}
+		project.BaseBranch = "develop"
 		fixtures.Projects = append(fixtures.Projects, project)
 	}
 	if project, err := h.createClonedFixture(fixtures, "dirty-source", func(source string) error {
@@ -3022,6 +3090,10 @@ func (s *scenario) expectAgentRunMetadata(name, readyPath, projectAlias, base, p
 		s.h.record(result{Name: name, Status: "FAIL", Error: "codemesh-run.json metadata does not match prepared workspace", ExitCode: -1})
 		return false
 	}
+	if fileMetadata.BaseProvenance.FetchedBase != base || fileMetadata.BaseProvenance.FetchedCommit == "" || fileMetadata.BaseProvenance.PreparedHEAD != fileMetadata.ResolvedCommit || !fileMetadata.BaseProvenance.MatchesFetched {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("codemesh-run.json base provenance = %#v", fileMetadata.BaseProvenance), ExitCode: -1})
+		return false
+	}
 	if fileMetadata.ContractVersion != 1 || fileMetadata.Producer.Name != "codemesh" || fileMetadata.Producer.Version == "" {
 		s.h.record(result{Name: name, Status: "FAIL", Error: "codemesh-run.json missing agent run contract version or producer", ExitCode: -1})
 		return false
@@ -3033,6 +3105,10 @@ func (s *scenario) expectAgentRunMetadata(name, readyPath, projectAlias, base, p
 	}
 	if dbMetadata.ReadyPath != readyPath || dbMetadata.Project.Alias != projectAlias || dbMetadata.Base != base || dbMetadata.Profile != profile {
 		s.h.record(result{Name: name, Status: "FAIL", Error: "state-store agent run metadata does not reference prepared workspace", ExitCode: -1})
+		return false
+	}
+	if !reflect.DeepEqual(dbMetadata.BaseProvenance, fileMetadata.BaseProvenance) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: "state-store base provenance diverged from file metadata", ExitCode: -1})
 		return false
 	}
 	if dbMetadata.ContractVersion != fileMetadata.ContractVersion || dbMetadata.Producer != fileMetadata.Producer {
@@ -3328,6 +3404,7 @@ type agentMetadata struct {
 	Base              string            `json:"base"`
 	Profile           string            `json:"profile"`
 	ResolvedCommit    string            `json:"resolved_commit"`
+	BaseProvenance    agentCommandBase  `json:"base_provenance"`
 	ReadinessDecision string            `json:"readiness_decision"`
 	HandoffDocs       []agentHandoffDoc `json:"handoff_docs"`
 	Diagnostics       agentDiagnostics  `json:"diagnostics"`
@@ -3371,6 +3448,10 @@ type agentCommandBase struct {
 	Base           string `json:"base"`
 	ResolvedCommit string `json:"resolved_commit"`
 	Remote         string `json:"remote"`
+	FetchedBase    string `json:"fetched_base"`
+	FetchedCommit  string `json:"fetched_commit"`
+	PreparedHEAD   string `json:"prepared_head"`
+	MatchesFetched bool   `json:"matches_fetched"`
 }
 
 type projectRow struct {

@@ -23,9 +23,10 @@ const (
 )
 
 type Policy struct {
-	BaseBranch  string
-	Env         EnvPolicy
-	IncludeDocs []string
+	BaseBranch    string
+	BaseBranchSet bool
+	Env           EnvPolicy
+	IncludeDocs   []string
 }
 
 type EnvPolicy struct {
@@ -89,6 +90,7 @@ func ParseBytes(path string, data []byte) (Policy, error) {
 			return Policy{}, err
 		}
 		p.BaseBranch = base
+		p.BaseBranchSet = true
 	}
 	if mode := strings.TrimSpace(raw.Agent.Env.Mode); mode != "" {
 		switch EnvMode(mode) {

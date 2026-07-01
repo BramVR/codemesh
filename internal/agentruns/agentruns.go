@@ -290,14 +290,10 @@ func (m Manager) Execute(ctx context.Context, req ExecuteRequest) (CommandRecord
 	}
 
 	record := CommandRecord{
-		Label: label,
-		CWD:   row.WorkspacePath,
-		Env:   agentcontract.EnvSummaryFromBindings(req.Env),
-		Base: BaseProvenance{
-			Base:           metadata.Base,
-			ResolvedCommit: metadata.ResolvedCommit,
-			Remote:         metadata.Project.Remote,
-		},
+		Label:      label,
+		CWD:        row.WorkspacePath,
+		Env:        agentcontract.EnvSummaryFromBindings(req.Env),
+		Base:       metadata.BaseProvenance,
 		ExitCode:   exitCode,
 		Duration:   duration.Round(time.Millisecond).String(),
 		StdoutPath: stdoutPath,

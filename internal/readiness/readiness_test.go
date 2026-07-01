@@ -49,6 +49,112 @@ func TestEvaluateProjectUsesRepoPolicyBaseWhenBaseUnset(t *testing.T) {
 	}
 }
 
+func TestEvaluateHandoffUsesRemoteDefaultBaseWhenPolicyBaseUnset(t *testing.T) {
+	project := createReadinessFixture(t, "remote-default")
+	runGit(t, project.LocalPath, "checkout", "-b", "develop")
+	if err := os.WriteFile(filepath.Join(project.LocalPath, "develop.txt"), []byte("develop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, project.LocalPath, "add", ".")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Develop branch")
+	runGit(t, project.LocalPath, "push", "origin", "develop")
+	runGit(t, project.NormalizedRemote, "symbolic-ref", "HEAD", "refs/heads/develop")
+	runGit(t, project.LocalPath, "checkout", "main")
+
+	decision, err := EvaluateHandoff(context.Background(), project, Options{})
+	if err != nil {
+		t.Fatalf("EvaluateHandoff error = %v", err)
+	}
+
+	if decision.Report.State != StatePresent {
+		t.Fatalf("state = %s, want %s; blockers=%v warnings=%v", decision.Report.State, StatePresent, decision.Report.Blockers, decision.Report.Warnings)
+	}
+	if decision.Report.BaseBranch != "develop" {
+		t.Fatalf("BaseBranch = %q, want develop", decision.Report.BaseBranch)
+	}
+	if decision.Report.FetchedBase != "develop" || decision.Report.FetchedCommit == "" {
+		t.Fatalf("fetched base/commit = %q/%q", decision.Report.FetchedBase, decision.Report.FetchedCommit)
+	}
+}
+
+func TestEvaluateHandoffUsesRemoteDefaultBaseWithRelativeOrigin(t *testing.T) {
+	project := createReadinessFixture(t, "relative-remote-default")
+	runGit(t, project.LocalPath, "checkout", "-b", "develop")
+	if err := os.WriteFile(filepath.Join(project.LocalPath, "develop.txt"), []byte("develop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, project.LocalPath, "add", ".")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Develop branch")
+	runGit(t, project.LocalPath, "push", "origin", "develop")
+	runGit(t, project.NormalizedRemote, "symbolic-ref", "HEAD", "refs/heads/develop")
+	runGit(t, project.LocalPath, "checkout", "main")
+	runGit(t, project.LocalPath, "remote", "set-url", "origin", "../remote.git")
+
+	decision, err := EvaluateHandoff(context.Background(), project, Options{})
+	if err != nil {
+		t.Fatalf("EvaluateHandoff error = %v", err)
+	}
+
+	if decision.Report.BaseBranch != "develop" {
+		t.Fatalf("BaseBranch = %q, want develop", decision.Report.BaseBranch)
+	}
+	if decision.Report.FetchedBase != "develop" || decision.Report.FetchedCommit == "" {
+		t.Fatalf("fetched base/commit = %q/%q", decision.Report.FetchedBase, decision.Report.FetchedCommit)
+	}
+}
+
+func TestEvaluateHandoffBlocksWhenRemoteDefaultLookupFails(t *testing.T) {
+	project := createReadinessFixture(t, "remote-default-failure")
+	missingRemote := filepath.Join(t.TempDir(), "missing.git")
+	project.NormalizedRemote = missingRemote
+	runGit(t, project.LocalPath, "remote", "set-url", "origin", missingRemote)
+
+	decision, err := EvaluateHandoff(context.Background(), project, Options{})
+	if err != nil {
+		t.Fatalf("EvaluateHandoff error = %v", err)
+	}
+
+	if decision.Report.State != StateStale {
+		t.Fatalf("state = %s, want %s", decision.Report.State, StateStale)
+	}
+	if !hasDiagnostic(decision.Report.Blockers, "fetch-failed") {
+		t.Fatalf("blockers = %v, want fetch-failed", decision.Report.Blockers)
+	}
+	if decision.Report.BaseBranch != "main" {
+		t.Fatalf("BaseBranch = %q, want main fallback only as blocked diagnostic context", decision.Report.BaseBranch)
+	}
+}
+
+func TestEvaluateHandoffPolicyBaseOverridesRemoteDefault(t *testing.T) {
+	project := createReadinessFixture(t, "policy-over-remote-default")
+	runGit(t, project.LocalPath, "checkout", "-b", "develop")
+	runGit(t, project.LocalPath, "push", "origin", "develop")
+	runGit(t, project.NormalizedRemote, "symbolic-ref", "HEAD", "refs/heads/develop")
+	runGit(t, project.LocalPath, "checkout", "main")
+	runGit(t, project.LocalPath, "checkout", "-b", "release/agent")
+	runGit(t, project.LocalPath, "push", "origin", "release/agent")
+	runGit(t, project.LocalPath, "checkout", "main")
+	writeFixturePolicy(t, project, `agent:
+  base: release/agent
+`)
+	commitFixturePolicy(t, project)
+
+	decision, err := EvaluateHandoff(context.Background(), project, Options{})
+	if err != nil {
+		t.Fatalf("EvaluateHandoff error = %v", err)
+	}
+
+	if decision.Report.State != StatePresent {
+		t.Fatalf("state = %s, want %s; blockers=%v warnings=%v", decision.Report.State, StatePresent, decision.Report.Blockers, decision.Report.Warnings)
+	}
+	if decision.Report.BaseBranch != "release/agent" {
+		t.Fatalf("BaseBranch = %q, want release/agent", decision.Report.BaseBranch)
+	}
+	if decision.Report.FetchedBase != "release/agent" || decision.Report.FetchedCommit == "" {
+		t.Fatalf("fetched base/commit = %q/%q", decision.Report.FetchedBase, decision.Report.FetchedCommit)
+	}
+}
+
 func TestEvaluateProjectReportsInvalidPolicyAsActionableBlocker(t *testing.T) {
 	project := createReadinessFixture(t, "invalid-policy")
 	writeFixturePolicy(t, project, `agent:

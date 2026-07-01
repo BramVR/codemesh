@@ -126,11 +126,11 @@ Run layout:
 - `workspace/`: temporary Git clone from the registered clone URL.
 - `codemesh-run.json`: handoff metadata written inside the ready workspace.
 
-Agent Prep resolves the project by alias, chooses the requested base or repo policy/default base, fetches that base when a source checkout is present, and gates the handoff on the policy from the fetched base before cloning. If the registered desired source path is missing, Agent Prep reads policy from the remote default branch through a temporary Git clone to honor `agent.base`, validates the selected base against the registered clone URL, and prepares from that remote instead of treating the missing path as a blocker. Env readiness still follows the selected-base policy: required keys are checked from the process environment, and required local env files are treated as missing when the source checkout is absent. Env file contents are never read. Readiness blockers stop prep before a run is recorded, and any temporary clone made to read selected-base policy is removed before returning the blocker. Warnings, including dirty source checkout and env warnings, are recorded and printed but do not block.
+Agent Prep resolves the project by alias, chooses the requested base, repo policy base, discoverable remote default branch, or `main` fallback in that order, fetches that base when a source checkout is present, and gates the handoff on the policy from the fetched base before cloning. If the registered desired source path is missing, Agent Prep reads policy from the remote default branch through a temporary Git clone to honor `agent.base`, validates the selected base against the registered clone URL, and prepares from that remote instead of treating the missing path as a blocker. Env readiness still follows the selected-base policy: required keys are checked from the process environment, and required local env files are treated as missing when the source checkout is absent. Env file contents are never read. Readiness blockers stop prep before a run is recorded, and any temporary clone made to read selected-base policy is removed before returning the blocker. Warnings, including dirty source checkout and env warnings, are recorded and printed but do not block.
 
 `codemesh doctor <project>` runs the same handoff readiness gate before Agent Prep's clone/run-recording step. It does not create an agent run directory, write `codemesh-run.json`, or insert an `agent_runs` row. Warning-only readiness exits zero by default and exits non-zero with `--strict`; blockers exit non-zero in both modes.
 
-The clone checks out the requested `--base` when provided. Otherwise it checks out the repo-local policy base, falling back to `main`. CodeMesh uses Git for clone and checkout; it does not copy uncommitted source files, create Git worktrees, or replace Git state.
+The clone checks out the requested `--base` when provided. Otherwise it checks out the repo-local policy base, then the remote default branch, then `main`. CodeMesh uses Git for clone and checkout; it does not copy uncommitted source files, create Git worktrees, or replace Git state.
 
 `codemesh-run.json` is the Agent Run Contract. The current contract is `contract_version: 1` and includes producer metadata with the CodeMesh producer name and binary version.
 
@@ -143,6 +143,7 @@ The contract records metadata only:
 - project alias, normalized remote, redacted clone URL, and source path
 - effective base and profile
 - resolved commit and readiness decision
+- base provenance with fetched base, fetched commit, prepared HEAD, and whether the prepared HEAD matches the fetched commit
 - handoff docs as project-relative paths available in the prepared clone, with source metadata such as `default` or `policy` and the original policy pattern when applicable
 - warnings and blockers from readiness
 - created timestamp

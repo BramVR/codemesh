@@ -55,6 +55,12 @@ func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
 	if metadata.ResolvedCommit == "" || metadata.ReadinessDecision != "ready" {
 		t.Fatalf("metadata commit/decision = %#v", metadata)
 	}
+	if metadata.BaseProvenance.FetchedBase != "main" || metadata.BaseProvenance.FetchedCommit == "" || metadata.BaseProvenance.PreparedHEAD != metadata.ResolvedCommit || !metadata.BaseProvenance.MatchesFetched {
+		t.Fatalf("metadata base provenance = %#v, resolved=%s", metadata.BaseProvenance, metadata.ResolvedCommit)
+	}
+	if metadata.BaseProvenance.FetchedCommit != metadata.ResolvedCommit {
+		t.Fatalf("fetched commit = %q, prepared HEAD = %q", metadata.BaseProvenance.FetchedCommit, metadata.ResolvedCommit)
+	}
 	if len(metadata.Diagnostics.Warnings) != 0 || len(metadata.Diagnostics.Blockers) != 0 {
 		t.Fatalf("metadata diagnostics = %#v, want none", metadata.Diagnostics)
 	}
@@ -73,6 +79,9 @@ func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
 	}
 	if !strings.Contains(store.runs[0].MetadataJSON, `"contract_version": 1`) || !strings.Contains(store.runs[0].MetadataJSON, `"producer": {`) {
 		t.Fatalf("stored metadata missing contract version/producer:\n%s", store.runs[0].MetadataJSON)
+	}
+	if !strings.Contains(store.runs[0].MetadataJSON, `"fetched_base": "main"`) || !strings.Contains(store.runs[0].MetadataJSON, `"matches_fetched": true`) {
+		t.Fatalf("stored metadata missing base provenance:\n%s", store.runs[0].MetadataJSON)
 	}
 }
 
@@ -141,6 +150,67 @@ func TestPrepareMissingSourceCheckoutUsesRemotePolicyBaseWhenRequestBaseUnset(t 
 	}
 	if len(store.runs) != 1 {
 		t.Fatalf("recorded runs = %d, want 1", len(store.runs))
+	}
+}
+
+func TestPrepareUsesRemoteDefaultBaseWhenRequestAndPolicyUnset(t *testing.T) {
+	project := createFixtureProject(t, "remote-default-base")
+	runGit(t, project.LocalPath, "checkout", "-b", "develop")
+	writeFile(t, filepath.Join(project.LocalPath, "develop.txt"), "develop\n")
+	runGit(t, project.LocalPath, "add", ".")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Develop branch")
+	runGit(t, project.LocalPath, "push", "origin", "develop")
+	runGit(t, project.NormalizedRemote, "symbolic-ref", "HEAD", "refs/heads/develop")
+	runGit(t, project.LocalPath, "checkout", "main")
+	preparer := testPreparer(t.TempDir(), newMemoryStore(project))
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Profile: "codex"})
+
+	if err != nil {
+		t.Fatalf("Prepare error = %v", err)
+	}
+	if result.Base != "develop" {
+		t.Fatalf("Base = %q, want develop", result.Base)
+	}
+	if branch := strings.TrimSpace(gitOutputTest(t, result.ReadyPath, "branch", "--show-current")); branch != "develop" {
+		t.Fatalf("ready checkout branch = %q, want develop", branch)
+	}
+	metadata := readMetadata(t, result.ReadyPath)
+	if metadata.BaseProvenance.FetchedBase != "develop" || metadata.BaseProvenance.FetchedCommit != metadata.BaseProvenance.PreparedHEAD || !metadata.BaseProvenance.MatchesFetched {
+		t.Fatalf("base provenance = %#v", metadata.BaseProvenance)
+	}
+}
+
+func TestPreparePolicyBaseOverridesRemoteDefaultBase(t *testing.T) {
+	project := createFixtureProject(t, "policy-over-remote-default")
+	runGit(t, project.LocalPath, "checkout", "-b", "develop")
+	writeFile(t, filepath.Join(project.LocalPath, "develop.txt"), "develop\n")
+	runGit(t, project.LocalPath, "add", ".")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Develop branch")
+	runGit(t, project.LocalPath, "push", "origin", "develop")
+	runGit(t, project.NormalizedRemote, "symbolic-ref", "HEAD", "refs/heads/develop")
+	runGit(t, project.LocalPath, "checkout", "main")
+	writeFile(t, filepath.Join(project.LocalPath, ".codemesh.yml"), "agent:\n  base: release/agent\n")
+	runGit(t, project.LocalPath, "add", ".codemesh.yml")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Agent policy")
+	runGit(t, project.LocalPath, "checkout", "-b", "release/agent")
+	writeFile(t, filepath.Join(project.LocalPath, "release.txt"), "release\n")
+	runGit(t, project.LocalPath, "add", ".")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Release branch")
+	runGit(t, project.LocalPath, "push", "origin", "main", "release/agent")
+	runGit(t, project.LocalPath, "checkout", "main")
+	preparer := testPreparer(t.TempDir(), newMemoryStore(project))
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias})
+
+	if err != nil {
+		t.Fatalf("Prepare error = %v", err)
+	}
+	if result.Base != "release/agent" {
+		t.Fatalf("Base = %q, want release/agent", result.Base)
+	}
+	if branch := strings.TrimSpace(gitOutputTest(t, result.ReadyPath, "branch", "--show-current")); branch != "release/agent" {
+		t.Fatalf("ready checkout branch = %q, want release/agent", branch)
 	}
 }
 

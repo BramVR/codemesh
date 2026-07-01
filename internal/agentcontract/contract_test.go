@@ -23,9 +23,18 @@ func TestEncodeWritesVersionProducerAndRedactsMetadataBytes(t *testing.T) {
 			LocalPath:  "/tmp/source",
 			ProjectID:  42,
 		},
-		Base:              "main",
-		Profile:           "codex",
-		ResolvedCommit:    "abc123",
+		Base:           "main",
+		Profile:        "codex",
+		ResolvedCommit: "abc123",
+		BaseProvenance: BaseProvenance{
+			Base:           "main",
+			ResolvedCommit: "abc123",
+			Remote:         "https://example.invalid/org/repo",
+			FetchedBase:    "main",
+			FetchedCommit:  "abc123",
+			PreparedHEAD:   "abc123",
+			MatchesFetched: true,
+		},
 		ReadinessDecision: "ready",
 		CreatedAt:         time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC),
 	})
@@ -37,6 +46,10 @@ func TestEncodeWritesVersionProducerAndRedactsMetadataBytes(t *testing.T) {
 			Base:           "main",
 			ResolvedCommit: "abc123",
 			Remote:         "https://example.invalid/org/repo",
+			FetchedBase:    "main",
+			FetchedCommit:  "abc123",
+			PreparedHEAD:   "abc123",
+			MatchesFetched: true,
 		},
 		ExitCode:   0,
 		Duration:   "1ms",
@@ -74,6 +87,9 @@ func TestEncodeWritesVersionProducerAndRedactsMetadataBytes(t *testing.T) {
 		}
 		if !strings.Contains(raw, `"clone_url": "https://redacted@example.invalid/org/repo.git"`) {
 			t.Fatalf("%s metadata missing redacted clone URL:\n%s", label, raw)
+		}
+		if !strings.Contains(raw, `"base_provenance": {`) || !strings.Contains(raw, `"fetched_commit": "abc123"`) || !strings.Contains(raw, `"matches_fetched": true`) {
+			t.Fatalf("%s metadata missing checkout provenance:\n%s", label, raw)
 		}
 		if !strings.Contains(raw, `"CODEMESH_TOKEN"`) || !strings.Contains(raw, `"values": "not-recorded"`) {
 			t.Fatalf("%s metadata missing env summary:\n%s", label, raw)

@@ -19,7 +19,7 @@ codemesh agent run <run-id> --label label [--timeout duration] -- <command...>
 
 Run one explicitly supplied local command inside a prepared agent workspace. CodeMesh uses the recorded run workspace as cwd, captures stdout and stderr under the managed run directory, and appends command metadata through the Agent Run Contract to `codemesh-run.json` and local state.
 
-The command record includes the command label, cwd, env binding summary, base provenance, exit code, duration, and output file paths. Env values and command output are not embedded in metadata.
+The command record includes the command label, cwd, env binding summary, base provenance from the prepared run, exit code, duration, and output file paths. Env values and command output are not embedded in metadata.
 
 `--timeout` accepts Go durations such as `30s`, `5m`, or `1h`. When omitted, CodeMesh uses a 10 minute timeout. Only one command may run against a given run ID at a time; concurrent attempts are refused so output files and audit metadata cannot clobber each other.
 

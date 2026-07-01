@@ -46,6 +46,7 @@ type Result struct {
 	Base           string
 	Profile        string
 	ResolvedCommit string
+	BaseProvenance agentcontract.BaseProvenance
 	Diagnostics    Diagnostics
 	Metadata       Metadata
 }
@@ -121,6 +122,15 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	baseProvenance := agentcontract.BaseProvenance{
+		Base:           base,
+		ResolvedCommit: resolvedCommit,
+		Remote:         project.NormalizedRemote,
+		FetchedBase:    decision.Report.FetchedBase,
+		FetchedCommit:  decision.Report.FetchedCommit,
+		PreparedHEAD:   resolvedCommit,
+		MatchesFetched: decision.Report.FetchedCommit != "" && decision.Report.FetchedCommit == resolvedCommit,
+	}
 	readyPolicy, err := readiness.PolicyFromCheckout(ctx, readyPath)
 	if err != nil {
 		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{Code: "invalid-policy", Message: err.Error()})
@@ -152,6 +162,7 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		Base:              base,
 		Profile:           strings.TrimSpace(req.Profile),
 		ResolvedCommit:    resolvedCommit,
+		BaseProvenance:    baseProvenance,
 		ReadinessDecision: "ready",
 		HandoffDocs:       handoffDocs,
 		Diagnostics:       diagnostics,
@@ -178,6 +189,7 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		Base:           base,
 		Profile:        strings.TrimSpace(req.Profile),
 		ResolvedCommit: resolvedCommit,
+		BaseProvenance: baseProvenance,
 		Diagnostics:    diagnostics,
 		Metadata:       metadata,
 	}, nil

@@ -12,13 +12,13 @@ Project Policy is optional repo-local metadata. When present, CodeMesh reads `<p
 
 Absent `.codemesh.yml` means:
 
-- base branch: `main`
+- base branch: discover the remote default branch, then fall back to `main` when it is not advertised
 - env mode: `warn`
 - required env files: none
 - required env keys: none
 - include docs: none from policy; Agent Prep may discover common project docs separately
 
-CodeMesh does not infer the remote default branch yet. A repository whose agent base is not `main` must set `agent.base` or callers must pass `--base`.
+Callers may still pass `--base` to choose an exact branch, and repositories may set `agent.base` when policy should override the remote default.
 
 ## File Shape
 
@@ -43,7 +43,7 @@ agent:
 
 ## Fields
 
-`agent.base`: Git branch name used when a command does not pass `--base`. Default: `main`. The value must be a valid Git branch name.
+`agent.base`: Git branch name used when a command does not pass `--base`. When omitted, CodeMesh uses the discoverable remote default branch before falling back to `main`. The value must be a valid Git branch name.
 
 `agent.env.mode`: action for missing env requirements. Allowed values: `warn` or `block`. Default: `warn`.
 
@@ -64,7 +64,7 @@ Env requirements are checked without secret access:
 - diagnostics name missing file paths or key names only
 - missing requirements are warnings in `warn` mode and blockers in `block` mode
 
-Agent Prep uses the requested base when passed. Without `--base`, it resolves `agent.base` from policy, falling back to `main`. It checks the policy from the fetched base for handoff env requirements, while env file presence is checked against the local source checkout because those files are usually untracked local setup.
+Agent Prep uses the requested base when passed. Without `--base`, it resolves `agent.base` from policy, then the discoverable remote default branch, then `main`. Missing or invalid selected bases block readiness. Agent Prep checks the policy from the fetched base for handoff env requirements, while env file presence is checked against the local source checkout because those files are usually untracked local setup.
 
 Agent Prep resolves handoff docs from the prepared clone, not the source checkout, so metadata points at files available to the agent on the selected base. It records project-relative paths only; it does not copy docs, embed doc contents, or read doc contents into metadata. The default handoff docs are `AGENTS.md`, `CONTEXT.md`, `README.md`, and Markdown files directly under `docs/adr/`; `agent.include_docs` adds project-specific paths or patterns. Valid policy patterns that select no available docs produce `handoff-doc-missing` warnings, not blockers. Command stdout reports only `handoff_docs: N`; the selected paths and `default` or `policy` source metadata live in `codemesh-run.json`.
 
