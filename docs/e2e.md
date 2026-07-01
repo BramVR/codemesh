@@ -229,5 +229,5 @@ From `steipete/oracle`:
 ## Intentionally Not Run Live
 
 - Poll/wait helpers: no async CodeMesh behavior exists yet.
-- Provider, GUI, and multi-machine checks: no live target exists yet, so those future checks must record audited skips unless explicitly opted in and free prerequisites are available.
+- Provider, GUI, and multi-machine checks: those live targets are not implemented yet, so future checks must record audited skips unless explicitly opted in and free prerequisites are available.
 - Screenshot proof: not applicable to the current CLI-only harness.
