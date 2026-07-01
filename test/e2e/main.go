@@ -795,6 +795,10 @@ func (h *harness) expectLiveAgentWorkspace(remote, registeredSourcePath, readyPa
 		h.record(result{Name: "live github agent metadata project identity", Status: "FAIL", Error: "codemesh-run.json project identity did not match live registered remote", ExitCode: -1})
 		return false
 	}
+	if metadata.ContractVersion != 1 || metadata.Producer.Name != "codemesh" || metadata.Producer.Version == "" {
+		h.record(result{Name: "live github agent metadata contract version", Status: "FAIL", Error: "codemesh-run.json missing contract version or producer", ExitCode: -1})
+		return false
+	}
 	if metadata.Base != base || metadata.Profile != "codex" || metadata.ResolvedCommit != strings.TrimSpace(resolvedCommit) || metadata.ReadinessDecision != "ready" {
 		h.record(result{Name: "live github agent metadata checkout contract", Status: "FAIL", Error: "codemesh-run.json checkout contract did not match prepared workspace", ExitCode: -1})
 		return false
@@ -810,6 +814,10 @@ func (h *harness) expectLiveAgentWorkspace(remote, registeredSourcePath, readyPa
 	}
 	if dbMetadata.ReadyPath != metadata.ReadyPath || dbMetadata.ResolvedCommit != metadata.ResolvedCommit || dbMetadata.ReadinessDecision != metadata.ReadinessDecision {
 		h.record(result{Name: "live github agent state metadata parity", Status: "FAIL", Error: "state-store metadata did not match codemesh-run.json", ExitCode: -1})
+		return false
+	}
+	if dbMetadata.ContractVersion != metadata.ContractVersion || dbMetadata.Producer != metadata.Producer {
+		h.record(result{Name: "live github agent state contract parity", Status: "FAIL", Error: "state-store contract metadata did not match codemesh-run.json", ExitCode: -1})
 		return false
 	}
 	h.record(result{Name: "live github agent workspace metadata", Status: "PASS", ExitCode: 0})
@@ -2618,6 +2626,10 @@ func (s *scenario) expectAgentRunMetadata(name, readyPath, projectAlias, base, p
 		s.h.record(result{Name: name, Status: "FAIL", Error: "codemesh-run.json metadata does not match prepared workspace", ExitCode: -1})
 		return false
 	}
+	if fileMetadata.ContractVersion != 1 || fileMetadata.Producer.Name != "codemesh" || fileMetadata.Producer.Version == "" {
+		s.h.record(result{Name: name, Status: "FAIL", Error: "codemesh-run.json missing agent run contract version or producer", ExitCode: -1})
+		return false
+	}
 	dbMetadata, err := readAgentRunMetadataFromStore(filepath.Join(s.codemeshHome, "codemesh.db"), fileMetadata.RunID)
 	if err != nil {
 		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
@@ -2625,6 +2637,10 @@ func (s *scenario) expectAgentRunMetadata(name, readyPath, projectAlias, base, p
 	}
 	if dbMetadata.ReadyPath != readyPath || dbMetadata.Project.Alias != projectAlias || dbMetadata.Base != base || dbMetadata.Profile != profile {
 		s.h.record(result{Name: name, Status: "FAIL", Error: "state-store agent run metadata does not reference prepared workspace", ExitCode: -1})
+		return false
+	}
+	if dbMetadata.ContractVersion != fileMetadata.ContractVersion || dbMetadata.Producer != fileMetadata.Producer {
+		s.h.record(result{Name: name, Status: "FAIL", Error: "state-store agent run contract metadata diverged from file metadata", ExitCode: -1})
 		return false
 	}
 	if containsAnySecret(fileMetadata.Raw, fakeEnvFixtureSecrets()) || containsAnySecret(dbMetadata.Raw, fakeEnvFixtureSecrets()) {
@@ -2879,7 +2895,12 @@ func (s *scenario) expectProjectSchemaNoPresenceColumns(name string) bool {
 }
 
 type agentMetadata struct {
-	Raw       string
+	Raw             string
+	ContractVersion int `json:"contract_version"`
+	Producer        struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	} `json:"producer"`
 	RunID     string `json:"run_id"`
 	ReadyPath string `json:"ready_path"`
 	Project   struct {

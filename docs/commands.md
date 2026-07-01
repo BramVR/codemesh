@@ -24,7 +24,7 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 
 Each linked reference page documents the current syntax, purpose, safe local examples, and current limitations. If a command does not appear in this list, it is not part of the runnable MVP surface.
 
-`codemesh agent prepare` prints the ready workspace path plus `handoff_docs: N`, where `N` is the count of selected handoff docs. The detailed handoff doc metadata is path-only in `codemesh-run.json`; CodeMesh does not copy docs, embed doc contents, or read doc contents into metadata.
+`codemesh agent prepare` prints the ready workspace path plus `handoff_docs: N`, where `N` is the count of selected handoff docs. The detailed handoff doc metadata is path-only in the versioned `codemesh-run.json` Agent Run Contract; CodeMesh does not copy docs, embed doc contents, or read doc contents into metadata.
 
 `codemesh agent run` is separate from prepare. Prepare creates and records the workspace; run executes one explicitly supplied local command inside that prepared workspace, captures stdout/stderr to managed files, and records command metadata without env values.
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,12 +13,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/agentcontract"
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/readiness"
 	"github.com/BramVR/codemesh/internal/state"
 )
 
-const MetadataFileName = "codemesh-run.json"
+const MetadataFileName = agentcontract.FileName
 
 type Store interface {
 	ListProjects(context.Context) ([]state.Project, error)
@@ -31,6 +31,7 @@ type Preparer struct {
 	AgentsDir string
 	NewID     func() string
 	Now       func() time.Time
+	Producer  agentcontract.Producer
 }
 
 type Request struct {
@@ -49,43 +50,11 @@ type Result struct {
 	Metadata       Metadata
 }
 
-type Metadata struct {
-	RunID             string       `json:"run_id"`
-	ReadyPath         string       `json:"ready_path"`
-	Project           ProjectInfo  `json:"project"`
-	Base              string       `json:"base"`
-	Profile           string       `json:"profile"`
-	ResolvedCommit    string       `json:"resolved_commit"`
-	ReadinessDecision string       `json:"readiness_decision"`
-	HandoffDocs       []HandoffDoc `json:"handoff_docs"`
-	Diagnostics       Diagnostics  `json:"diagnostics"`
-	CreatedAt         string       `json:"created_at"`
-}
-
-type ProjectInfo struct {
-	Alias      string `json:"alias"`
-	Remote     string `json:"remote"`
-	CloneURL   string `json:"clone_url"`
-	SourcePath string `json:"source_path"`
-	LocalPath  string `json:"local_path"`
-	ProjectID  int64  `json:"project_id,omitempty"`
-}
-
-type HandoffDoc struct {
-	Path    string `json:"path"`
-	Source  string `json:"source"`
-	Pattern string `json:"pattern,omitempty"`
-}
-
-type Diagnostics struct {
-	Warnings []Diagnostic `json:"warnings"`
-	Blockers []Diagnostic `json:"blockers"`
-}
-
-type Diagnostic struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
+type Metadata = agentcontract.Contract
+type ProjectInfo = agentcontract.ProjectInfo
+type HandoffDoc = agentcontract.HandoffDoc
+type Diagnostics = agentcontract.Diagnostics
+type Diagnostic = agentcontract.Diagnostic
 
 type BlockedError struct {
 	Diagnostics Diagnostics
@@ -168,13 +137,14 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	diagnostics.Warnings = append(diagnostics.Warnings, handoffWarnings...)
 
 	now := p.now().UTC()
-	metadata := Metadata{
+	metadata := agentcontract.New(agentcontract.Input{
+		Producer:  p.producer(),
 		RunID:     runID,
 		ReadyPath: readyPath,
-		Project: ProjectInfo{
+		Project: agentcontract.ProjectInput{
 			Alias:      project.Alias,
 			Remote:     project.NormalizedRemote,
-			CloneURL:   gitops.RedactURLForMetadata(cloneURL),
+			CloneURL:   cloneURL,
 			SourcePath: project.LocalPath,
 			LocalPath:  project.LocalPath,
 			ProjectID:  project.ID,
@@ -185,14 +155,10 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		ReadinessDecision: "ready",
 		HandoffDocs:       handoffDocs,
 		Diagnostics:       diagnostics,
-		CreatedAt:         now.Format(time.RFC3339),
-	}
-	metadataJSON, err := json.MarshalIndent(metadata, "", "  ")
+		CreatedAt:         now,
+	})
+	metadataJSON, err := agentcontract.WriteNew(readyPath, metadata)
 	if err != nil {
-		return Result{}, fmt.Errorf("encode agent run metadata: %w", err)
-	}
-	metadataJSON = append(metadataJSON, '\n')
-	if err := writeNewFile(filepath.Join(readyPath, MetadataFileName), metadataJSON, 0o600); err != nil {
 		return Result{}, fmt.Errorf("write agent run metadata: %w", err)
 	}
 	if err := p.Store.RecordAgentRun(ctx, state.AgentRun{
@@ -261,6 +227,13 @@ func (p Preparer) now() time.Time {
 		return p.Now()
 	}
 	return time.Now()
+}
+
+func (p Preparer) producer() agentcontract.Producer {
+	if p.Producer.Name != "" || p.Producer.Version != "" {
+		return p.Producer
+	}
+	return agentcontract.DefaultProducer("0.0.0-dev")
 }
 
 func handoffDocs(root string, policyPatterns []string) ([]HandoffDoc, []Diagnostic, error) {
@@ -503,17 +476,4 @@ func gitResolvedCommit(ctx context.Context, readyPath string) (string, error) {
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	return gitops.Process().Output(ctx, dir, args...)
-}
-
-func writeNewFile(path string, data []byte, perm os.FileMode) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
-	if err != nil {
-		return err
-	}
-	_, writeErr := file.Write(data)
-	closeErr := file.Close()
-	if writeErr != nil {
-		return writeErr
-	}
-	return closeErr
 }

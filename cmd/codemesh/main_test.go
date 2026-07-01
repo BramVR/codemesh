@@ -536,6 +536,13 @@ func TestAgentPreparePrintsReadyPathAndWritesRunMetadata(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(readyPath, "codemesh-run.json")); err != nil {
 		t.Fatalf("metadata missing: %v", err)
 	}
+	metadataBytes, err := os.ReadFile(filepath.Join(readyPath, "codemesh-run.json"))
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	if !strings.Contains(string(metadataBytes), `"contract_version": 1`) || !strings.Contains(string(metadataBytes), `"producer": {`) {
+		t.Fatalf("metadata missing contract version/producer:\n%s", metadataBytes)
+	}
 }
 
 func TestRunsListsPreparedAgentRuns(t *testing.T) {
