@@ -18,12 +18,15 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 - [`codemesh hydrate <project>`](commands/hydrate.md)
 - [`codemesh machine register [workspace-root] [--json]`](commands/machine-register.md)
 - [`codemesh agent prepare <project> [--base branch] [--profile name]`](commands/agent-prepare.md)
+- [`codemesh agent run <run-id> --label label [--timeout duration] -- <command...>`](commands/agent-run.md)
 - [`codemesh runs`](commands/runs.md)
 - [`codemesh clean [--older-than age]`](commands/clean.md)
 
 Each linked reference page documents the current syntax, purpose, safe local examples, and current limitations. If a command does not appear in this list, it is not part of the runnable MVP surface.
 
 `codemesh agent prepare` prints the ready workspace path plus `handoff_docs: N`, where `N` is the count of selected handoff docs. The detailed handoff doc metadata is path-only in `codemesh-run.json`; CodeMesh does not copy docs, embed doc contents, or read doc contents into metadata.
+
+`codemesh agent run` is separate from prepare. Prepare creates and records the workspace; run executes one explicitly supplied local command inside that prepared workspace, captures stdout/stderr to managed files, and records command metadata without env values.
 
 ## Safe Local Example
 
@@ -49,6 +52,8 @@ codemesh add "$workspace/demo-project" --alias demo-project
 codemesh tree
 codemesh status demo-project --base main
 codemesh agent prepare demo-project --base main --profile codex
+run_id="$(codemesh runs | awk '/^- / {print $2; exit}')"
+codemesh agent run "$run_id" --label workspace-root -- git rev-parse --show-toplevel
 codemesh runs
 codemesh clean --older-than 0d
 ```

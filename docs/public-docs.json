@@ -16,6 +16,7 @@
         "commands/hydrate.md",
         "commands/machine-register.md",
         "commands/agent-prepare.md",
+        "commands/agent-run.md",
         "commands/runs.md",
         "commands/clean.md"
       ]

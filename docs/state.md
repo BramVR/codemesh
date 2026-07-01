@@ -148,6 +148,24 @@ Default handoff docs are resolved from the prepared clone after checkout: `AGENT
 
 `codemesh runs` reads `agent_runs` and lists prepared runs from local metadata. The user-facing row includes project alias, base, profile, created time, and workspace path so temporary workspaces are auditable without inspecting SQLite.
 
+`codemesh agent run <run-id> --label label -- <command...>` is the execution step after preparation. It runs the supplied command with cwd set to the prepared workspace, captures stdout and stderr under the CodeMesh-managed run directory, and appends a command record to `codemesh-run.json` plus the matching `agent_runs` SQLite metadata row.
+
+Command execution has an explicit timeout, defaulting to 10 minutes in the CLI. CodeMesh serializes command recording per run ID so concurrent commands cannot overwrite output paths or drop audit records.
+
+Command records include:
+
+- command label
+- cwd
+- env binding summary with key names only and values marked not recorded
+- base provenance from the prepared run
+- exit code and duration
+- stdout and stderr output paths
+- execution timestamp
+
+Command output is stored in local managed files, not embedded in metadata. Env values are not recorded.
+
+`codemesh runs` derives lifecycle state from local metadata: `prepared` before any command is recorded and `executed` after one or more command records exist.
+
 `codemesh agent prepare` prints only `handoff_docs: N`, where `N` is the selected-doc count. The detailed selected paths and source metadata live in `codemesh-run.json`.
 
 `codemesh clean --older-than <age>` removes only matching Agent Run directories created under `<codemesh-home>/agents`. Age is evaluated from the stored `created_at` timestamp. After successful deletion, CodeMesh removes the matching `agent_runs` rows so `runs` no longer reports cleaned workspaces.

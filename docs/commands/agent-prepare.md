@@ -19,6 +19,8 @@ codemesh agent prepare <project> [--base branch] [--profile name]
 
 Prepare a temporary agent workspace for one registered project. CodeMesh checks readiness, creates a temp clone under CodeMesh-managed agent storage, records run metadata, and prints `handoff_docs: N` plus `ready_path`.
 
+Preparation does not execute an agent command. Use [`codemesh agent run`](agent-run.md) after prepare when you want CodeMesh to run one explicit local command inside the prepared workspace and append command output paths to the run contract.
+
 When `--base` is omitted, CodeMesh lets Agent Prep choose its current default base. `--profile` records the intended agent profile in run metadata.
 
 ## Output Contract
@@ -79,7 +81,7 @@ codemesh agent prepare demo-project --base main --profile codex
 - Prepares temporary clones only; it does not create shared worktrees from the source checkout.
 - Uses local policy and readiness checks; it does not provision credentials or materialize secret values.
 - Can prepare from the registered clone URL when the desired source checkout path is missing; selected-base env key policy still applies, and required local env files are reported missing when no source checkout exists.
-- Does not start or manage an agent process.
+- Does not start or supervise a paid provider, remote agent, daemon, or long-lived process.
 - Records handoff doc paths only; it does not include doc text in stdout, `codemesh-run.json`, or local state.
 - Does not sync prepared workspaces between machines.
 

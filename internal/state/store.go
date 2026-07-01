@@ -628,6 +628,31 @@ func (s *SQLiteStore) DeleteAgentRuns(ctx context.Context, ids []string) error {
 	return nil
 }
 
+func (s *SQLiteStore) UpdateAgentRunMetadata(ctx context.Context, id, metadataJSON string) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("agent run id is required")
+	}
+	if strings.TrimSpace(metadataJSON) == "" {
+		return errors.New("agent run metadata is required")
+	}
+	result, err := s.db.ExecContext(ctx, `
+update agent_runs
+set metadata_json = ?
+where id = ?
+`, metadataJSON, id)
+	if err != nil {
+		return fmt.Errorf("update agent run %q metadata: %w", id, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check agent run %q metadata update: %w", id, err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("agent run %q not found", id)
+	}
+	return nil
+}
+
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }

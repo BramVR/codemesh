@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/BramVR/codemesh/internal/agentprep"
@@ -23,6 +25,7 @@ const version = "0.0.0-dev"
 
 const statusReadinessTimeout = 30 * time.Second
 const hydrateTimeout = 10 * time.Minute
+const agentRunTimeout = 10 * time.Minute
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -196,7 +199,7 @@ func runRuns(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	for _, run := range runs {
-		fmt.Fprintf(stdout, "- %s project=%s base=%s profile=%s created=%s workspace=%s\n", run.ID, run.ProjectAlias, run.Base, run.Profile, run.CreatedAt.UTC().Format(time.RFC3339), run.WorkspacePath)
+		fmt.Fprintf(stdout, "- %s project=%s base=%s profile=%s state=%s created=%s workspace=%s\n", run.ID, run.ProjectAlias, run.Base, run.Profile, run.State, run.CreatedAt.UTC().Format(time.RFC3339), run.WorkspacePath)
 	}
 	return 0
 }
@@ -317,11 +320,111 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "prepare":
 		return runAgentPrepare(args[1:], stdout, stderr)
+	case "run":
+		return runAgentRun(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown agent command: %s\n\n", args[0])
 		printAgentHelp(stderr)
 		return 2
 	}
+}
+
+func runAgentRun(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printAgentRunHelp(stdout)
+		return 0
+	}
+	runID, label, timeout, command, ok := parseAgentRunArgs(args, stderr)
+	if !ok {
+		printAgentRunHelp(stderr)
+		return 2
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve CodeMesh home: %v\n", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	result, err := agentruns.Manager{
+		Store:     store,
+		AgentsDir: paths.AgentsDir,
+	}.Execute(ctx, agentruns.ExecuteRequest{
+		RunID:   runID,
+		Label:   label,
+		Command: command,
+		Timeout: timeout,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "run agent command: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "agent command complete\nrun: %s\nlabel: %s\nexit_code: %d\nduration: %s\nstdout_path: %s\nstderr_path: %s\n",
+		runID,
+		result.Label,
+		result.ExitCode,
+		result.Duration,
+		result.StdoutPath,
+		result.StderrPath,
+	)
+	if result.ExitCode != 0 {
+		return result.ExitCode
+	}
+	return 0
+}
+
+func parseAgentRunArgs(args []string, stderr io.Writer) (string, string, time.Duration, []string, bool) {
+	var runIDs []string
+	var label string
+	timeout := agentRunTimeout
+	var command []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--":
+			command = append([]string(nil), args[i+1:]...)
+			i = len(args)
+		case "--label":
+			if i+1 >= len(args) {
+				fmt.Fprint(stderr, "agent run --label requires a label\n\n")
+				return "", "", 0, nil, false
+			}
+			label = args[i+1]
+			i++
+		case "--timeout":
+			if i+1 >= len(args) {
+				fmt.Fprint(stderr, "agent run --timeout requires a duration\n\n")
+				return "", "", 0, nil, false
+			}
+			parsed, err := time.ParseDuration(args[i+1])
+			if err != nil || parsed <= 0 {
+				fmt.Fprintf(stderr, "agent run --timeout must be a positive Go duration: %s\n\n", args[i+1])
+				return "", "", 0, nil, false
+			}
+			timeout = parsed
+			i++
+		default:
+			runIDs = append(runIDs, args[i])
+		}
+	}
+	if len(runIDs) != 1 {
+		fmt.Fprint(stderr, "agent run requires exactly one run id\n\n")
+		return "", "", 0, nil, false
+	}
+	if strings.TrimSpace(label) == "" {
+		fmt.Fprint(stderr, "agent run --label is required\n\n")
+		return "", "", 0, nil, false
+	}
+	if len(command) == 0 {
+		fmt.Fprint(stderr, "agent run requires -- followed by a command\n\n")
+		return "", "", 0, nil, false
+	}
+	return runIDs[0], label, timeout, command, true
 }
 
 func runAgentPrepare(args []string, stdout, stderr io.Writer) int {
@@ -739,6 +842,7 @@ Usage:
   codemesh hydrate <project>
   codemesh machine register [workspace-root] [--json]
   codemesh agent prepare <project> [--base branch] [--profile name]
+  codemesh agent run <run-id> --label label [--timeout duration] -- <command...>
   codemesh runs
   codemesh clean [--older-than age]
 
@@ -750,7 +854,7 @@ Commands:
   status     report project readiness
   hydrate    clone a missing project into its desired path
   machine    register this machine locally
-  agent      prepare agent workspaces
+  agent      prepare and run agent workspaces
   runs       list prepared agent runs
   clean      delete old CodeMesh-managed agent runs
 `)
@@ -837,10 +941,11 @@ Creates or reuses a persistent local machine ID and updates mutable local facts.
 }
 
 func printAgentHelp(w io.Writer) {
-	fmt.Fprint(w, `Prepare agent workspaces.
+	fmt.Fprint(w, `Prepare and run agent workspaces.
 
 Usage:
   codemesh agent prepare <project> [--base branch] [--profile name]
+  codemesh agent run <run-id> --label label [--timeout duration] -- <command...>
 `)
 }
 
@@ -852,6 +957,18 @@ Usage:
 
 Creates a temporary clone under CodeMesh-managed agents storage.
 Prints ready_path when the workspace is ready.
+`)
+}
+
+func printAgentRunHelp(w io.Writer) {
+	fmt.Fprint(w, `Run one command in a prepared agent workspace.
+
+Usage:
+  codemesh agent run <run-id> --label label [--timeout duration] -- <command...>
+
+Captures stdout and stderr under the managed run directory.
+Records command metadata in codemesh-run.json and local state.
+Timeout defaults to 10m and accepts Go durations such as 30s or 5m.
 `)
 }
 
