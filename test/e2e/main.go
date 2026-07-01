@@ -252,6 +252,7 @@ func (h *harness) run() int {
 	h.caseProjectRegistryFixtureWorkflow()
 	h.caseProjectRegistryAliasPathStateWorkflow()
 	h.caseReadinessStatusFixtureWorkflow()
+	h.caseDoctorPreflightWorkflow()
 	h.caseHydrationFixtureWorkflow()
 	h.caseAgentPrepFixtureWorkflow()
 	h.record(result{Name: "offline e2e boundary: live network not required", Status: "PASS", ExitCode: 0})
@@ -1259,6 +1260,67 @@ func (h *harness) caseReadinessStatusFixtureWorkflow() {
 		return
 	}
 	s.expectNoOutput(envPresent, fakeEnvFixtureFileSecret(), fakeEnvFixtureKeySecret())
+}
+
+func (h *harness) caseDoctorPreflightWorkflow() {
+	s, err := h.newScenario("doctor preflight")
+	if err != nil {
+		h.record(result{Name: "doctor preflight workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	scan := s.command("doctor preflight scan fixtures", "scan", s.fixtures.Sources)
+	if scan.Status != "PASS" {
+		return
+	}
+
+	green := s.command("doctor preflight clean handoff green", "doctor", "clean-repo", "--base", "main")
+	if green.Status != "PASS" || !s.expectOutput(green, "handoff: green", "project: clean-repo", "state: present", "path_present: true", "source_path_missing: false", "warnings: none", "blockers: none") {
+		return
+	}
+	if !s.expectNoOutput(green, "ready_path: ") {
+		return
+	}
+	if !s.expectAgentRunRows("doctor preflight clean records no agent run", 0) {
+		return
+	}
+	if !s.expectPathMissing("doctor preflight clean creates no agents dir", filepath.Join(s.codemeshHome, "agents")) {
+		return
+	}
+
+	strict := s.expectedFailure("doctor preflight strict dirty json", "doctor", "dirty-source", "--base", "main", "--strict", "--json")
+	if strict.Status != "FAIL" || strict.ExitCode != 1 {
+		strict.Status = "FAIL"
+		strict.Error = fmt.Sprintf("strict doctor exit status = %s code=%d, want failure code 1", strict.Status, strict.ExitCode)
+	} else if strict.Stderr != "" {
+		strict.Error = "strict doctor wrote stderr: " + strict.Stderr
+	} else if err := doctorJSONMatches(strict.Stdout, "dirty-source", "readiness-warning", "warning", "dirty", "main", true, []string{"dirty-checkout"}, nil); err != nil {
+		strict.Error = err.Error()
+	} else {
+		strict.Status = "PASS"
+		strict.Error = ""
+	}
+	s.record(strict)
+	if strict.Status != "PASS" || !s.expectAgentRunRows("doctor preflight strict records no agent run", 0) {
+		return
+	}
+
+	blocked := s.expectedFailure("doctor preflight missing base blocker", "doctor", "missing-base-branch", "--base", "release/missing")
+	if blocked.Status != "FAIL" || blocked.ExitCode != 1 {
+		blocked.Status = "FAIL"
+		blocked.Error = fmt.Sprintf("blocked doctor exit status = %s code=%d, want failure code 1", blocked.Status, blocked.ExitCode)
+	} else if blocked.Stderr != "" {
+		blocked.Error = "blocked doctor wrote stderr: " + blocked.Stderr
+	} else if !strings.Contains(blocked.Stdout, "handoff: blocked") || !strings.Contains(blocked.Stdout, "blocker: missing-base") {
+		blocked.Error = "blocked doctor did not report an actionable missing-base blocker"
+	} else {
+		blocked.Status = "PASS"
+		blocked.Error = ""
+	}
+	s.record(blocked)
+	if blocked.Status != "PASS" {
+		return
+	}
+	s.expectAgentRunRows("doctor preflight blocker records no agent run", 0)
 }
 
 func (h *harness) caseSecretSafetyReportAndStateStore() bool {
@@ -2611,6 +2673,86 @@ func (s *scenario) expectStatusJSON(r result, alias, exitClass, state, base stri
 	return true
 }
 
+func doctorJSONMatches(raw, alias, exitClass, handoff, state, base string, strict bool, warningCodes, blockerCodes []string) error {
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Project     string `json:"project"`
+			Handoff     string `json:"handoff"`
+			Strict      bool   `json:"strict"`
+			State       string `json:"state"`
+			PathPresent bool   `json:"path_present"`
+			Remote      string `json:"remote"`
+			Base        string `json:"base"`
+			Diagnostics struct {
+				Warnings []struct {
+					Code string `json:"code"`
+				} `json:"warnings"`
+				Blockers []struct {
+					Code string `json:"code"`
+				} `json:"blockers"`
+			} `json:"diagnostics"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return fmt.Errorf("stdout was not JSON: %w", err)
+	}
+	if payload.Command != "doctor" || payload.ExitClass != exitClass {
+		return fmt.Errorf("command metadata = %#v, want command doctor exit_class %s", payload, exitClass)
+	}
+	got := payload.Payload
+	if got.Project != alias || got.Handoff != handoff || got.Strict != strict || got.State != state || !got.PathPresent || got.Remote == "" || got.Base != base {
+		return fmt.Errorf("payload = %#v", got)
+	}
+	if err := diagnosticCodesMatch("warnings", doctorWarningCodes(got.Diagnostics.Warnings), warningCodes); err != nil {
+		return err
+	}
+	if err := diagnosticCodesMatch("blockers", doctorBlockerCodes(got.Diagnostics.Blockers), blockerCodes); err != nil {
+		return err
+	}
+	return nil
+}
+
+func doctorWarningCodes(items []struct {
+	Code string `json:"code"`
+}) []string {
+	codes := make([]string, 0, len(items))
+	for _, item := range items {
+		codes = append(codes, item.Code)
+	}
+	return codes
+}
+
+func doctorBlockerCodes(items []struct {
+	Code string `json:"code"`
+}) []string {
+	codes := make([]string, 0, len(items))
+	for _, item := range items {
+		codes = append(codes, item.Code)
+	}
+	return codes
+}
+
+func diagnosticCodesMatch(label string, got, want []string) error {
+	if len(got) != len(want) {
+		return fmt.Errorf("%s codes = %v, want %v", label, got, want)
+	}
+	for _, expected := range want {
+		found := false
+		for _, actual := range got {
+			if actual == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("%s codes = %v, want %v", label, got, want)
+		}
+	}
+	return nil
+}
+
 func (s *scenario) expectPathExists(name, path string) bool {
 	if _, err := os.Stat(path); err != nil {
 		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
@@ -2870,6 +3012,26 @@ func (s *scenario) expectStateStoreExcludes(name string, fragments ...string) bo
 			return false
 		}
 	}
+	return true
+}
+
+func (s *scenario) expectAgentRunRows(name string, want int) bool {
+	db, err := sql.Open("sqlite", filepath.Join(s.codemeshHome, "codemesh.db"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	defer db.Close()
+	var count int
+	if err := db.QueryRow(`select count(*) from agent_runs`).Scan(&count); err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if count != want {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("agent run rows = %d, want %d", count, want), ExitCode: -1})
+		return false
+	}
+	s.h.record(result{Name: name, Status: "PASS", ExitCode: 0})
 	return true
 }
 

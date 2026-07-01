@@ -13,6 +13,7 @@
         "commands/scan.md",
         "commands/tree.md",
         "commands/status.md",
+        "commands/doctor.md",
         "commands/hydrate.md",
         "commands/machine-register.md",
         "commands/agent-prepare.md",

@@ -54,6 +54,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runTree(args[1:], stdout, stderr)
 	case "status":
 		return runStatus(args[1:], stdout, stderr)
+	case "doctor":
+		return runDoctor(args[1:], stdout, stderr)
 	case "hydrate":
 		return runHydrate(args[1:], stdout, stderr)
 	case "machine":
@@ -68,6 +70,159 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[0])
 		printHelp(stderr)
 		return 2
+	}
+}
+
+func runDoctor(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printDoctorHelp(stdout)
+		return 0
+	}
+	doctorArgs, ok := parseDoctorArgs(args, stderr)
+	if !ok {
+		printDoctorHelp(stderr)
+		return 2
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+	projects, err := store.ListProjects(context.Background())
+	if err != nil {
+		fmt.Fprintf(stderr, "read project registry: %v\n", err)
+		return 1
+	}
+	for _, project := range projects {
+		if project.Alias != doctorArgs.ProjectName {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), hydrateTimeout)
+		defer cancel()
+		decision, err := readiness.EvaluateHandoff(ctx, project, readiness.Options{BaseBranch: doctorArgs.Base})
+		if err != nil {
+			fmt.Fprintf(stderr, "check handoff readiness: %v\n", err)
+			return 1
+		}
+		result := newDoctorResult(doctorArgs, decision)
+		if doctorArgs.JSON {
+			if err := presentation.RenderJSON(stdout, result); err != nil {
+				fmt.Fprintf(stderr, "encode doctor result: %v\n", err)
+				return commandresult.ExitInternalError.Code()
+			}
+			return doctorExitCode(result)
+		}
+		if err := presentation.RenderHuman(stdout, result, renderDoctorPayloadHuman); err != nil {
+			fmt.Fprintf(stderr, "render doctor result: %v\n", err)
+			return commandresult.ExitInternalError.Code()
+		}
+		return doctorExitCode(result)
+	}
+	fmt.Fprintf(stderr, "unknown project: %s\n", doctorArgs.ProjectName)
+	return 1
+}
+
+type parsedDoctorArgs struct {
+	ProjectName string
+	Base        string
+	Strict      bool
+	JSON        bool
+}
+
+func parseDoctorArgs(args []string, stderr io.Writer) (parsedDoctorArgs, bool) {
+	var base string
+	var projects []string
+	var strict bool
+	var jsonOutput bool
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--base":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "doctor --base requires a branch\n\n")
+				return parsedDoctorArgs{}, false
+			}
+			base = args[i+1]
+			i++
+		case "--strict":
+			strict = true
+		case "--json":
+			jsonOutput = true
+		default:
+			projects = append(projects, args[i])
+		}
+	}
+	if len(projects) != 1 {
+		fmt.Fprint(stderr, "doctor requires exactly one project\n\n")
+		return parsedDoctorArgs{}, false
+	}
+	return parsedDoctorArgs{ProjectName: projects[0], Base: base, Strict: strict, JSON: jsonOutput}, true
+}
+
+type doctorPayload struct {
+	Project           string                    `json:"project"`
+	Handoff           string                    `json:"handoff"`
+	Strict            bool                      `json:"strict"`
+	State             string                    `json:"state"`
+	Path              string                    `json:"path"`
+	PathPresent       bool                      `json:"path_present"`
+	Remote            string                    `json:"remote"`
+	Base              string                    `json:"base"`
+	SourcePathMissing bool                      `json:"source_path_missing"`
+	Diagnostics       commandresult.Diagnostics `json:"diagnostics"`
+}
+
+func newDoctorResult(args parsedDoctorArgs, decision readiness.HandoffDecision) commandresult.Result[doctorPayload] {
+	diagnostics := statusDiagnostics(decision.Report)
+	handoff := "green"
+	if len(diagnostics.Blockers) != 0 {
+		handoff = "blocked"
+	} else if len(diagnostics.Warnings) != 0 {
+		handoff = "warning"
+	}
+	return commandresult.New("doctor", commandresult.ReadinessExitClass(len(diagnostics.Warnings), len(diagnostics.Blockers)), commandresult.Diagnostics{}, doctorPayload{
+		Project:           decision.Report.Project.Alias,
+		Handoff:           handoff,
+		Strict:            args.Strict,
+		State:             string(decision.Report.State),
+		Path:              decision.Report.Project.LocalPath,
+		PathPresent:       decision.Report.LocalPathPresent,
+		Remote:            decision.Report.Project.NormalizedRemote,
+		Base:              decision.Report.BaseBranch,
+		SourcePathMissing: decision.SourcePathMissing,
+		Diagnostics:       diagnostics,
+	})
+}
+
+func renderDoctorPayloadHuman(w io.Writer, payload doctorPayload) error {
+	fmt.Fprintf(w, "handoff: %s\n", payload.Handoff)
+	fmt.Fprintf(w, "project: %s\n", payload.Project)
+	fmt.Fprintf(w, "state: %s\n", payload.State)
+	fmt.Fprintf(w, "path: %s\n", payload.Path)
+	fmt.Fprintf(w, "path_present: %t\n", payload.PathPresent)
+	fmt.Fprintf(w, "remote: %s\n", payload.Remote)
+	fmt.Fprintf(w, "base: %s\n", payload.Base)
+	fmt.Fprintf(w, "source_path_missing: %t\n", payload.SourcePathMissing)
+	if payload.Strict {
+		fmt.Fprintln(w, "strict: true")
+	}
+	printCommandDiagnostics(w, payload.Diagnostics)
+	return nil
+}
+
+func doctorExitCode(result commandresult.Result[doctorPayload]) int {
+	switch result.ExitClass {
+	case commandresult.ExitSuccess:
+		return 0
+	case commandresult.ExitReadinessWarning:
+		if result.Payload.Strict {
+			return 1
+		}
+		return 0
+	case commandresult.ExitReadinessBlocked:
+		return 1
+	default:
+		return result.ExitClass.Code()
 	}
 }
 
@@ -882,17 +1037,21 @@ func printProjectStatus(w io.Writer, project statusProject) {
 	fmt.Fprintf(w, "path_present: %t\n", project.PathPresent)
 	fmt.Fprintf(w, "remote: %s\n", project.Remote)
 	fmt.Fprintf(w, "base: %s\n", project.Base)
-	if len(project.Diagnostics.Warnings) == 0 {
+	printCommandDiagnostics(w, project.Diagnostics)
+}
+
+func printCommandDiagnostics(w io.Writer, diagnostics commandresult.Diagnostics) {
+	if len(diagnostics.Warnings) == 0 {
 		fmt.Fprintln(w, "warnings: none")
 	} else {
-		for _, warning := range project.Diagnostics.Warnings {
+		for _, warning := range diagnostics.Warnings {
 			fmt.Fprintf(w, "warning: %s %s\n", warning.Code, warning.Message)
 		}
 	}
-	if len(project.Diagnostics.Blockers) == 0 {
+	if len(diagnostics.Blockers) == 0 {
 		fmt.Fprintln(w, "blockers: none")
 	} else {
-		for _, blocker := range project.Diagnostics.Blockers {
+		for _, blocker := range diagnostics.Blockers {
 			fmt.Fprintf(w, "blocker: %s %s\n", blocker.Code, blocker.Message)
 		}
 	}
@@ -958,6 +1117,7 @@ Usage:
   codemesh scan [workspace-root]
   codemesh tree
   codemesh status [project] [--base branch] [--json]
+  codemesh doctor <project> [--base branch] [--strict] [--json]
   codemesh hydrate <project>
   codemesh machine register [workspace-root] [--json]
   codemesh agent prepare <project> [--base branch] [--profile name]
@@ -971,6 +1131,7 @@ Commands:
   scan       scan a workspace root for Git projects
   tree       show the canonical workspace
   status     report project readiness
+  doctor     preflight agent handoff readiness without creating a run
   hydrate    clone a missing project into its desired path
   machine    register this machine locally
   agent      prepare and run agent workspaces
@@ -1027,6 +1188,18 @@ Usage:
 
 Project defaults to all known projects.
 Base defaults to main.
+Use --json for the stable command result shape.
+`)
+}
+
+func printDoctorHelp(w io.Writer) {
+	fmt.Fprint(w, `Preflight agent handoff readiness without creating a run.
+
+Usage:
+  codemesh doctor <project> [--base branch] [--strict] [--json]
+
+Checks the same handoff readiness gate as agent prepare.
+Use --strict to fail warning-only readiness for automation.
 Use --json for the stable command result shape.
 `)
 }

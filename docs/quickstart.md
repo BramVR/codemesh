@@ -41,6 +41,7 @@ git clone "$remote" "$workspace/demo-project"
 ./dist/codemesh add "$workspace/demo-project" --alias demo-project
 ./dist/codemesh tree
 ./dist/codemesh status demo-project --base main
+./dist/codemesh doctor demo-project --base main
 ```
 
 ## 4. Prepare An Agent Workspace
@@ -66,4 +67,4 @@ rm -rf "$demo"
 - No GitHub remote, provider token, env file content, or secret value is needed.
 - Cleanup removes only the temp demo directory you created.
 
-For the full command list, continue to [Command Catalog](commands.md). Direct references: [init](commands/init.md), [add](commands/add.md), [scan](commands/scan.md), [tree](commands/tree.md), [status](commands/status.md), [hydrate](commands/hydrate.md), [agent prepare](commands/agent-prepare.md), [runs](commands/runs.md), and [clean](commands/clean.md).
+For the full command list, continue to [Command Catalog](commands.md). Direct references: [init](commands/init.md), [add](commands/add.md), [scan](commands/scan.md), [tree](commands/tree.md), [status](commands/status.md), [doctor](commands/doctor.md), [hydrate](commands/hydrate.md), [agent prepare](commands/agent-prepare.md), [runs](commands/runs.md), and [clean](commands/clean.md).

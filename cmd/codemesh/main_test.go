@@ -518,6 +518,129 @@ func TestStatusBaseRequiresBranchBeforeJSONFlag(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsHandoffGreenWithoutCreatingAgentRun(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	repo := createCommittedLocalRemoteClone(t, "doctor-ready")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", repo}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"doctor", "doctor-ready", "--base", "main"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("doctor exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		"handoff: green",
+		"project: doctor-ready",
+		"state: present",
+		"path_present: true",
+		"base: main",
+		"warnings: none",
+		"blockers: none",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("doctor output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "ready_path: ") {
+		t.Fatalf("doctor output included an agent workspace path:\n%s", output)
+	}
+	assertNoAgentRuns(t, home)
+	if entries, err := os.ReadDir(filepath.Join(home, "agents")); err == nil && len(entries) != 0 {
+		t.Fatalf("agents dir has entries after doctor: %v", entries)
+	}
+}
+
+func TestDoctorStrictPromotesWarningsToFailureInCommandResultJSON(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	repo := createCommittedLocalRemoteClone(t, "doctor-dirty")
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("local change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", repo}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"doctor", "doctor-dirty", "--base", "main", "--strict", "--json"}, &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatalf("doctor --strict exit code = 0, want failure\nstdout:\n%s", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("doctor --strict stderr = %q, want empty", stderr.String())
+	}
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Project     string `json:"project"`
+			Handoff     string `json:"handoff"`
+			Strict      bool   `json:"strict"`
+			State       string `json:"state"`
+			Base        string `json:"base"`
+			Diagnostics struct {
+				Warnings []struct {
+					Code string `json:"code"`
+				} `json:"warnings"`
+				Blockers []struct {
+					Code string `json:"code"`
+				} `json:"blockers"`
+			} `json:"diagnostics"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("doctor --json stdout was not JSON: %v\nstdout:\n%s", err, stdout.String())
+	}
+	if payload.Command != "doctor" || payload.ExitClass != "readiness-warning" {
+		t.Fatalf("doctor command metadata = %#v", payload)
+	}
+	if payload.Payload.Project != "doctor-dirty" || payload.Payload.Handoff != "warning" || !payload.Payload.Strict || payload.Payload.State != "dirty" || payload.Payload.Base != "main" {
+		t.Fatalf("doctor payload = %#v", payload.Payload)
+	}
+	diagnostics := payload.Payload.Diagnostics
+	if len(diagnostics.Warnings) != 1 || diagnostics.Warnings[0].Code != "dirty-checkout" || len(diagnostics.Blockers) != 0 {
+		t.Fatalf("doctor diagnostics = %#v", diagnostics)
+	}
+	assertNoAgentRuns(t, home)
+}
+
+func TestDoctorReportsActionableBlockers(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	repo := createCommittedLocalRemoteClone(t, "doctor-blocked")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", repo}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"doctor", "doctor-blocked", "--base", "release/missing"}, &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatalf("doctor exit code = 0, want failure\nstdout:\n%s", stdout.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		"handoff: blocked",
+		"project: doctor-blocked",
+		"base: release/missing",
+		"blocker: missing-base",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("doctor output missing %q:\n%s", want, output)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("doctor stderr = %q, want empty", stderr.String())
+	}
+	assertNoAgentRuns(t, home)
+}
+
 func TestStatusWithoutProjectSummarizesKnownProjects(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "codemesh-home")
 	clean := createCommittedLocalRemoteClone(t, "clean-repo")
@@ -1109,6 +1232,25 @@ func recordAgentRun(t *testing.T, home string, run state.AgentRun) {
 	}
 	if err := store.RecordAgentRun(context.Background(), run); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func assertNoAgentRuns(t *testing.T, home string) {
+	t.Helper()
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := store.ListAgentRuns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("agent runs = %d, want none: %#v", len(runs), runs)
 	}
 }
 
