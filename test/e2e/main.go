@@ -1163,6 +1163,10 @@ func (h *harness) caseReadinessStatusFixtureWorkflow() {
 	if !s.expectTreeStatusAgreement(tree, clean, "clean-repo") {
 		return
 	}
+	cleanJSON := s.command("readiness status clean repo json", "status", "clean-repo", "--base", "main", "--json")
+	if cleanJSON.Status != "PASS" || !s.expectStatusJSON(cleanJSON, "clean-repo", "success", "present", "main") {
+		return
+	}
 
 	dirty := s.command("readiness status dirty source", "status", "dirty-source", "--base", "main")
 	if dirty.Status != "PASS" || !s.expectOutput(dirty, "state: dirty", "warning: dirty-checkout", "blockers: none") {
@@ -2556,6 +2560,52 @@ func (s *scenario) expectTreeStatusAgreement(tree, status result, alias string) 
 	}
 	if treeState != statusState {
 		s.failCommandAssertion(status, fmt.Sprintf("tree/status state mismatch for %s: tree=%s status=%s", alias, treeState, statusState))
+		return false
+	}
+	return true
+}
+
+func (s *scenario) expectStatusJSON(r result, alias, exitClass, state, base string) bool {
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Projects []struct {
+				Alias       string `json:"alias"`
+				State       string `json:"state"`
+				PathPresent bool   `json:"path_present"`
+				Remote      string `json:"remote"`
+				Base        string `json:"base"`
+				Diagnostics struct {
+					Warnings []struct {
+						Code string `json:"code"`
+					} `json:"warnings"`
+					Blockers []struct {
+						Code string `json:"code"`
+					} `json:"blockers"`
+				} `json:"diagnostics"`
+			} `json:"projects"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
+		s.failCommandAssertion(r, "stdout was not JSON: "+err.Error())
+		return false
+	}
+	if payload.Command != "status" || payload.ExitClass != exitClass {
+		s.failCommandAssertion(r, fmt.Sprintf("command metadata = %#v, want command status exit_class %s", payload, exitClass))
+		return false
+	}
+	if len(payload.Payload.Projects) != 1 {
+		s.failCommandAssertion(r, fmt.Sprintf("project count = %d, want 1", len(payload.Payload.Projects)))
+		return false
+	}
+	project := payload.Payload.Projects[0]
+	if project.Alias != alias || project.State != state || !project.PathPresent || project.Remote == "" || project.Base != base {
+		s.failCommandAssertion(r, fmt.Sprintf("project payload = %#v", project))
+		return false
+	}
+	if len(project.Diagnostics.Warnings) != 0 || len(project.Diagnostics.Blockers) != 0 {
+		s.failCommandAssertion(r, fmt.Sprintf("diagnostics = %#v, want empty", project.Diagnostics))
 		return false
 	}
 	return true

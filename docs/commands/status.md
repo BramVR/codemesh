@@ -12,7 +12,7 @@ permalink: /commands/status
 ## Syntax
 
 ```sh
-codemesh status [project] [--base branch]
+codemesh status [project] [--base branch] [--json]
 ```
 
 ## Purpose
@@ -20,6 +20,8 @@ codemesh status [project] [--base branch]
 Report readiness for all registered projects or one project. Status includes local path presence, normalized remote, selected base branch, warnings, and blockers.
 
 When `--base` is omitted, CodeMesh uses the project's policy base branch, which defaults to `main` when no project policy sets one.
+
+Use `--json` to print the stable Command Result shape instead of human key lines. The JSON includes `command`, `exit_class`, command-level `diagnostics`, and `payload.projects` with each project's readiness `state`, selected `base`, path presence, normalized remote, and readiness diagnostics. For valid status reports, `exit_class` is `success`, `readiness-warning`, or `readiness-blocked`.
 
 ## Safe Example
 
@@ -41,6 +43,7 @@ git clone "$remote" "$workspace/demo-project"
 codemesh init "$workspace"
 codemesh add "$workspace/demo-project" --alias demo-project
 codemesh status demo-project --base main
+codemesh status demo-project --base main --json
 ```
 
 ## Current Limitations
