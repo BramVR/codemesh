@@ -39,7 +39,7 @@ Initial tables:
 - `schema_migrations`: applied migration versions.
 - `settings`: key/value settings, including `default_workspace_root`.
 - `projects`: Project Registry rows.
-- `machines`: future machine facts.
+- `machines`: local machine identity and mutable machine facts.
 - `scans`: future local discovery runs.
 - `agent_runs`: prepared agent workspace audit rows.
 
@@ -59,6 +59,24 @@ Stored fields:
 When migrating older state, CodeMesh backfills `clone_url` from a present checkout's `origin` when possible. If the checkout is already missing during migration, the normalized remote remains the fallback clone source until the project is re-added or rediscovered.
 
 Presence is derived from the filesystem when reading the registry. The MVP does not store readiness, dirty, stale, env, hydration, or agent-prep state in project rows.
+
+## Machine Registry
+
+`codemesh machine register [workspace-root]` creates or reuses one persistent local machine ID in the State Store.
+
+Stored fields:
+
+- `machine_id`: locally minted stable machine identity.
+- `hostname`: current host name.
+- `os`: Go runtime OS name.
+- `architecture`: Go runtime architecture name.
+- `workspace_root`: local workspace root for this machine.
+- `registered_at`: first registration timestamp.
+- `updated_at`: latest registration timestamp.
+
+Re-running registration updates mutable facts without changing `machine_id` or `registered_at`.
+
+Machine rows are local observed state. They are not exported to shared topology by default.
 
 `codemesh hydrate <project>` resolves an existing registry row by alias and clones `clone_url` into `local_path` when that path is absent. Hydration may create the parent directory needed for the desired path, but it must not create placeholder project directories for other missing rows. If `local_path` already contains files, CodeMesh refuses to overwrite it with an actionable path-conflict error. If `local_path` is already a present checkout matching the registered project identity, hydration reports that no clone was needed.
 

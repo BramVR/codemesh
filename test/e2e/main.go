@@ -208,6 +208,7 @@ func (h *harness) run() int {
 	h.caseHelpSmoke()
 	h.caseInitHelpSmoke()
 	h.caseInitSmoke()
+	h.caseMachineRegisterWorkflow()
 	h.caseOfflineGitFixtureSmoke()
 	h.caseNegativeCLIWorkflow()
 	h.caseProjectRegistryScanWorkflow()
@@ -265,6 +266,67 @@ func (h *harness) caseProjectRegistryScanWorkflow() {
 	if tree.Status == "PASS" {
 		s.expectOutput(tree, "clean-repo", "present", clean.Source)
 	}
+}
+
+func (h *harness) caseMachineRegisterWorkflow() {
+	s, err := h.newScenario("machine register")
+	if err != nil {
+		h.record(result{Name: "machine register workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	firstRoot := filepath.Join(s.fixtures.Root, "workspace-one")
+	secondRoot := filepath.Join(s.fixtures.Root, "workspace-two")
+	if err := os.MkdirAll(firstRoot, 0o755); err != nil {
+		h.record(result{Name: "machine register first root setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := os.MkdirAll(secondRoot, 0o755); err != nil {
+		h.record(result{Name: "machine register second root setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+
+	register := s.command("machine register human output", "machine", "register", firstRoot)
+	if register.Status != "PASS" || !s.expectOutput(register, "machine registered", "id: ", "hostname: ", "os: ", "architecture: ", "workspace_root: "+firstRoot, "registered_at: ", "updated_at: ") {
+		return
+	}
+	firstID := valueAfterPrefix(register.Stdout, "id: ")
+	if firstID == "" {
+		s.failCommandAssertion(register, "stdout did not include machine id")
+		return
+	}
+
+	rerun := s.command("machine register updates facts", "machine", "register", secondRoot)
+	if rerun.Status != "PASS" || !s.expectOutput(rerun, "id: "+firstID, "workspace_root: "+secondRoot) {
+		return
+	}
+
+	jsonRun := s.command("machine register json output", "machine", "register", secondRoot, "--json")
+	if jsonRun.Status != "PASS" {
+		return
+	}
+	var payload struct {
+		ID            string `json:"id"`
+		WorkspaceRoot string `json:"workspace_root"`
+	}
+	if err := json.Unmarshal([]byte(jsonRun.Stdout), &payload); err != nil {
+		s.failCommandAssertion(jsonRun, "stdout was not JSON: "+err.Error())
+		return
+	}
+	if payload.ID != firstID || payload.WorkspaceRoot != secondRoot {
+		s.failCommandAssertion(jsonRun, fmt.Sprintf("JSON payload = %#v, want id %q workspace %q", payload, firstID, secondRoot))
+		return
+	}
+
+	machines, err := readMachineRowsFromStore(filepath.Join(s.codemeshHome, "codemesh.db"))
+	if err != nil {
+		h.record(result{Name: "machine register state row", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if len(machines) != 1 || machines[0].ID != firstID || machines[0].WorkspaceRoot != secondRoot {
+		h.record(result{Name: "machine register state row", Status: "FAIL", Error: fmt.Sprintf("machine rows = %#v", machines), ExitCode: -1})
+		return
+	}
+	h.record(result{Name: "machine register state row", Status: "PASS", ExitCode: 0})
 }
 
 func (h *harness) caseProjectRegistryFixtureWorkflow() {
@@ -1323,7 +1385,11 @@ func (h *harness) redactionMarkers() []string {
 	if len(h.redactions) != 0 {
 		return h.redactions
 	}
-	return fakeEnvFixtureSecrets()
+	markers := fakeEnvFixtureSecrets()
+	if hostname, err := os.Hostname(); err == nil && hostname != "" {
+		markers = append(markers, hostname)
+	}
+	return markers
 }
 
 func fakeEnvFixtureSecret() string {
@@ -2018,6 +2084,14 @@ type projectRow struct {
 	LocalPath        string
 }
 
+type machineRow struct {
+	ID            string
+	Hostname      string
+	OS            string
+	Architecture  string
+	WorkspaceRoot string
+}
+
 func readAgentMetadata(path string) (agentMetadata, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -2103,6 +2177,31 @@ func readProjectRowsFromStore(dbPath string) ([]projectRow, error) {
 		return nil, err
 	}
 	return projects, nil
+}
+
+func readMachineRowsFromStore(dbPath string) ([]machineRow, error) {
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	rows, err := db.Query(`select machine_id, hostname, os, architecture, workspace_root from machines where machine_id is not null and machine_id != '' order by id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var machines []machineRow
+	for rows.Next() {
+		var machine machineRow
+		if err := rows.Scan(&machine.ID, &machine.Hostname, &machine.OS, &machine.Architecture, &machine.WorkspaceRoot); err != nil {
+			return nil, err
+		}
+		machines = append(machines, machine)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return machines, nil
 }
 
 func projectColumns(dbPath string) ([]string, error) {

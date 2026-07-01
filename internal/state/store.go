@@ -2,7 +2,9 @@ package state
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -58,6 +60,23 @@ type AgentRun struct {
 	WorkspacePath string
 	MetadataJSON  string
 	CreatedAt     time.Time
+}
+
+type MachineFacts struct {
+	Hostname      string
+	OS            string
+	Architecture  string
+	WorkspaceRoot string
+}
+
+type Machine struct {
+	ID            string
+	Hostname      string
+	OS            string
+	Architecture  string
+	WorkspaceRoot string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type SQLiteStore struct {
@@ -176,6 +195,9 @@ create table if not exists schema_migrations (
 		if err := backfillCloneURLs(ctx, tx); err != nil {
 			return err
 		}
+	}
+	if _, err := applyMigration(ctx, tx, 4, migration4); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
@@ -413,6 +435,122 @@ order by alias
 	return projects, nil
 }
 
+func (s *SQLiteStore) RegisterMachine(ctx context.Context, facts MachineFacts) (Machine, error) {
+	if strings.TrimSpace(facts.Hostname) == "" {
+		return Machine{}, errors.New("machine hostname is required")
+	}
+	if strings.TrimSpace(facts.OS) == "" {
+		return Machine{}, errors.New("machine OS is required")
+	}
+	if strings.TrimSpace(facts.Architecture) == "" {
+		return Machine{}, errors.New("machine architecture is required")
+	}
+	if strings.TrimSpace(facts.WorkspaceRoot) == "" {
+		return Machine{}, errors.New("machine workspace root is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Machine{}, fmt.Errorf("begin machine registration: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	nowText := now.Format(time.RFC3339)
+	var rowID int64
+	var machineID, createdAtText string
+	err = tx.QueryRowContext(ctx, `
+select id, coalesce(machine_id, ''), coalesce(registered_at, created_at)
+from machines
+order by case when machine_id is not null and machine_id != '' then 0 else 1 end, id
+limit 1
+`).Scan(&rowID, &machineID, &createdAtText)
+	switch {
+	case err == nil:
+		if machineID == "" {
+			machineID, err = newMachineID()
+			if err != nil {
+				return Machine{}, err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `
+update machines
+set name = ?, machine_id = ?, hostname = ?, os = ?, architecture = ?, workspace_root = ?, registered_at = ?, updated_at = ?
+where id = ?
+`, facts.Hostname, machineID, facts.Hostname, facts.OS, facts.Architecture, facts.WorkspaceRoot, createdAtText, nowText, rowID); err != nil {
+			return Machine{}, fmt.Errorf("update machine facts: %w", err)
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		machineID, err = newMachineID()
+		if err != nil {
+			return Machine{}, err
+		}
+		createdAtText = nowText
+		if _, err := tx.ExecContext(ctx, `
+insert into machines(name, machine_id, hostname, os, architecture, workspace_root, registered_at, created_at, updated_at)
+values(?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, facts.Hostname, machineID, facts.Hostname, facts.OS, facts.Architecture, facts.WorkspaceRoot, createdAtText, createdAtText, nowText); err != nil {
+			return Machine{}, fmt.Errorf("insert machine facts: %w", err)
+		}
+	default:
+		return Machine{}, fmt.Errorf("read machine registration: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Machine{}, fmt.Errorf("commit machine registration: %w", err)
+	}
+
+	createdAt, err := time.Parse(time.RFC3339, createdAtText)
+	if err != nil {
+		return Machine{}, fmt.Errorf("parse machine created_at: %w", err)
+	}
+	return Machine{
+		ID:            machineID,
+		Hostname:      facts.Hostname,
+		OS:            facts.OS,
+		Architecture:  facts.Architecture,
+		WorkspaceRoot: facts.WorkspaceRoot,
+		CreatedAt:     createdAt,
+		UpdatedAt:     now,
+	}, nil
+}
+
+func (s *SQLiteStore) ListMachines(ctx context.Context) ([]Machine, error) {
+	rows, err := s.db.QueryContext(ctx, `
+select machine_id, hostname, os, architecture, workspace_root, coalesce(registered_at, created_at), updated_at
+from machines
+where machine_id is not null and machine_id != ''
+order by id
+`)
+	if err != nil {
+		return nil, fmt.Errorf("list machines: %w", err)
+	}
+	defer rows.Close()
+
+	var machines []Machine
+	for rows.Next() {
+		var machine Machine
+		var createdAt, updatedAt string
+		if err := rows.Scan(&machine.ID, &machine.Hostname, &machine.OS, &machine.Architecture, &machine.WorkspaceRoot, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan machine: %w", err)
+		}
+		parsedCreatedAt, err := time.Parse(time.RFC3339, createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse machine %q created_at: %w", machine.ID, err)
+		}
+		parsedUpdatedAt, err := time.Parse(time.RFC3339, updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse machine %q updated_at: %w", machine.ID, err)
+		}
+		machine.CreatedAt = parsedCreatedAt
+		machine.UpdatedAt = parsedUpdatedAt
+		machines = append(machines, machine)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate machines: %w", err)
+	}
+	return machines, nil
+}
+
 func (s *SQLiteStore) RecordAgentRun(ctx context.Context, run AgentRun) error {
 	if strings.TrimSpace(run.ID) == "" {
 		return errors.New("agent run id is required")
@@ -519,6 +657,14 @@ func ensurePrivateFile(path string) error {
 	return nil
 }
 
+func newMachineID() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("mint machine id: %w", err)
+	}
+	return "machine_" + hex.EncodeToString(raw[:]), nil
+}
+
 var migration1 = []string{
 	`create table if not exists settings (
   key text primary key,
@@ -591,4 +737,16 @@ where id not in (
 var migration3 = []string{
 	`alter table projects add column clone_url text not null default ''`,
 	`update projects set clone_url = normalized_remote where clone_url = ''`,
+}
+
+var migration4 = []string{
+	`alter table machines add column machine_id text`,
+	`alter table machines add column hostname text not null default ''`,
+	`alter table machines add column os text not null default ''`,
+	`alter table machines add column architecture text not null default ''`,
+	`alter table machines add column workspace_root text not null default ''`,
+	`alter table machines add column registered_at text`,
+	`alter table machines add column updated_at text not null default ''`,
+	`update machines set updated_at = created_at where updated_at = ''`,
+	`create unique index if not exists machines_machine_id_unique on machines(machine_id) where machine_id is not null and machine_id != ''`,
 }
