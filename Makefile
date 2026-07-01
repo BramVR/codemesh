@@ -1,6 +1,6 @@
 BIN ?= dist/codemesh
 
-.PHONY: test build e2e e2e-packaged docs\:list docs-list docs-site docs-site-test docs-site-clean
+.PHONY: test build e2e e2e-packaged e2e-live docs\:list docs-list docs-site docs-site-test docs-site-clean
 
 test:
 	go test ./...
@@ -14,6 +14,9 @@ e2e:
 
 e2e-packaged: build
 	CODEMESH_E2E_BINARY="$(abspath $(BIN))" CODEMESH_E2E_MODE=packaged go run ./test/e2e
+
+e2e-live:
+	CODEMESH_E2E_MODE=live go run ./test/e2e
 
 docs\:list: docs-list
 

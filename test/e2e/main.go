@@ -20,9 +20,13 @@ import (
 const (
 	defaultCommandTimeout = 30 * time.Second
 	longCommandTimeout    = 2 * time.Minute
+	defaultLiveLockStale  = 4 * time.Hour
 	modeSource            = "source"
 	modePackaged          = "packaged"
+	modeLive              = "live"
 )
+
+var errLiveLockHeld = errors.New("live e2e lock already held")
 
 type result struct {
 	Name     string `json:"name"`
@@ -40,6 +44,7 @@ type report struct {
 	Mode         string             `json:"mode"`
 	Binary       reportBinary       `json:"binary"`
 	Isolation    reportIsolation    `json:"isolation"`
+	Live         *reportLive        `json:"live,omitempty"`
 	Summary      reportSummary      `json:"summary"`
 	SecretSafety reportSecretSafety `json:"secret_safety"`
 	Results      []result           `json:"results"`
@@ -57,6 +62,15 @@ type reportIsolation struct {
 	Workspace    string `json:"workspace"`
 	RunDir       string `json:"run_dir"`
 	GitConfig    string `json:"git_config"`
+}
+
+type reportLive struct {
+	OptIn       bool     `json:"opt_in"`
+	Strict      bool     `json:"strict"`
+	Targets     []string `json:"targets"`
+	SkipReasons []string `json:"skip_reasons,omitempty"`
+	LockPath    string   `json:"lock_path,omitempty"`
+	LockLabel   string   `json:"lock_label,omitempty"`
 }
 
 type reportSummary struct {
@@ -86,6 +100,30 @@ type harness struct {
 	reportPath   string
 	output       io.Writer
 	results      []result
+	live         *reportLive
+}
+
+type liveConfig struct {
+	OptIn   bool
+	Strict  bool
+	Targets []string
+}
+
+type liveLockMetadata struct {
+	PID       int    `json:"pid"`
+	Host      string `json:"host"`
+	Label     string `json:"label"`
+	StartedAt string `json:"started_at"`
+	Token     string `json:"token,omitempty"`
+}
+
+type liveLock struct {
+	path  string
+	token string
+}
+
+type liveCleanupGuard struct {
+	path string
 }
 
 type offlineGitFixtures struct {
@@ -163,32 +201,11 @@ func main() {
 }
 
 func (h *harness) run() int {
-	if err := os.MkdirAll(filepath.Dir(h.bin), 0o755); err != nil {
+	if err := h.setupIsolation(); err != nil {
 		return h.fail("harness setup", err)
 	}
-	if err := os.MkdirAll(h.codemeshHome, 0o755); err != nil {
-		return h.fail("harness setup", err)
-	}
-	if err := os.MkdirAll(h.home, 0o755); err != nil {
-		return h.fail("harness setup", err)
-	}
-	if err := os.WriteFile(filepath.Join(h.home, ".gitconfig"), nil, 0o644); err != nil {
-		return h.fail("harness setup", err)
-	}
-	if err := os.MkdirAll(h.workspace, 0o755); err != nil {
-		return h.fail("harness setup", err)
-	}
-	if err := os.MkdirAll(h.runDir, 0o755); err != nil {
-		return h.fail("harness setup", err)
-	}
-	if h.mode == modePackaged {
-		inside, err := pathInside(h.root, h.runDir)
-		if err != nil {
-			return h.fail("harness setup", err)
-		}
-		if inside {
-			return h.fail("harness setup", fmt.Errorf("packaged run dir must be outside repo: %s", h.runDir))
-		}
+	if h.mode == modeLive {
+		return h.runLive()
 	}
 	if _, err := h.createOfflineGitFixtures(); err != nil {
 		return h.fail("harness fixture", err)
@@ -229,6 +246,93 @@ func (h *harness) run() int {
 		return 1
 	}
 
+	for _, r := range h.results {
+		if r.Status == "FAIL" {
+			return 1
+		}
+	}
+	return 0
+}
+
+func (h *harness) setupIsolation() error {
+	if err := os.MkdirAll(filepath.Dir(h.bin), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(h.codemeshHome, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(h.home, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(h.home, ".gitconfig"), nil, 0o644); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(h.workspace, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(h.runDir, 0o755); err != nil {
+		return err
+	}
+	if h.mode == modePackaged {
+		inside, err := pathInside(h.root, h.runDir)
+		if err != nil {
+			return err
+		}
+		if inside {
+			return fmt.Errorf("packaged run dir must be outside repo: %s", h.runDir)
+		}
+	}
+	return nil
+}
+
+func (h *harness) runLive() int {
+	cfg := liveConfigFromEnv(os.LookupEnv)
+	h.live = &reportLive{
+		OptIn:   cfg.OptIn,
+		Strict:  cfg.Strict,
+		Targets: append([]string(nil), cfg.Targets...),
+	}
+	if !cfg.OptIn {
+		h.live.SkipReasons = append(h.live.SkipReasons, "CODEMESH_E2E_LIVE not set")
+		h.skip("live e2e opt-in", "CODEMESH_E2E_LIVE=1 required for live checks")
+		return h.finishLive()
+	}
+
+	lock, err := acquireLiveLock(defaultLiveLockDir(), "codemesh e2e live", time.Now().UTC(), os.Getpid(), defaultLiveLockStale)
+	if err != nil {
+		if errors.Is(err, errLiveLockHeld) && !cfg.Strict {
+			h.live.SkipReasons = append(h.live.SkipReasons, err.Error())
+			h.skip("live e2e lock", err.Error())
+			return h.finishLive()
+		}
+		h.record(result{Name: "live e2e lock", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return h.finishLive()
+	}
+	h.live.LockPath = lock.path
+	h.live.LockLabel = "codemesh e2e live"
+
+	reason := "no live targets configured"
+	h.live.SkipReasons = append(h.live.SkipReasons, reason)
+	if cfg.Strict {
+		h.record(result{Name: "live e2e prerequisites", Status: "FAIL", Error: reason, ExitCode: -1})
+	} else {
+		h.skip("live e2e prerequisites", reason)
+	}
+	if err := lock.release(); err != nil {
+		h.record(result{Name: "live e2e lock release", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+	}
+	return h.finishLive()
+}
+
+func (h *harness) finishLive() int {
+	if !h.caseSecretSafetyReportAndStateStore() {
+		_ = h.writeReport()
+		return 1
+	}
+	if err := h.writeReport(); err != nil {
+		fmt.Printf("FAIL report: %v\n", err)
+		return 1
+	}
 	for _, r := range h.results {
 		if r.Status == "FAIL" {
 			return 1
@@ -1122,7 +1226,7 @@ func (h *harness) caseInitSmoke() {
 }
 
 func (h *harness) skip(name, reason string) {
-	r := result{Name: name, Status: "SKIP", Error: reason}
+	r := result{Name: name, Status: "SKIP", Error: reason, Duration: formatDuration(0)}
 	h.record(r)
 }
 
@@ -1321,6 +1425,7 @@ func (h *harness) writeReport() error {
 			RunDir:       h.runDir,
 			GitConfig:    filepath.Join(h.home, ".gitconfig"),
 		},
+		Live:         h.live,
 		Summary:      summarizeResults(results),
 		SecretSafety: reportSecretSafety{Enabled: true, RedactedValues: redactedValues},
 		Results:      results,
@@ -2313,17 +2418,21 @@ func runGitNoOutput(dir string, args ...string) error {
 }
 
 func (h *harness) defaultCommandDir() string {
-	if h.mode == modePackaged {
+	if h.mode == modePackaged || h.mode == modeLive {
 		return h.runDir
 	}
 	return h.root
 }
 
 func e2eMode() string {
-	if os.Getenv("CODEMESH_E2E_MODE") == modePackaged {
+	switch os.Getenv("CODEMESH_E2E_MODE") {
+	case modePackaged:
 		return modePackaged
+	case modeLive:
+		return modeLive
+	default:
+		return modeSource
 	}
-	return modeSource
 }
 
 func binaryPath(tmp string) (string, bool, error) {
@@ -2393,6 +2502,222 @@ func reportPath(root string) string {
 		return path
 	}
 	return filepath.Join(root, "tmp", "e2e-report.json")
+}
+
+func liveConfigFromEnv(lookup func(string) (string, bool)) liveConfig {
+	optInValue, optInSet := lookup("CODEMESH_E2E_LIVE")
+	strictValue, strictSet := lookup("CODEMESH_E2E_LIVE_STRICT")
+	targetValue, _ := lookup("CODEMESH_E2E_LIVE_TARGETS")
+	targets := splitLiveTargets(targetValue)
+	if len(targets) == 0 {
+		targets = []string{"live guardrails"}
+	}
+	return liveConfig{
+		OptIn:   optInSet && truthyEnv(optInValue),
+		Strict:  strictSet && truthyEnv(strictValue),
+		Targets: targets,
+	}
+}
+
+func truthyEnv(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func splitLiveTargets(value string) []string {
+	var targets []string
+	for _, raw := range strings.Split(value, ",") {
+		target := strings.TrimSpace(raw)
+		if target != "" {
+			targets = append(targets, target)
+		}
+	}
+	return targets
+}
+
+func defaultLiveLockDir() string {
+	if path := strings.TrimSpace(os.Getenv("CODEMESH_E2E_LIVE_LOCK_DIR")); path != "" {
+		return path
+	}
+	return filepath.Join(os.TempDir(), "codemesh-e2e-live-locks")
+}
+
+func acquireLiveLock(dir, label string, now time.Time, pid int, staleAfter time.Duration) (*liveLock, error) {
+	if strings.TrimSpace(label) == "" {
+		return nil, errors.New("live lock label is required")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	host, err := os.Hostname()
+	if err != nil || strings.TrimSpace(host) == "" {
+		host = "unknown-host"
+	}
+	path := filepath.Join(dir, "host-"+slug(host)+".lock")
+	metadata := liveLockMetadata{
+		PID:       pid,
+		Host:      host,
+		Label:     label,
+		StartedAt: now.UTC().Format(time.RFC3339),
+		Token:     liveLockToken(pid, now),
+	}
+	if err := writeLiveLock(path, metadata); err == nil {
+		return &liveLock{path: path, token: metadata.Token}, nil
+	} else if !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+
+	guard, err := acquireLiveCleanupGuard(path, now, staleAfter)
+	if err != nil {
+		return nil, err
+	}
+	defer guard.release()
+	if err := removeStaleLiveLock(path, now, staleAfter); err != nil {
+		return nil, err
+	}
+	if err := writeLiveLock(path, metadata); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("%w: %s", errLiveLockHeld, path)
+		}
+		return nil, err
+	}
+	return &liveLock{path: path, token: metadata.Token}, nil
+}
+
+func writeLiveLock(path string, metadata liveLockMetadata) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	data, marshalErr := json.MarshalIndent(metadata, "", "  ")
+	if marshalErr == nil {
+		data = append(data, '\n')
+		_, marshalErr = file.Write(data)
+	}
+	closeErr := file.Close()
+	if marshalErr != nil {
+		_ = os.Remove(path)
+		return marshalErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(path)
+		return closeErr
+	}
+	return nil
+}
+
+func liveLockToken(pid int, now time.Time) string {
+	return fmt.Sprintf("%d-%d", pid, now.UTC().UnixNano())
+}
+
+func acquireLiveCleanupGuard(lockPath string, now time.Time, staleAfter time.Duration) (*liveCleanupGuard, error) {
+	path := lockPath + ".cleanup"
+	if err := removeStaleCleanupGuard(path, now, staleAfter); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("%w: %s", errLiveLockHeld, lockPath)
+		}
+		return nil, err
+	}
+	_, writeErr := fmt.Fprintf(file, "%d %s\n", os.Getpid(), now.UTC().Format(time.RFC3339))
+	closeErr := file.Close()
+	if writeErr != nil {
+		_ = os.Remove(path)
+		return nil, writeErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(path)
+		return nil, closeErr
+	}
+	return &liveCleanupGuard{path: path}, nil
+}
+
+func removeStaleCleanupGuard(path string, now time.Time, staleAfter time.Duration) error {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if staleAfter > 0 && now.Sub(info.ModTime()) >= staleAfter {
+		return os.Remove(path)
+	}
+	return nil
+}
+
+func removeStaleLiveLock(path string, now time.Time, staleAfter time.Duration) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var metadata liveLockMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return removeMalformedStaleLiveLock(path, now, staleAfter, fmt.Errorf("live e2e lock is unreadable: %w", err))
+	}
+	startedAt, err := time.Parse(time.RFC3339, metadata.StartedAt)
+	if err != nil {
+		return removeMalformedStaleLiveLock(path, now, staleAfter, fmt.Errorf("live e2e lock has invalid start time: %w", err))
+	}
+	if staleAfter <= 0 || now.Sub(startedAt) < staleAfter {
+		return nil
+	}
+	return os.Remove(path)
+}
+
+func removeMalformedStaleLiveLock(path string, now time.Time, staleAfter time.Duration, parseErr error) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if staleAfter > 0 && now.Sub(info.ModTime()) >= staleAfter {
+		return os.Remove(path)
+	}
+	return parseErr
+}
+
+func (l *liveLock) release() error {
+	if l == nil || l.path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(l.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var metadata liveLockMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return nil
+	}
+	if metadata.Token != l.token {
+		return nil
+	}
+	if err := os.Remove(l.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (g *liveCleanupGuard) release() error {
+	if g == nil || g.path == "" {
+		return nil
+	}
+	if err := os.Remove(g.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func slug(name string) string {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,6 +166,255 @@ func TestWriteReportDistinguishesPackagedBinary(t *testing.T) {
 	}
 }
 
+func TestLiveOptInParsing(t *testing.T) {
+	cfg := liveConfigFromEnv(mapLookup(nil))
+	if cfg.OptIn || cfg.Strict {
+		t.Fatalf("default live config = %#v, want no opt-in and non-strict", cfg)
+	}
+	if len(cfg.Targets) != 1 || cfg.Targets[0] != "live guardrails" {
+		t.Fatalf("default targets = %#v", cfg.Targets)
+	}
+
+	cfg = liveConfigFromEnv(mapLookup(map[string]string{
+		"CODEMESH_E2E_LIVE":         "1",
+		"CODEMESH_E2E_LIVE_STRICT":  "true",
+		"CODEMESH_E2E_LIVE_TARGETS": "github, provider smoke",
+	}))
+	if !cfg.OptIn || !cfg.Strict {
+		t.Fatalf("enabled live config = %#v, want opt-in and strict", cfg)
+	}
+	if strings.Join(cfg.Targets, "|") != "github|provider smoke" {
+		t.Fatalf("targets = %#v", cfg.Targets)
+	}
+
+	cfg = liveConfigFromEnv(mapLookup(map[string]string{"CODEMESH_E2E_LIVE": "0"}))
+	if cfg.OptIn {
+		t.Fatalf("CODEMESH_E2E_LIVE=0 enabled live config")
+	}
+}
+
+func TestLiveDefaultRecordsSkipAndReportMetadata(t *testing.T) {
+	t.Setenv("CODEMESH_E2E_LIVE", "")
+	t.Setenv("CODEMESH_E2E_LIVE_STRICT", "")
+
+	h := testHarness(t)
+	h.mode = modeLive
+	h.bin = filepath.Join(h.tmp, "bin", "codemesh")
+	h.reportPath = filepath.Join(h.tmp, "reports", "live.json")
+	h.startedAt = time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+
+	if err := h.setupIsolation(); err != nil {
+		t.Fatal(err)
+	}
+	if code := h.runLive(); code != 0 {
+		t.Fatalf("runLive exit = %d, want 0", code)
+	}
+
+	data, err := os.ReadFile(h.reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got report
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Mode != modeLive || got.Live == nil {
+		t.Fatalf("mode/live metadata = %q %#v", got.Mode, got.Live)
+	}
+	if got.Live.OptIn || got.Live.Strict {
+		t.Fatalf("live opt-in metadata = %#v, want skipped non-strict", got.Live)
+	}
+	if len(got.Live.SkipReasons) != 1 || !strings.Contains(got.Live.SkipReasons[0], "CODEMESH_E2E_LIVE") {
+		t.Fatalf("skip reasons = %#v", got.Live.SkipReasons)
+	}
+	if got.Summary.Skip != 1 || got.Summary.Pass != 1 || got.Summary.Fail != 0 || got.Summary.Total != 2 {
+		t.Fatalf("summary = %#v", got.Summary)
+	}
+	if got.Isolation.CodeMeshHome != h.codemeshHome || got.Isolation.Home != h.home || got.Isolation.Workspace != h.workspace || got.Isolation.RunDir != h.runDir {
+		t.Fatalf("isolation metadata = %#v", got.Isolation)
+	}
+}
+
+func TestLiveStrictMissingPrerequisitesFails(t *testing.T) {
+	t.Setenv("CODEMESH_E2E_LIVE", "1")
+	t.Setenv("CODEMESH_E2E_LIVE_STRICT", "1")
+	t.Setenv("CODEMESH_E2E_LIVE_LOCK_DIR", filepath.Join(t.TempDir(), "locks"))
+
+	h := testHarness(t)
+	h.mode = modeLive
+	h.bin = filepath.Join(h.tmp, "bin", "codemesh")
+	h.reportPath = filepath.Join(h.tmp, "reports", "live.json")
+	if err := h.setupIsolation(); err != nil {
+		t.Fatal(err)
+	}
+	if code := h.runLive(); code == 0 {
+		t.Fatalf("runLive exit = 0, want strict prerequisite failure")
+	}
+	if len(h.results) == 0 || h.results[0].Status != "FAIL" {
+		t.Fatalf("results = %#v, want first live result failure", h.results)
+	}
+}
+
+func TestLiveLockContentionSkipsWhenNonStrict(t *testing.T) {
+	lockDir := filepath.Join(t.TempDir(), "locks")
+	t.Setenv("CODEMESH_E2E_LIVE", "1")
+	t.Setenv("CODEMESH_E2E_LIVE_STRICT", "")
+	t.Setenv("CODEMESH_E2E_LIVE_LOCK_DIR", lockDir)
+	held, err := acquireLiveLock(lockDir, "held live", time.Now().UTC(), os.Getpid(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.release()
+
+	h := testHarness(t)
+	h.mode = modeLive
+	h.bin = filepath.Join(h.tmp, "bin", "codemesh")
+	h.reportPath = filepath.Join(h.tmp, "reports", "live.json")
+	if err := h.setupIsolation(); err != nil {
+		t.Fatal(err)
+	}
+	if code := h.runLive(); code != 0 {
+		t.Fatalf("runLive exit = %d, want skip success", code)
+	}
+	if len(h.results) == 0 || h.results[0].Status != "SKIP" || h.results[0].Name != "live e2e lock" {
+		t.Fatalf("results = %#v, want lock skip", h.results)
+	}
+}
+
+func TestLiveLockAcquireReleaseWritesHostMetadata(t *testing.T) {
+	dir := t.TempDir()
+	startedAt := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+
+	lock, err := acquireLiveLock(dir, "unit live", startedAt, os.Getpid(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(lock.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metadata liveLockMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata.PID != os.Getpid() || metadata.Label != "unit live" || metadata.StartedAt != "2026-06-30T12:00:00Z" || metadata.Host == "" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+	if err := lock.release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lock.path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lock remains after release: %v", err)
+	}
+}
+
+func TestLiveLockCleansStaleLock(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Date(2026, 6, 30, 8, 0, 0, 0, time.UTC)
+	stale, err := acquireLiveLock(dir, "old live", old, 12345, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	lock, err := acquireLiveLock(dir, "new live", current, os.Getpid(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lock.path != stale.path {
+		t.Fatalf("lock path = %s, want stale path %s", lock.path, stale.path)
+	}
+	data, err := os.ReadFile(lock.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "new live") || strings.Contains(string(data), "old live") {
+		t.Fatalf("stale lock not replaced:\n%s", data)
+	}
+}
+
+func TestLiveLockCleanupGuardSerializesStaleRecovery(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Date(2026, 6, 30, 8, 0, 0, 0, time.UTC)
+	stale, err := acquireLiveLock(dir, "old live", old, 12345, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	guard, err := acquireLiveCleanupGuard(stale.path, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireLiveLock(dir, "second live", now, os.Getpid(), time.Hour); !errors.Is(err, errLiveLockHeld) {
+		t.Fatalf("acquire with cleanup guard error = %v, want lock held", err)
+	}
+	if _, err := os.Stat(stale.path); err != nil {
+		t.Fatalf("stale lock was removed while cleanup guard held: %v", err)
+	}
+	if err := guard.release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireLiveLock(dir, "new live", now, os.Getpid(), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLiveLockReleaseDoesNotRemoveNewerLock(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Date(2026, 6, 30, 8, 0, 0, 0, time.UTC)
+	stale, err := acquireLiveLock(dir, "old live", old, 12345, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	currentLock, err := acquireLiveLock(dir, "new live", current, os.Getpid(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.release(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(currentLock.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "new live") {
+		t.Fatalf("new lock was removed or replaced:\n%s", data)
+	}
+}
+
+func TestLiveLockCleansMalformedStaleLock(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "host-"+slug("malformed-host")+".lock")
+	if err := os.WriteFile(lockPath, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2026, 6, 30, 8, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(lockPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	if err := removeStaleLiveLock(lockPath, now, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("malformed stale lock remains: %v", err)
+	}
+}
+
+func TestLiveLockRefusesFreshLock(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC)
+	if _, err := acquireLiveLock(dir, "first live", now, os.Getpid(), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireLiveLock(dir, "second live", now.Add(time.Minute), os.Getpid(), time.Hour); err == nil {
+		t.Fatalf("fresh lock was not refused")
+	}
+}
+
 func TestDefaultCommandDirUsesRepoRoot(t *testing.T) {
 	h := testHarness(t)
 
@@ -187,6 +437,16 @@ func TestPackagedCommandDirUsesOutsideRunDir(t *testing.T) {
 	}
 	if inside {
 		t.Fatalf("test setup bug: packaged run dir is under repo root")
+	}
+}
+
+func TestLiveCommandDirUsesOutsideRunDir(t *testing.T) {
+	h := testHarness(t)
+	h.mode = modeLive
+	h.runDir = filepath.Join(t.TempDir(), "live-run")
+
+	if got := h.defaultCommandDir(); got != h.runDir {
+		t.Fatalf("default command dir = %s, want live run dir %s", got, h.runDir)
 	}
 }
 
@@ -437,6 +697,13 @@ func gitStatus(t *testing.T, h *harness, dir string) string {
 		t.Fatal(err)
 	}
 	return strings.TrimSpace(stdout)
+}
+
+func mapLookup(values map[string]string) func(string) (string, bool) {
+	return func(key string) (string, bool) {
+		value, ok := values[key]
+		return value, ok
+	}
 }
 
 func testHarness(t *testing.T) *harness {

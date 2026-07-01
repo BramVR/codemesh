@@ -24,6 +24,28 @@ make e2e-packaged
 
 This target builds `dist/codemesh`, then reruns the smoke cases through the same e2e runner with `CODEMESH_E2E_BINARY` pointed at that packaged-style binary. In packaged mode, command cases run from a temp directory outside the repository checkout, with `CODEMESH_HOME`, `HOME`, Git config, and local fixtures still isolated under the harness temp directory.
 
+Live e2e guardrails:
+
+```sh
+make e2e-live
+```
+
+Live mode is explicit and opt-in. The default `make e2e-live` path exits 0 and records a `SKIP` because `CODEMESH_E2E_LIVE=1` was not set. Use this target before adding or changing real provider, GUI, network, or multi-machine smoke checks so the report proves the live harness is isolated and safely skipped by default.
+
+Opt in only when the live prerequisites are free and available:
+
+```sh
+CODEMESH_E2E_LIVE=1 make e2e-live
+```
+
+Strict mode turns missing live prerequisites into failures:
+
+```sh
+CODEMESH_E2E_LIVE=1 CODEMESH_E2E_LIVE_STRICT=1 make e2e-live
+```
+
+`CODEMESH_E2E_LIVE_TARGETS` may name comma-separated live target labels for report audit trails. Until real live targets exist, opted-in live mode records `no live targets configured` as `SKIP`, or as `FAIL` in strict mode. Live checks must continue to skip unless free, safe prerequisites are present.
+
 Override the report path:
 
 ```sh
@@ -37,9 +59,10 @@ Inspect the report when terminal output is too noisy, CI needs a durable artifac
 The report includes:
 
 - `started_at`: UTC run start time.
-- `mode`: `source` for the normal source-built runner or `packaged` for `make e2e-packaged`.
+- `mode`: `source` for the normal source-built runner, `packaged` for `make e2e-packaged`, or `live` for `make e2e-live`.
 - `binary`: executable path plus whether it was an external packaged binary.
 - `isolation`: isolated `CODEMESH_HOME`, `HOME`, workspace, run directory, and Git config path.
+- `live`: live opt-in status, strict mode, target labels, skip reasons, and the host-scoped lock path/label when a lock was acquired.
 - `summary`: `pass`, `fail`, `skip`, and `total` counts derived from recorded case results.
 - `secret_safety`: whether report redaction is active and how many known fake fixture values were redacted.
 - `results`: per-case status, duration, exit code, and captured output for failing or diagnostic cases.
@@ -57,6 +80,21 @@ Each run creates a temp workspace with:
 - local Git fixtures for future Project Registry, Readiness, Hydration, and Agent Prep cases.
 
 The harness does not use GitHub, secrets, GUI automation, AppleScript, the user's normal CodeMesh home, or personal workspace projects.
+
+Live mode uses the same isolation roots before it evaluates opt-in state. If future live checks run commands, their default cwd is the isolated run directory under the harness temp root, not the repository checkout.
+
+## Live Locking
+
+Opted-in live mode acquires one host-scoped JSON lock before checking live prerequisites. The default lock directory is under the OS temp directory at `codemesh-e2e-live-locks`; `CODEMESH_E2E_LIVE_LOCK_DIR` may override it for CI or local test isolation.
+
+The lock records:
+
+- pid
+- host
+- label
+- start time
+
+Fresh locks serialize live checks on the same host. Stale locks are removed after the stale window before a new lock is written. The live runner releases the lock on normal exit.
 
 ## Test Layers
 
@@ -145,6 +183,8 @@ Agents should run e2e checks with:
 make e2e
 ```
 
+Run `make e2e-packaged` when changing packaging, installed-binary assumptions, source-relative paths, or release-smoke behavior. Run `make e2e-live` when changing the live harness or adding real provider, GUI, network, account, or multi-machine checks. Expect live mode to report `SKIP` unless `CODEMESH_E2E_LIVE=1` is set and free prerequisites are available.
+
 If a command fails, use the printed failure block first. If a machine-readable audit trail is needed, inspect `tmp/e2e-report.json` or set `CODEMESH_E2E_REPORT` to a temp path before running the target.
 
 ## Adopted Patterns
@@ -175,5 +215,5 @@ From `steipete/oracle`:
 ## Intentionally Not Run Live
 
 - Poll/wait helpers: no async CodeMesh behavior exists yet.
-- Live/network checks: out of scope for MVP fixture coverage; the harness records an offline boundary pass instead of a skip.
+- Live/network checks: no live target exists yet; `make e2e-live` records an audited skip unless explicitly opted in and free prerequisites are available.
 - Screenshot proof: not applicable to the current CLI-only harness.
