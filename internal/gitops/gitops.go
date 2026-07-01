@@ -239,19 +239,27 @@ func RedactCloneOutput(output, cloneURL string) string {
 	if err != nil || parsed.Scheme == "" {
 		return strings.TrimSpace(output)
 	}
-	candidates := []string{}
+	var candidates []string
+	appendVariants := func(candidate url.URL) {
+		candidates = append(candidates, candidate.String())
+		withoutFragment := candidate
+		withoutFragment.Fragment = ""
+		candidates = append(candidates, withoutFragment.String())
+		withoutQuery := candidate
+		withoutQuery.RawQuery = ""
+		candidates = append(candidates, withoutQuery.String())
+		withoutQuery.Fragment = ""
+		candidates = append(candidates, withoutQuery.String())
+	}
+	appendVariants(*parsed)
 	withoutUser := *parsed
 	withoutUser.User = nil
-	candidates = append(candidates, withoutUser.String())
-	withoutFragment := *parsed
-	withoutFragment.Fragment = ""
-	candidates = append(candidates, withoutFragment.String())
-	withoutUserFragment := withoutUser
-	withoutUserFragment.Fragment = ""
-	candidates = append(candidates, withoutUserFragment.String())
-	withoutQuery := withoutFragment
-	withoutQuery.RawQuery = ""
-	candidates = append(candidates, withoutQuery.String())
+	appendVariants(withoutUser)
+	if parsed.User != nil {
+		usernameOnly := *parsed
+		usernameOnly.User = url.User(parsed.User.Username())
+		appendVariants(usernameOnly)
+	}
 	for _, candidate := range candidates {
 		if candidate != "" && candidate != redacted {
 			output = strings.ReplaceAll(output, candidate, redacted)

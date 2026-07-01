@@ -71,13 +71,13 @@ func TestCloneURLForStripsCredentialsButPreservesTransport(t *testing.T) {
 }
 
 func TestRedactionRemovesCredentialBearingURLParts(t *testing.T) {
-	raw := "https://user:redactme@example.invalid/org/repo.git?credential=redactme#fragment"
+	raw := "https://redactuser:redactme@example.invalid/org/repo.git?credential=redactme#fragment"
 
 	metadata := RedactURLForMetadata(raw)
-	output := RedactCloneOutput("fatal: could not read "+raw+" or https://example.invalid/org/repo.git?credential=redactme", raw)
+	output := RedactCloneOutput("fatal: could not read "+raw+" or https://redactuser@example.invalid/org/repo.git or https://redactuser@example.invalid/org/repo.git#fragment", raw)
 
 	for _, got := range []string{metadata, output} {
-		if strings.Contains(got, "redactme") || strings.Contains(got, "credential") || strings.Contains(got, "fragment") {
+		if strings.Contains(got, "redactuser") || strings.Contains(got, "redactme") || strings.Contains(got, "credential") || strings.Contains(got, "fragment") {
 			t.Fatalf("redaction leaked credential-bearing part: %s", got)
 		}
 	}
