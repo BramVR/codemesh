@@ -14,7 +14,7 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 - [`codemesh add <path> [--alias name]`](commands/add.md)
 - [`codemesh scan [workspace-root]`](commands/scan.md)
 - [`codemesh tree`](commands/tree.md)
-- [`codemesh status [project] [--base branch]`](commands/status.md)
+- [`codemesh status [project] [--base branch] [--json]`](commands/status.md)
 - [`codemesh hydrate <project>`](commands/hydrate.md)
 - [`codemesh machine register [workspace-root] [--json]`](commands/machine-register.md)
 - [`codemesh agent prepare <project> [--base branch] [--profile name]`](commands/agent-prepare.md)
@@ -51,6 +51,7 @@ codemesh init "$workspace"
 codemesh add "$workspace/demo-project" --alias demo-project
 codemesh tree
 codemesh status demo-project --base main
+codemesh status demo-project --base main --json
 codemesh agent prepare demo-project --base main --profile codex
 run_id="$(codemesh runs | awk '/^- / {print $2; exit}')"
 codemesh agent run "$run_id" --label workspace-root -- git rev-parse --show-toplevel

@@ -15,8 +15,10 @@ import (
 	"github.com/BramVR/codemesh/internal/agentcontract"
 	"github.com/BramVR/codemesh/internal/agentprep"
 	"github.com/BramVR/codemesh/internal/agentruns"
+	"github.com/BramVR/codemesh/internal/commandresult"
 	"github.com/BramVR/codemesh/internal/config"
 	"github.com/BramVR/codemesh/internal/machineregistry"
+	"github.com/BramVR/codemesh/internal/presentation"
 	"github.com/BramVR/codemesh/internal/readiness"
 	"github.com/BramVR/codemesh/internal/registry"
 	"github.com/BramVR/codemesh/internal/state"
@@ -676,7 +678,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		printStatusHelp(stdout)
 		return 0
 	}
-	projectName, base, ok := parseStatusArgs(args, stderr)
+	statusArgs, ok := parseStatusArgs(args, stderr)
 	if !ok {
 		printStatusHelp(stderr)
 		return 2
@@ -693,58 +695,104 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "read project registry: %v\n", err)
 		return 1
 	}
-	if projectName == "" {
-		printStatusSummary(context.Background(), stdout, stderr, projects, base)
-		return 0
+	if statusArgs.ProjectName == "" {
+		result := buildStatusSummaryResult(context.Background(), stderr, projects, statusArgs.Base)
+		if statusArgs.JSON {
+			if err := presentation.RenderJSON(stdout, result); err != nil {
+				fmt.Fprintf(stderr, "encode status result: %v\n", err)
+				return commandresult.ExitInternalError.Code()
+			}
+			return result.ExitClass.Code()
+		}
+		if err := presentation.RenderHuman(stdout, result, renderStatusPayloadHuman); err != nil {
+			fmt.Fprintf(stderr, "render status result: %v\n", err)
+			return commandresult.ExitInternalError.Code()
+		}
+		return result.ExitClass.Code()
 	}
 	for _, project := range projects {
-		if project.Alias == projectName {
+		if project.Alias == statusArgs.ProjectName {
 			ctx, cancel := context.WithTimeout(context.Background(), statusReadinessTimeout)
 			defer cancel()
-			report, err := readiness.EvaluateProject(ctx, project, readiness.Options{BaseBranch: base, CheckRemote: true})
+			report, err := readiness.EvaluateProject(ctx, project, readiness.Options{BaseBranch: statusArgs.Base, CheckRemote: true})
 			if err != nil {
 				fmt.Fprintf(stderr, "check project readiness: %v\n", err)
 				return 1
 			}
-			printProjectStatus(stdout, report)
-			return 0
+			result := newStatusResult(statusArgs.ProjectName, []readiness.ProjectReport{report}, commandresult.Diagnostics{})
+			if statusArgs.JSON {
+				if err := presentation.RenderJSON(stdout, result); err != nil {
+					fmt.Fprintf(stderr, "encode status result: %v\n", err)
+					return commandresult.ExitInternalError.Code()
+				}
+				return result.ExitClass.Code()
+			}
+			if err := presentation.RenderHuman(stdout, result, renderStatusPayloadHuman); err != nil {
+				fmt.Fprintf(stderr, "render status result: %v\n", err)
+				return commandresult.ExitInternalError.Code()
+			}
+			return result.ExitClass.Code()
 		}
 	}
-	fmt.Fprintf(stderr, "unknown project: %s\n", projectName)
+	fmt.Fprintf(stderr, "unknown project: %s\n", statusArgs.ProjectName)
 	return 1
 }
 
-func parseStatusArgs(args []string, stderr io.Writer) (string, string, bool) {
+type parsedStatusArgs struct {
+	ProjectName string
+	Base        string
+	JSON        bool
+}
+
+func parseStatusArgs(args []string, stderr io.Writer) (parsedStatusArgs, bool) {
 	var base string
 	var projects []string
+	var jsonOutput bool
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--base":
-			if i+1 >= len(args) {
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
 				fmt.Fprint(stderr, "status --base requires a branch\n\n")
-				return "", "", false
+				return parsedStatusArgs{}, false
 			}
 			base = args[i+1]
 			i++
+		case "--json":
+			jsonOutput = true
 		default:
 			projects = append(projects, args[i])
 		}
 	}
 	if len(projects) > 1 {
 		fmt.Fprint(stderr, "status accepts at most one project\n\n")
-		return "", "", false
+		return parsedStatusArgs{}, false
 	}
 	if len(projects) == 1 {
-		return projects[0], base, true
+		return parsedStatusArgs{ProjectName: projects[0], Base: base, JSON: jsonOutput}, true
 	}
-	return "", base, true
+	return parsedStatusArgs{Base: base, JSON: jsonOutput}, true
 }
 
-func printStatusSummary(ctx context.Context, stdout, stderr io.Writer, projects []state.Project, base string) {
-	fmt.Fprintln(stdout, "readiness:")
+type statusPayload struct {
+	Project  string          `json:"project,omitempty"`
+	Projects []statusProject `json:"projects"`
+}
+
+type statusProject struct {
+	Alias       string                    `json:"alias"`
+	State       string                    `json:"state"`
+	Path        string                    `json:"path"`
+	PathPresent bool                      `json:"path_present"`
+	Remote      string                    `json:"remote"`
+	Base        string                    `json:"base"`
+	Diagnostics commandresult.Diagnostics `json:"diagnostics"`
+}
+
+func buildStatusSummaryResult(ctx context.Context, stderr io.Writer, projects []state.Project, base string) commandresult.Result[statusPayload] {
+	reports := make([]readiness.ProjectReport, 0, len(projects))
+	commandDiagnostics := commandresult.Diagnostics{}
 	if len(projects) == 0 {
-		fmt.Fprintln(stdout, "(empty)")
-		return
+		return newStatusResult("", reports, commandDiagnostics)
 	}
 	for _, project := range projects {
 		projectCtx, cancel := context.WithTimeout(ctx, statusReadinessTimeout)
@@ -752,30 +800,99 @@ func printStatusSummary(ctx context.Context, stdout, stderr io.Writer, projects 
 		cancel()
 		if err != nil {
 			fmt.Fprintf(stderr, "check project readiness: %v\n", err)
+			commandDiagnostics.Blockers = append(commandDiagnostics.Blockers, commandresult.Diagnostic{
+				Code:    "readiness-evaluation-failed",
+				Message: err.Error(),
+				Target:  project.Alias,
+			})
 			continue
 		}
-		fmt.Fprintf(stdout, "- %s state=%s path_present=%t warnings=%d blockers=%d path=%s\n", report.Project.Alias, report.State, report.LocalPathPresent, len(report.Warnings), len(report.Blockers), report.Project.LocalPath)
+		reports = append(reports, report)
 	}
+	return newStatusResult("", reports, commandDiagnostics)
 }
 
-func printProjectStatus(w io.Writer, report readiness.ProjectReport) {
-	fmt.Fprintf(w, "project: %s\n", report.Project.Alias)
-	fmt.Fprintf(w, "state: %s\n", report.State)
-	fmt.Fprintf(w, "path: %s\n", report.Project.LocalPath)
-	fmt.Fprintf(w, "path_present: %t\n", report.LocalPathPresent)
-	fmt.Fprintf(w, "remote: %s\n", report.Project.NormalizedRemote)
-	fmt.Fprintf(w, "base: %s\n", report.BaseBranch)
-	if len(report.Warnings) == 0 {
+func newStatusResult(projectName string, reports []readiness.ProjectReport, commandDiagnostics commandresult.Diagnostics) commandresult.Result[statusPayload] {
+	projects := make([]statusProject, 0, len(reports))
+	warnings := len(commandDiagnostics.Warnings)
+	blockers := len(commandDiagnostics.Blockers)
+	for _, report := range reports {
+		projectDiagnostics := statusDiagnostics(report)
+		warnings += len(projectDiagnostics.Warnings)
+		blockers += len(projectDiagnostics.Blockers)
+		projects = append(projects, statusProject{
+			Alias:       report.Project.Alias,
+			State:       string(report.State),
+			Path:        report.Project.LocalPath,
+			PathPresent: report.LocalPathPresent,
+			Remote:      report.Project.NormalizedRemote,
+			Base:        report.BaseBranch,
+			Diagnostics: projectDiagnostics,
+		})
+	}
+	return commandresult.New("status", commandresult.ReadinessExitClass(warnings, blockers), commandDiagnostics, statusPayload{
+		Project:  projectName,
+		Projects: projects,
+	})
+}
+
+func statusDiagnostics(report readiness.ProjectReport) commandresult.Diagnostics {
+	diagnostics := commandresult.Diagnostics{
+		Warnings: make([]commandresult.Diagnostic, 0, len(report.Warnings)),
+		Blockers: make([]commandresult.Diagnostic, 0, len(report.Blockers)),
+	}
+	for _, warning := range report.Warnings {
+		diagnostics.Warnings = append(diagnostics.Warnings, commandresult.Diagnostic{
+			Code:    warning.Code,
+			Message: warning.Message,
+		})
+	}
+	for _, blocker := range report.Blockers {
+		diagnostics.Blockers = append(diagnostics.Blockers, commandresult.Diagnostic{
+			Code:    blocker.Code,
+			Message: blocker.Message,
+		})
+	}
+	return diagnostics
+}
+
+func renderStatusPayloadHuman(w io.Writer, payload statusPayload) error {
+	if payload.Project == "" {
+		fmt.Fprintln(w, "readiness:")
+		if len(payload.Projects) == 0 {
+			fmt.Fprintln(w, "(empty)")
+			return nil
+		}
+		for _, project := range payload.Projects {
+			fmt.Fprintf(w, "- %s state=%s path_present=%t warnings=%d blockers=%d path=%s\n", project.Alias, project.State, project.PathPresent, len(project.Diagnostics.Warnings), len(project.Diagnostics.Blockers), project.Path)
+		}
+		return nil
+	}
+	if len(payload.Projects) == 0 {
+		return nil
+	}
+	printProjectStatus(w, payload.Projects[0])
+	return nil
+}
+
+func printProjectStatus(w io.Writer, project statusProject) {
+	fmt.Fprintf(w, "project: %s\n", project.Alias)
+	fmt.Fprintf(w, "state: %s\n", project.State)
+	fmt.Fprintf(w, "path: %s\n", project.Path)
+	fmt.Fprintf(w, "path_present: %t\n", project.PathPresent)
+	fmt.Fprintf(w, "remote: %s\n", project.Remote)
+	fmt.Fprintf(w, "base: %s\n", project.Base)
+	if len(project.Diagnostics.Warnings) == 0 {
 		fmt.Fprintln(w, "warnings: none")
 	} else {
-		for _, warning := range report.Warnings {
+		for _, warning := range project.Diagnostics.Warnings {
 			fmt.Fprintf(w, "warning: %s %s\n", warning.Code, warning.Message)
 		}
 	}
-	if len(report.Blockers) == 0 {
+	if len(project.Diagnostics.Blockers) == 0 {
 		fmt.Fprintln(w, "blockers: none")
 	} else {
-		for _, blocker := range report.Blockers {
+		for _, blocker := range project.Diagnostics.Blockers {
 			fmt.Fprintf(w, "blocker: %s %s\n", blocker.Code, blocker.Message)
 		}
 	}
@@ -840,7 +957,7 @@ Usage:
   codemesh add <path> [--alias name]
   codemesh scan [workspace-root]
   codemesh tree
-  codemesh status [project] [--base branch]
+  codemesh status [project] [--base branch] [--json]
   codemesh hydrate <project>
   codemesh machine register [workspace-root] [--json]
   codemesh agent prepare <project> [--base branch] [--profile name]
@@ -906,10 +1023,11 @@ func printStatusHelp(w io.Writer) {
 	fmt.Fprint(w, `Report project readiness.
 
 Usage:
-  codemesh status [project] [--base branch]
+  codemesh status [project] [--base branch] [--json]
 
 Project defaults to all known projects.
 Base defaults to main.
+Use --json for the stable command result shape.
 `)
 }
 

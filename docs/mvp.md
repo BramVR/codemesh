@@ -163,7 +163,7 @@ States:
 - stale
 - env-missing
 
-### `codemesh status [project] [--base branch]`
+### `codemesh status [project] [--base branch] [--json]`
 
 Shows readiness detail for one project or the whole index.
 
@@ -175,6 +175,7 @@ Checks:
 - dirty source checkout
 - base branch exists
 - optional `.codemesh.yml` env requirements
+- optional Command Result JSON output for automation
 
 ### `codemesh hydrate <project>`
 

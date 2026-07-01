@@ -340,6 +340,184 @@ func TestStatusReportsDirtyCheckoutWarning(t *testing.T) {
 	}
 }
 
+func TestStatusJSONReportsReadinessPayload(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	repo := createCommittedLocalRemoteClone(t, "clean-repo")
+	canonicalRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", repo}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"status", "clean-repo", "--base", "main", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("status --json exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Projects []struct {
+				Alias       string `json:"alias"`
+				State       string `json:"state"`
+				Path        string `json:"path"`
+				PathPresent bool   `json:"path_present"`
+				Remote      string `json:"remote"`
+				Base        string `json:"base"`
+				Diagnostics struct {
+					Warnings []struct {
+						Code    string `json:"code"`
+						Message string `json:"message"`
+					} `json:"warnings"`
+					Blockers []struct {
+						Code    string `json:"code"`
+						Message string `json:"message"`
+					} `json:"blockers"`
+				} `json:"diagnostics"`
+			} `json:"projects"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("status --json stdout was not JSON: %v\nstdout:\n%s", err, stdout.String())
+	}
+	if payload.Command != "status" || payload.ExitClass != "success" {
+		t.Fatalf("status --json command metadata = %#v", payload)
+	}
+	if len(payload.Payload.Projects) != 1 {
+		t.Fatalf("status --json project count = %d, want 1", len(payload.Payload.Projects))
+	}
+	project := payload.Payload.Projects[0]
+	if project.Alias != "clean-repo" || project.State != "present" || project.Path != canonicalRepo || !project.PathPresent || project.Base != "main" {
+		t.Fatalf("status --json project payload = %#v", project)
+	}
+	if project.Remote == "" {
+		t.Fatalf("status --json remote empty: %#v", project)
+	}
+	if len(project.Diagnostics.Warnings) != 0 || len(project.Diagnostics.Blockers) != 0 {
+		t.Fatalf("status --json diagnostics = %#v", project.Diagnostics)
+	}
+}
+
+func TestStatusJSONClassifiesReadinessWarnings(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	repo := createCommittedLocalRemoteClone(t, "dirty-source")
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("local change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", repo}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"status", "dirty-source", "--base", "main", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("status --json exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	var payload struct {
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Projects []struct {
+				State       string `json:"state"`
+				Diagnostics struct {
+					Warnings []struct {
+						Code string `json:"code"`
+					} `json:"warnings"`
+					Blockers []struct {
+						Code string `json:"code"`
+					} `json:"blockers"`
+				} `json:"diagnostics"`
+			} `json:"projects"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("status --json stdout was not JSON: %v\nstdout:\n%s", err, stdout.String())
+	}
+	if payload.ExitClass != "readiness-warning" {
+		t.Fatalf("exit_class = %q, want readiness-warning", payload.ExitClass)
+	}
+	if len(payload.Payload.Projects) != 1 || payload.Payload.Projects[0].State != "dirty" {
+		t.Fatalf("project payload = %#v", payload.Payload.Projects)
+	}
+	diagnostics := payload.Payload.Projects[0].Diagnostics
+	if len(diagnostics.Warnings) != 1 || diagnostics.Warnings[0].Code != "dirty-checkout" || len(diagnostics.Blockers) != 0 {
+		t.Fatalf("diagnostics = %#v", diagnostics)
+	}
+}
+
+func TestStatusJSONClassifiesReadinessBlockers(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	repo := createCommittedLocalRemoteClone(t, "missing-source")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", repo}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"status", "missing-source", "--base", "main", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("status --json exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	var payload struct {
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Projects []struct {
+				State       string `json:"state"`
+				PathPresent bool   `json:"path_present"`
+				Diagnostics struct {
+					Warnings []struct {
+						Code string `json:"code"`
+					} `json:"warnings"`
+					Blockers []struct {
+						Code string `json:"code"`
+					} `json:"blockers"`
+				} `json:"diagnostics"`
+			} `json:"projects"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("status --json stdout was not JSON: %v\nstdout:\n%s", err, stdout.String())
+	}
+	if payload.ExitClass != "readiness-blocked" {
+		t.Fatalf("exit_class = %q, want readiness-blocked", payload.ExitClass)
+	}
+	if len(payload.Payload.Projects) != 1 || payload.Payload.Projects[0].State != "missing" || payload.Payload.Projects[0].PathPresent {
+		t.Fatalf("project payload = %#v", payload.Payload.Projects)
+	}
+	diagnostics := payload.Payload.Projects[0].Diagnostics
+	if len(diagnostics.Warnings) != 0 || len(diagnostics.Blockers) != 1 || diagnostics.Blockers[0].Code != "missing-path" {
+		t.Fatalf("diagnostics = %#v", diagnostics)
+	}
+}
+
+func TestStatusBaseRequiresBranchBeforeJSONFlag(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	t.Setenv("CODEMESH_HOME", home)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"status", "--base", "--json"}, &stdout, &stderr)
+
+	if code != 2 {
+		t.Fatalf("status exit code = %d, want 2\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "status --base requires a branch") {
+		t.Fatalf("stderr did not explain missing base:\n%s", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "readiness:") {
+		t.Fatalf("stdout rendered status instead of usage failure:\n%s", stdout.String())
+	}
+}
+
 func TestStatusWithoutProjectSummarizesKnownProjects(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "codemesh-home")
 	clean := createCommittedLocalRemoteClone(t, "clean-repo")
