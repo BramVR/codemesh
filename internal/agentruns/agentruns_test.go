@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/agentcontract"
 	"github.com/BramVR/codemesh/internal/state"
 )
 
@@ -500,7 +501,13 @@ func TestWriteMetadataFileRefusesSymlink(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	err := writeMetadataFile(workspace, []byte("{}\n"))
+	_, err := agentcontract.Write(workspace, agentcontract.Contract{
+		RunID:     "run-one",
+		ReadyPath: workspace,
+		Project:   agentcontract.ProjectInfo{Alias: "codemesh"},
+		Base:      "main",
+		CreatedAt: time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC).Format(time.RFC3339),
+	})
 
 	if err == nil {
 		t.Fatal("writeMetadataFile error = nil, want symlink refusal")

@@ -46,6 +46,9 @@ func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
 	if metadata.Project.Remote != project.NormalizedRemote {
 		t.Fatalf("metadata remote = %q, want %q", metadata.Project.Remote, project.NormalizedRemote)
 	}
+	if metadata.ContractVersion != 1 || metadata.Producer.Name != "codemesh" || metadata.Producer.Version == "" {
+		t.Fatalf("metadata contract version/producer = version %d producer %#v", metadata.ContractVersion, metadata.Producer)
+	}
 	if metadata.Base != "main" || metadata.Profile != "codex" || metadata.ReadyPath != result.ReadyPath {
 		t.Fatalf("metadata base/profile/path = %#v", metadata)
 	}
@@ -60,6 +63,16 @@ func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
 	}
 	if store.runs[0].WorkspacePath != result.ReadyPath {
 		t.Fatalf("stored workspace path = %q, want %q", store.runs[0].WorkspacePath, result.ReadyPath)
+	}
+	metadataBytes, err := os.ReadFile(filepath.Join(result.ReadyPath, MetadataFileName))
+	if err != nil {
+		t.Fatalf("read metadata bytes: %v", err)
+	}
+	if string(metadataBytes) != store.runs[0].MetadataJSON {
+		t.Fatal("contract file bytes and state metadata bytes diverged")
+	}
+	if !strings.Contains(store.runs[0].MetadataJSON, `"contract_version": 1`) || !strings.Contains(store.runs[0].MetadataJSON, `"producer": {`) {
+		t.Fatalf("stored metadata missing contract version/producer:\n%s", store.runs[0].MetadataJSON)
 	}
 }
 

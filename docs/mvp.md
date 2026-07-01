@@ -1,7 +1,7 @@
 ---
 summary: "MVP product direction, current modules, command surface, policy, state, phases, and non-goals."
 read_when:
-  - Changing product scope, MVP modules, command direction, Agent Prep, Project Registry, Readiness, Env Readiness, policy, state, or non-goals.
+  - Changing product scope, MVP modules, command direction, Agent Prep, Agent Run Contract, Project Registry, Readiness, Env Readiness, policy, state, or non-goals.
 ---
 
 # MVP Spec
@@ -108,6 +108,26 @@ Responsibilities:
 Used by:
 
 - `agent prepare`
+
+### Agent Run Contract
+
+Owns versioned agent run metadata.
+
+Responsibilities:
+
+- contract version and producer metadata
+- project and checkout provenance
+- readiness diagnostics and handoff docs
+- command execution records
+- redaction, validation, JSON encoding/decoding, and file writes
+- State Store metadata shape and run-list projections
+
+Used by:
+
+- `agent prepare`
+- `agent run`
+- `runs`
+- `clean`
 
 ## Commands
 

@@ -42,7 +42,7 @@ When warnings exist, stdout prints one `warning: <code> <message>` line per warn
 
 `handoff_docs` is a count only. The selected doc paths and their source metadata live in `<ready_path>/codemesh-run.json`.
 
-`codemesh-run.json` also records the run id, project identity, registered remote, selected base, resolved commit, readiness decision, and diagnostics. Handoff docs are recorded as paths and source metadata only; their file contents are not embedded.
+`codemesh-run.json` is an Agent Run Contract. It records the contract version, producer/version metadata, run id, project identity, registered remote, selected base, resolved commit, readiness decision, and diagnostics. Handoff docs are recorded as paths and source metadata only; their file contents are not embedded.
 
 ## Handoff Docs
 

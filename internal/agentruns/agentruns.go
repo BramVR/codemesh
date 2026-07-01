@@ -3,16 +3,15 @@ package agentruns
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/agentcontract"
 	"github.com/BramVR/codemesh/internal/state"
 )
 
@@ -43,6 +42,10 @@ type Run struct {
 	WorkspacePath string
 }
 
+type CommandRecord = agentcontract.CommandRecord
+type EnvSummary = agentcontract.EnvSummary
+type BaseProvenance = agentcontract.BaseProvenance
+
 type ExecuteRequest struct {
 	RunID   string
 	Label   string
@@ -51,54 +54,9 @@ type ExecuteRequest struct {
 	Timeout time.Duration
 }
 
-type CommandRecord struct {
-	Label      string         `json:"label"`
-	CWD        string         `json:"cwd"`
-	Env        EnvSummary     `json:"env"`
-	Base       BaseProvenance `json:"base_provenance"`
-	ExitCode   int            `json:"exit_code"`
-	Duration   string         `json:"duration"`
-	StdoutPath string         `json:"stdout_path"`
-	StderrPath string         `json:"stderr_path"`
-	ExecutedAt string         `json:"executed_at"`
-}
-
-type EnvSummary struct {
-	Mode   string   `json:"mode"`
-	Keys   []string `json:"keys,omitempty"`
-	Values string   `json:"values"`
-}
-
-type BaseProvenance struct {
-	Base           string `json:"base"`
-	ResolvedCommit string `json:"resolved_commit"`
-	Remote         string `json:"remote"`
-}
-
 type CleanResult struct {
 	Deleted int
 	Kept    int
-}
-
-type runMetadata struct {
-	RunID     string `json:"run_id,omitempty"`
-	ReadyPath string `json:"ready_path,omitempty"`
-	Project   struct {
-		Alias      string `json:"alias"`
-		Remote     string `json:"remote,omitempty"`
-		CloneURL   string `json:"clone_url,omitempty"`
-		SourcePath string `json:"source_path,omitempty"`
-		LocalPath  string `json:"local_path,omitempty"`
-		ProjectID  int64  `json:"project_id,omitempty"`
-	} `json:"project"`
-	Base              string          `json:"base"`
-	Profile           string          `json:"profile"`
-	ResolvedCommit    string          `json:"resolved_commit,omitempty"`
-	ReadinessDecision string          `json:"readiness_decision,omitempty"`
-	HandoffDocs       json.RawMessage `json:"handoff_docs,omitempty"`
-	Diagnostics       json.RawMessage `json:"diagnostics,omitempty"`
-	CreatedAt         string          `json:"created_at"`
-	Commands          []CommandRecord `json:"commands,omitempty"`
 }
 
 func (m Manager) List(ctx context.Context) ([]Run, error) {
@@ -248,8 +206,8 @@ func (m Manager) Execute(ctx context.Context, req ExecuteRequest) (CommandRecord
 	if err := m.ensureManagedRunStorage(lockedRunDir, row.WorkspacePath); err != nil {
 		return CommandRecord{}, err
 	}
-	var metadata runMetadata
-	if err := json.Unmarshal([]byte(row.MetadataJSON), &metadata); err != nil {
+	metadata, err := agentcontract.Decode([]byte(row.MetadataJSON))
+	if err != nil {
 		return CommandRecord{}, fmt.Errorf("decode agent run %q metadata: %w", row.ID, err)
 	}
 	outputDir := filepath.Join(runDir, "outputs")
@@ -334,7 +292,7 @@ func (m Manager) Execute(ctx context.Context, req ExecuteRequest) (CommandRecord
 	record := CommandRecord{
 		Label: label,
 		CWD:   row.WorkspacePath,
-		Env:   summarizeEnv(req.Env),
+		Env:   agentcontract.EnvSummaryFromBindings(req.Env),
 		Base: BaseProvenance{
 			Base:           metadata.Base,
 			ResolvedCommit: metadata.ResolvedCommit,
@@ -347,15 +305,11 @@ func (m Manager) Execute(ctx context.Context, req ExecuteRequest) (CommandRecord
 		ExecutedAt: m.now().UTC().Format(time.RFC3339),
 	}
 	metadata.Commands = append(metadata.Commands, record)
-	metadataJSON, err := json.MarshalIndent(metadata, "", "  ")
-	if err != nil {
-		return CommandRecord{}, fmt.Errorf("encode agent run metadata: %w", err)
-	}
-	metadataJSON = append(metadataJSON, '\n')
 	if err := m.ensureManagedRunStorage(lockedRunDir, row.WorkspacePath); err != nil {
 		return CommandRecord{}, err
 	}
-	if err := writeMetadataFile(row.WorkspacePath, metadataJSON); err != nil {
+	metadataJSON, err := agentcontract.Write(row.WorkspacePath, metadata)
+	if err != nil {
 		return CommandRecord{}, fmt.Errorf("write agent run metadata: %w", err)
 	}
 	persistCtx, persistCancel := context.WithTimeout(context.Background(), metadataPersistTimeout)
@@ -555,47 +509,6 @@ func openLockFile(lockPath string) (*os.File, error) {
 	return file, nil
 }
 
-func writeMetadataFile(workspace string, data []byte) error {
-	metadataPath := filepath.Join(workspace, "codemesh-run.json")
-	if info, err := os.Lstat(metadataPath); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to replace symlinked metadata file: %s", metadataPath)
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("refusing to replace non-regular metadata file: %s", metadataPath)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("check metadata file: %w", err)
-	}
-	tmp, err := os.CreateTemp(workspace, ".codemesh-run-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
-		}
-	}()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, metadataPath); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
-}
-
 func safeOutputLabel(label string) string {
 	var builder strings.Builder
 	lastDash := false
@@ -638,29 +551,6 @@ func randomHex(size int) string {
 	return string(out)
 }
 
-func summarizeEnv(bindings []string) EnvSummary {
-	keys := make([]string, 0, len(bindings))
-	for _, binding := range bindings {
-		key := strings.TrimSpace(binding)
-		if idx := strings.Index(key, "="); idx >= 0 {
-			key = key[:idx]
-		}
-		if key != "" {
-			keys = append(keys, key)
-		}
-	}
-	sort.Strings(keys)
-	mode := "process-inherited"
-	if len(keys) != 0 {
-		mode = "process-inherited+bindings"
-	}
-	return EnvSummary{
-		Mode:   mode,
-		Keys:   keys,
-		Values: "not-recorded",
-	}
-}
-
 func validateRunID(id string) error {
 	if strings.TrimSpace(id) == "" || id == "." || id == ".." || filepath.Base(id) != id {
 		return fmt.Errorf("invalid agent run id %q", id)
@@ -689,34 +579,23 @@ func removeManagedRunDir(runDir string) error {
 }
 
 func runFromState(row state.AgentRun) (Run, error) {
-	var metadata runMetadata
-	if err := json.Unmarshal([]byte(row.MetadataJSON), &metadata); err != nil {
+	metadata, err := agentcontract.Decode([]byte(row.MetadataJSON))
+	if err != nil {
 		return Run{}, fmt.Errorf("decode agent run %q metadata: %w", row.ID, err)
 	}
-	created := row.CreatedAt
-	if created.IsZero() && metadata.CreatedAt != "" {
-		parsed, err := time.Parse(time.RFC3339, metadata.CreatedAt)
-		if err != nil {
-			return Run{}, fmt.Errorf("parse agent run %q metadata created_at: %w", row.ID, err)
-		}
-		created = parsed
+	projection, err := metadata.ListProjection(row.CreatedAt, row.WorkspacePath)
+	if err != nil {
+		return Run{}, fmt.Errorf("project agent run %q metadata: %w", row.ID, err)
 	}
 	return Run{
 		ID:            row.ID,
-		ProjectAlias:  metadata.Project.Alias,
-		Base:          metadata.Base,
-		Profile:       metadata.Profile,
-		State:         runState(metadata),
-		CreatedAt:     created,
-		WorkspacePath: row.WorkspacePath,
+		ProjectAlias:  projection.ProjectAlias,
+		Base:          projection.Base,
+		Profile:       projection.Profile,
+		State:         projection.State,
+		CreatedAt:     projection.CreatedAt,
+		WorkspacePath: projection.WorkspacePath,
 	}, nil
-}
-
-func runState(metadata runMetadata) string {
-	if len(metadata.Commands) != 0 {
-		return "executed"
-	}
-	return "prepared"
 }
 
 func (m Manager) now() time.Time {

@@ -130,9 +130,14 @@ Agent Prep resolves the project by alias, chooses the requested base or repo pol
 
 The clone checks out the requested `--base` when provided. Otherwise it checks out the repo-local policy base, falling back to `main`. CodeMesh uses Git for clone and checkout; it does not copy uncommitted source files, create Git worktrees, or replace Git state.
 
-`codemesh-run.json` records metadata only:
+`codemesh-run.json` is the Agent Run Contract. The current contract is `contract_version: 1` and includes producer metadata with the CodeMesh producer name and binary version.
+
+The Agent Run Contract module owns JSON encoding/decoding, validation, clone URL redaction, safe file writing, the State Store metadata shape, and `codemesh runs` list projections.
+
+The contract records metadata only:
 
 - run id and ready path
+- contract version and producer/version
 - project alias, normalized remote, redacted clone URL, and source path
 - effective base and profile
 - resolved commit and readiness decision
@@ -140,13 +145,13 @@ The clone checks out the requested `--base` when provided. Otherwise it checks o
 - warnings and blockers from readiness
 - created timestamp
 
-The `agent_runs` SQLite row stores the same metadata JSON for local audit and future cleanup/listing. Secret values are never included; env readiness records only missing file/key names and warn/block diagnostics, handoff docs record paths only and not file contents, and clone URLs in metadata omit userinfo, query strings, and fragments.
+The `agent_runs` SQLite row stores the same contract JSON for local audit and future cleanup/listing. Secret values are never included; env readiness records only missing file/key names and warn/block diagnostics, handoff docs record paths only and not file contents, and clone URLs in metadata omit userinfo, query strings, and fragments.
 
 Unmatched policy handoff doc patterns are warnings, not blockers. They indicate stale or overly broad project policy without preventing a fresh agent workspace.
 
 Default handoff docs are resolved from the prepared clone after checkout: `AGENTS.md`, `CONTEXT.md`, `README.md`, and Markdown files directly under `docs/adr/`. Policy-selected docs are additive and also resolve from the prepared clone, so source-only uncommitted docs are not recorded unless they exist on the selected base.
 
-`codemesh runs` reads `agent_runs` and lists prepared runs from local metadata. The user-facing row includes project alias, base, profile, created time, and workspace path so temporary workspaces are auditable without inspecting SQLite.
+`codemesh runs` reads `agent_runs` and lists prepared runs through the Agent Run Contract list projection. The user-facing row includes project alias, base, profile, created time, and workspace path so temporary workspaces are auditable without inspecting SQLite.
 
 `codemesh agent run <run-id> --label label -- <command...>` is the execution step after preparation. It runs the supplied command with cwd set to the prepared workspace, captures stdout and stderr under the CodeMesh-managed run directory, and appends a command record to `codemesh-run.json` plus the matching `agent_runs` SQLite metadata row.
 

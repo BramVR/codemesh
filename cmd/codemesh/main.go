@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/agentcontract"
 	"github.com/BramVR/codemesh/internal/agentprep"
 	"github.com/BramVR/codemesh/internal/agentruns"
 	"github.com/BramVR/codemesh/internal/config"
@@ -453,6 +454,7 @@ func runAgentPrepare(args []string, stdout, stderr io.Writer) int {
 	result, err := agentprep.Preparer{
 		Store:     store,
 		AgentsDir: paths.AgentsDir,
+		Producer:  agentcontract.DefaultProducer(version),
 	}.Prepare(ctx, agentprep.Request{
 		Project: project,
 		Base:    base,

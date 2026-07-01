@@ -17,7 +17,7 @@ codemesh agent run <run-id> --label label [--timeout duration] -- <command...>
 
 ## Purpose
 
-Run one explicitly supplied local command inside a prepared agent workspace. CodeMesh uses the recorded run workspace as cwd, captures stdout and stderr under the managed run directory, and appends command metadata to `codemesh-run.json` and local state.
+Run one explicitly supplied local command inside a prepared agent workspace. CodeMesh uses the recorded run workspace as cwd, captures stdout and stderr under the managed run directory, and appends command metadata through the Agent Run Contract to `codemesh-run.json` and local state.
 
 The command record includes the command label, cwd, env binding summary, base provenance, exit code, duration, and output file paths. Env values and command output are not embedded in metadata.
 
