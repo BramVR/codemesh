@@ -563,6 +563,73 @@ func TestRunsListsPreparedAgentRuns(t *testing.T) {
 	}
 }
 
+func TestAgentRunExecutesCommandAndUpdatesRunLifecycle(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "agent-executed")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"agent", "prepare", "agent-executed", "--base", "main", "--profile", "codex"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("agent prepare exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	readyPath := valueAfterPrefix(t, stdout.String(), "ready_path: ")
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"runs"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("runs exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "state=prepared") {
+		t.Fatalf("runs before execution missing prepared state:\n%s", stdout.String())
+	}
+	runID := firstRunID(t, stdout.String())
+
+	stdout.Reset()
+	stderr.Reset()
+	code := run([]string{"agent", "run", runID, "--label", "workspace root", "--", "git", "rev-parse", "--show-toplevel"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent run exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"agent command complete", "run: " + runID, "label: workspace root", "exit_code: 0", "stdout_path: ", "stderr_path: "} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("agent run output missing %q:\n%s", want, output)
+		}
+	}
+	stdoutPath := valueAfterPrefix(t, output, "stdout_path: ")
+	stdoutBytes, err := os.ReadFile(stdoutPath)
+	if err != nil {
+		t.Fatalf("read command stdout: %v", err)
+	}
+	canonicalReadyPath, err := filepath.EvalSymlinks(readyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(stdoutBytes)) != canonicalReadyPath {
+		t.Fatalf("command stdout = %q, want %q", stdoutBytes, canonicalReadyPath)
+	}
+
+	metadataBytes, err := os.ReadFile(filepath.Join(readyPath, "codemesh-run.json"))
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	if !strings.Contains(string(metadataBytes), `"label": "workspace root"`) || !strings.Contains(string(metadataBytes), `"values": "not-recorded"`) || !strings.Contains(string(metadataBytes), `"exit_code": 0`) {
+		t.Fatalf("metadata missing command contract:\n%s", metadataBytes)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"runs"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("runs after execution exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "state=executed") {
+		t.Fatalf("runs after execution missing executed state:\n%s", stdout.String())
+	}
+}
+
 func TestCleanDeletesOnlyOldManagedAgentRuns(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "codemesh-home")
 	agents := filepath.Join(home, "agents")
@@ -698,6 +765,21 @@ func valueAfterPrefix(t *testing.T, output, prefix string) string {
 		}
 	}
 	t.Fatalf("prefix %q missing in output:\n%s", prefix, output)
+	return ""
+}
+
+func firstRunID(t *testing.T, output string) string {
+	t.Helper()
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- ") {
+			fields := strings.Fields(strings.TrimPrefix(line, "- "))
+			if len(fields) != 0 {
+				return fields[0]
+			}
+		}
+	}
+	t.Fatalf("run id missing in output:\n%s", output)
 	return ""
 }
 

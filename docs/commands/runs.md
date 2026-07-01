@@ -17,7 +17,9 @@ codemesh runs
 
 ## Purpose
 
-List agent run metadata stored in the local CodeMesh home, including run ID, project alias, base, profile, creation time, and workspace path.
+List agent run metadata stored in the local CodeMesh home, including run ID, project alias, base, profile, lifecycle state, creation time, and workspace path.
+
+Runs start as `state=prepared` after `codemesh agent prepare`. After `codemesh agent run` records at least one command, the listing reports `state=executed`. After `codemesh clean` removes the managed run, the row disappears from the listing.
 
 ## Safe Example
 
@@ -44,7 +46,7 @@ codemesh runs
 
 ## Current Limitations
 
-- Lists local run metadata only.
+- Lists local run metadata and derived lifecycle state only.
 - Does not inspect agent process state or remote machine state.
 - Does not prune runs; use [`codemesh clean`](clean.md) for cleanup.
 

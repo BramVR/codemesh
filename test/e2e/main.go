@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -485,7 +486,50 @@ func (h *harness) caseLiveGitHubRemoteSmoke(cfg liveConfig) {
 		return
 	}
 	h.record(runs)
-	if !h.expectLiveCommandOutput(runs, "project=live-github", "base="+defaultBranch, "profile=codex", "workspace="+readyPath) {
+	if !h.expectLiveCommandOutput(runs, "project=live-github", "base="+defaultBranch, "profile=codex", "state=prepared", "workspace="+readyPath) {
+		return
+	}
+	runID := firstRunID(runs.Stdout)
+	if runID == "" {
+		h.record(result{Name: "live github run id", Status: "FAIL", Error: "runs output did not include a run id", ExitCode: -1})
+		return
+	}
+
+	agentRun := h.executeCommand(commandSpec{
+		Label:   "live github agent run harmless command",
+		Name:    h.bin,
+		Args:    []string{"agent", "run", runID, "--label", "workspace root", "--", "git", "rev-parse", "--show-toplevel"},
+		Timeout: defaultCommandTimeout,
+	})
+	h.recordLiveGitHubDuration("codemesh_agent_run", agentRun)
+	if agentRun.Status != "PASS" {
+		h.record(agentRun)
+		return
+	}
+	h.record(agentRun)
+	if !h.expectLiveCommandOutput(agentRun, "agent command complete", "run: "+runID, "label: workspace root", "exit_code: 0", "stdout_path: ", "stderr_path: ") {
+		return
+	}
+	if !h.expectCommandStdoutEqualsCanonicalPath("live github agent command stdout", valueAfterPrefix(agentRun.Stdout, "stdout_path: "), readyPath) {
+		return
+	}
+	if !h.expectAgentRunCommandContract("live github agent command metadata", h.codemeshHome, readyPath, "workspace root") {
+		return
+	}
+
+	runsExecuted := h.executeCommand(commandSpec{
+		Label:   "live github runs reads executed agent run",
+		Name:    h.bin,
+		Args:    []string{"runs"},
+		Timeout: defaultCommandTimeout,
+	})
+	h.recordLiveGitHubDuration("codemesh_runs_executed", runsExecuted)
+	if runsExecuted.Status != "PASS" {
+		h.record(runsExecuted)
+		return
+	}
+	h.record(runsExecuted)
+	if !h.expectLiveCommandOutput(runsExecuted, "project=live-github", "state=executed", "workspace="+readyPath) {
 		return
 	}
 
@@ -1552,7 +1596,28 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 	}
 
 	runs := s.command("agent runs list prepared fixture", "runs")
-	if runs.Status != "PASS" || !s.expectOutput(runs, "project=clean-repo", "base=main", "profile=codex", "workspace="+readyPath) {
+	if runs.Status != "PASS" || !s.expectOutput(runs, "project=clean-repo", "base=main", "profile=codex", "state=prepared", "workspace="+readyPath) {
+		return
+	}
+	runID := firstRunID(runs.Stdout)
+	if runID == "" {
+		s.h.record(result{Name: "agent runs prepared id", Status: "FAIL", Error: "runs output did not include a run id", ExitCode: -1})
+		return
+	}
+
+	agentRun := s.command("agent run harmless command", "agent", "run", runID, "--label", "workspace root", "--", "git", "rev-parse", "--show-toplevel")
+	if agentRun.Status != "PASS" || !s.expectOutput(agentRun, "agent command complete", "run: "+runID, "label: workspace root", "exit_code: 0", "stdout_path: ", "stderr_path: ") {
+		return
+	}
+	if !s.expectCommandStdoutEqualsCanonicalPath("agent run stdout path", valueAfterPrefix(agentRun.Stdout, "stdout_path: "), readyPath) {
+		return
+	}
+	if !s.expectAgentRunCommandContract("agent run command metadata", readyPath, "workspace root") {
+		return
+	}
+
+	runsExecuted := s.command("agent runs list executed fixture", "runs")
+	if runsExecuted.Status != "PASS" || !s.expectOutput(runsExecuted, "project=clean-repo", "state=executed", "workspace="+readyPath) {
 		return
 	}
 
@@ -2078,6 +2143,19 @@ func valueAfterPrefix(output, prefix string) string {
 	return ""
 }
 
+func firstRunID(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- ") {
+			fields := strings.Fields(strings.TrimPrefix(line, "- "))
+			if len(fields) != 0 {
+				return fields[0]
+			}
+		}
+	}
+	return ""
+}
+
 func (h *harness) createOfflineGitFixtures() (offlineGitFixtures, error) {
 	fixtures := offlineGitFixtures{
 		Root:    filepath.Join(h.tmp, "git-fixtures"),
@@ -2543,6 +2621,100 @@ func (s *scenario) expectAgentRunMetadata(name, readyPath, projectAlias, base, p
 	return true
 }
 
+func (s *scenario) expectCommandStdoutEqualsCanonicalPath(name, stdoutPath, wantPath string) bool {
+	return s.h.expectCommandStdoutEqualsCanonicalPath(name, stdoutPath, wantPath)
+}
+
+func (h *harness) expectCommandStdoutEqualsCanonicalPath(name, stdoutPath, wantPath string) bool {
+	data, err := os.ReadFile(stdoutPath)
+	if err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	canonical, err := filepath.EvalSymlinks(wantPath)
+	if err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if strings.TrimSpace(string(data)) != canonical {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("stdout = %q, want %q", strings.TrimSpace(string(data)), canonical), ExitCode: -1})
+		return false
+	}
+	return true
+}
+
+func (s *scenario) expectAgentRunCommandContract(name, readyPath, label string) bool {
+	return s.h.expectAgentRunCommandContract(name, s.codemeshHome, readyPath, label)
+}
+
+func (h *harness) expectAgentRunCommandContract(name, codemeshHome, readyPath, label string) bool {
+	fileMetadata, err := readAgentMetadata(filepath.Join(readyPath, "codemesh-run.json"))
+	if err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	dbMetadata, err := readAgentRunMetadataFromStore(filepath.Join(codemeshHome, "codemesh.db"), fileMetadata.RunID)
+	if err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if containsAnySecret(fileMetadata.Raw, fakeEnvFixtureSecrets()) || containsAnySecret(dbMetadata.Raw, fakeEnvFixtureSecrets()) {
+		h.record(result{Name: name, Status: "FAIL", Error: "fake env secret marker appeared in command metadata", ExitCode: -1})
+		return false
+	}
+	fileCommand, err := expectedAgentCommand(fileMetadata, readyPath, label)
+	if err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: "file metadata: " + err.Error(), ExitCode: -1})
+		return false
+	}
+	dbCommand, err := expectedAgentCommand(dbMetadata, readyPath, label)
+	if err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: "state metadata: " + err.Error(), ExitCode: -1})
+		return false
+	}
+	if !reflect.DeepEqual(fileCommand, dbCommand) {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("file/state command metadata differ: file=%#v db=%#v", fileCommand, dbCommand), ExitCode: -1})
+		return false
+	}
+	runDir := filepath.Dir(readyPath)
+	for _, outputPath := range []string{fileCommand.StdoutPath, fileCommand.StderrPath} {
+		inside, err := pathInside(runDir, outputPath)
+		if err != nil || !inside {
+			h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("command output path outside managed run dir: %s (%v)", outputPath, err), ExitCode: -1})
+			return false
+		}
+		if _, err := os.Stat(outputPath); err != nil {
+			h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+			return false
+		}
+	}
+	h.record(result{Name: name, Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func expectedAgentCommand(metadata agentMetadata, readyPath, label string) (agentCommand, error) {
+	if len(metadata.Commands) != 1 {
+		return agentCommand{}, fmt.Errorf("command count = %d, want 1", len(metadata.Commands))
+	}
+	command := metadata.Commands[0]
+	if command.Label != label {
+		return agentCommand{}, fmt.Errorf("label = %q, want %q", command.Label, label)
+	}
+	if command.CWD != readyPath {
+		return agentCommand{}, fmt.Errorf("cwd = %q, want %q", command.CWD, readyPath)
+	}
+	if command.Env.Mode == "" || command.Env.Values != "not-recorded" || len(command.Env.Keys) != 0 {
+		return agentCommand{}, fmt.Errorf("env summary = %#v", command.Env)
+	}
+	if command.Base.Base != metadata.Base || command.Base.ResolvedCommit != metadata.ResolvedCommit || command.Base.Remote != metadata.Project.Remote {
+		return agentCommand{}, fmt.Errorf("base provenance = %#v, want base=%s commit=%s remote=%s", command.Base, metadata.Base, metadata.ResolvedCommit, metadata.Project.Remote)
+	}
+	if command.ExitCode != 0 || command.Duration == "" || command.StdoutPath == "" || command.StderrPath == "" || command.ExecutedAt == "" {
+		return agentCommand{}, fmt.Errorf("incomplete command record = %#v", command)
+	}
+	return command, nil
+}
+
 func (s *scenario) expectAgentRunHandoffDocs(name, readyPath string, want []agentHandoffDoc) bool {
 	fileMetadata, err := readAgentMetadata(filepath.Join(readyPath, "codemesh-run.json"))
 	if err != nil {
@@ -2709,6 +2881,7 @@ type agentMetadata struct {
 	ReadinessDecision string            `json:"readiness_decision"`
 	HandoffDocs       []agentHandoffDoc `json:"handoff_docs"`
 	Diagnostics       agentDiagnostics  `json:"diagnostics"`
+	Commands          []agentCommand    `json:"commands"`
 }
 
 type agentHandoffDoc struct {
@@ -2724,6 +2897,30 @@ type agentDiagnostics struct {
 
 type agentDiagnostic struct {
 	Code string `json:"code"`
+}
+
+type agentCommand struct {
+	Label      string           `json:"label"`
+	CWD        string           `json:"cwd"`
+	Env        agentCommandEnv  `json:"env"`
+	Base       agentCommandBase `json:"base_provenance"`
+	ExitCode   int              `json:"exit_code"`
+	Duration   string           `json:"duration"`
+	StdoutPath string           `json:"stdout_path"`
+	StderrPath string           `json:"stderr_path"`
+	ExecutedAt string           `json:"executed_at"`
+}
+
+type agentCommandEnv struct {
+	Mode   string   `json:"mode"`
+	Keys   []string `json:"keys"`
+	Values string   `json:"values"`
+}
+
+type agentCommandBase struct {
+	Base           string `json:"base"`
+	ResolvedCommit string `json:"resolved_commit"`
+	Remote         string `json:"remote"`
 }
 
 type projectRow struct {
