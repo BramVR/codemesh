@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,12 +19,13 @@ import (
 )
 
 const (
-	defaultCommandTimeout = 30 * time.Second
-	longCommandTimeout    = 2 * time.Minute
-	defaultLiveLockStale  = 4 * time.Hour
-	modeSource            = "source"
-	modePackaged          = "packaged"
-	modeLive              = "live"
+	defaultCommandTimeout   = 30 * time.Second
+	longCommandTimeout      = 2 * time.Minute
+	defaultLiveLockStale    = 4 * time.Hour
+	modeSource              = "source"
+	modePackaged            = "packaged"
+	modeLive                = "live"
+	defaultLiveGitHubRemote = "https://github.com/BramVR/codemesh.git"
 )
 
 var errLiveLockHeld = errors.New("live e2e lock already held")
@@ -65,12 +67,20 @@ type reportIsolation struct {
 }
 
 type reportLive struct {
-	OptIn       bool     `json:"opt_in"`
-	Strict      bool     `json:"strict"`
-	Targets     []string `json:"targets"`
-	SkipReasons []string `json:"skip_reasons,omitempty"`
-	LockPath    string   `json:"lock_path,omitempty"`
-	LockLabel   string   `json:"lock_label,omitempty"`
+	OptIn       bool              `json:"opt_in"`
+	Strict      bool              `json:"strict"`
+	Targets     []string          `json:"targets"`
+	SkipReasons []string          `json:"skip_reasons,omitempty"`
+	LockPath    string            `json:"lock_path,omitempty"`
+	LockLabel   string            `json:"lock_label,omitempty"`
+	GitHub      *reportLiveGitHub `json:"github,omitempty"`
+}
+
+type reportLiveGitHub struct {
+	RemoteURL        string            `json:"remote_url"`
+	DefaultBranch    string            `json:"default_branch,omitempty"`
+	CommandDurations map[string]string `json:"command_durations,omitempty"`
+	SecretSafety     string            `json:"secret_safety,omitempty"`
 }
 
 type reportSummary struct {
@@ -159,7 +169,8 @@ type scenario struct {
 }
 
 func main() {
-	root, err := repoRoot()
+	mode := e2eMode()
+	root, err := repoRootForMode(mode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL harness setup: %v\n", err)
 		os.Exit(1)
@@ -183,7 +194,7 @@ func main() {
 		home:         filepath.Join(tmp, "home"),
 		workspace:    filepath.Join(tmp, "workspace"),
 		runDir:       filepath.Join(tmp, "run"),
-		mode:         e2eMode(),
+		mode:         mode,
 		startedAt:    time.Now().UTC(),
 		reportPath:   reportPath(root),
 		output:       os.Stdout,
@@ -311,17 +322,378 @@ func (h *harness) runLive() int {
 	h.live.LockPath = lock.path
 	h.live.LockLabel = "codemesh e2e live"
 
-	reason := "no live targets configured"
-	h.live.SkipReasons = append(h.live.SkipReasons, reason)
-	if cfg.Strict {
-		h.record(result{Name: "live e2e prerequisites", Status: "FAIL", Error: reason, ExitCode: -1})
-	} else {
-		h.skip("live e2e prerequisites", reason)
+	if !h.prepareBinary() {
+		if err := lock.release(); err != nil {
+			h.record(result{Name: "live e2e lock release", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		}
+		return h.finishLive()
+	}
+	h.caseLiveGitHubRemoteSmoke(cfg)
+	if h.live.GitHub != nil && h.live.GitHub.SecretSafety == "" {
+		h.live.GitHub.SecretSafety = "pending"
 	}
 	if err := lock.release(); err != nil {
 		h.record(result{Name: "live e2e lock release", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 	}
 	return h.finishLive()
+}
+
+func (h *harness) prepareBinary() bool {
+	if !h.externalBin {
+		return h.buildBinary()
+	}
+	if err := ensureExecutable(h.bin); err != nil {
+		h.record(result{Name: "packaged binary setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	return true
+}
+
+func (h *harness) caseLiveGitHubRemoteSmoke(cfg liveConfig) {
+	remote := liveGitHubRemoteFromEnv(os.LookupEnv)
+	h.live.GitHub = &reportLiveGitHub{
+		RemoteURL:        liveGitHubReportRemote(remote),
+		CommandDurations: make(map[string]string),
+		SecretSafety:     "pending",
+	}
+	if err := validateLiveGitHubRemote(remote); err != nil {
+		h.live.GitHub.SecretSafety = "not_run"
+		h.record(result{Name: "live github remote config", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		h.recordLiveGitHubSkipOrFail(cfg, "live github git prerequisite", "git executable not found", "", -1)
+		return
+	}
+
+	lsRemote := h.executeCommand(commandSpec{
+		Label:   "live github default branch",
+		Dir:     h.runDir,
+		Name:    "git",
+		Args:    []string{"ls-remote", "--symref", remote, "HEAD"},
+		Timeout: longCommandTimeout,
+	})
+	h.recordLiveGitHubDuration("ls_remote", lsRemote)
+	if lsRemote.Status != "PASS" {
+		if h.recordLiveGitHubCommandSkipOrFail(cfg, lsRemote, remote) {
+			return
+		}
+		h.record(lsRemote)
+		return
+	}
+	defaultBranch, err := parseRemoteDefaultBranch(lsRemote.Stdout)
+	if err != nil {
+		h.recordLiveGitHubSkipOrFail(cfg, lsRemote.Name, err.Error(), lsRemote.Duration, lsRemote.ExitCode)
+		return
+	}
+	h.live.GitHub.DefaultBranch = defaultBranch
+	h.record(lsRemote)
+
+	seedPath := filepath.Join(h.workspace, "live-github-seed")
+	cloneSeed := h.executeCommand(commandSpec{
+		Label:   "live github seed clone",
+		Dir:     h.runDir,
+		Name:    "git",
+		Args:    []string{"clone", "--depth", "1", "--branch", defaultBranch, "--single-branch", remote, seedPath},
+		Timeout: longCommandTimeout,
+	})
+	h.recordLiveGitHubDuration("seed_clone", cloneSeed)
+	if cloneSeed.Status != "PASS" {
+		if h.recordLiveGitHubCommandSkipOrFail(cfg, cloneSeed, remote) {
+			return
+		}
+		h.record(cloneSeed)
+		return
+	}
+	h.record(cloneSeed)
+	realSeedPath, err := filepath.EvalSymlinks(seedPath)
+	if err != nil {
+		h.record(result{Name: "live github seed canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	seedPath = realSeedPath
+
+	initResult := h.runCommand(commandSpec{
+		Label:   "live github init isolated workspace",
+		Name:    h.bin,
+		Args:    []string{"init", h.workspace},
+		Timeout: defaultCommandTimeout,
+	})
+	h.recordLiveGitHubDuration("codemesh_init", initResult)
+	if initResult.Status != "PASS" {
+		return
+	}
+
+	addResult := h.runCommand(commandSpec{
+		Label:   "live github add seed checkout",
+		Name:    h.bin,
+		Args:    []string{"add", seedPath, "--alias", "live-github"},
+		Timeout: defaultCommandTimeout,
+	})
+	h.recordLiveGitHubDuration("codemesh_add", addResult)
+	if addResult.Status != "PASS" {
+		return
+	}
+	if err := os.RemoveAll(seedPath); err != nil {
+		h.record(result{Name: "live github remove seed checkout", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+
+	statusMissing := h.runCommand(commandSpec{
+		Label:   "live github status missing project",
+		Name:    h.bin,
+		Args:    []string{"status", "live-github", "--base", defaultBranch},
+		Timeout: longCommandTimeout,
+	})
+	h.recordLiveGitHubDuration("codemesh_status_missing", statusMissing)
+	if statusMissing.Status != "PASS" || !h.expectLiveCommandOutput(statusMissing, "state: missing", "base: "+defaultBranch, "blocker: missing-path") {
+		return
+	}
+
+	hydrate := h.executeCommand(commandSpec{
+		Label:   "live github hydrate missing project",
+		Name:    h.bin,
+		Args:    []string{"hydrate", "live-github"},
+		Timeout: longCommandTimeout,
+	})
+	h.recordLiveGitHubDuration("codemesh_hydrate", hydrate)
+	if hydrate.Status != "PASS" {
+		if h.recordLiveGitHubCommandSkipOrFail(cfg, hydrate, remote) {
+			return
+		}
+		h.record(hydrate)
+		return
+	}
+	h.record(hydrate)
+	if !h.expectLiveCommandOutput(hydrate, "hydrated project: live-github") {
+		return
+	}
+	if !h.expectGitCheckoutAtBase("live github hydrated checkout branch", seedPath, defaultBranch) {
+		return
+	}
+	if !h.expectGitOrigin("live github hydrated checkout origin", seedPath, remote) {
+		return
+	}
+
+	statusHydrated := h.executeCommand(commandSpec{
+		Label:   "live github status hydrated project",
+		Name:    h.bin,
+		Args:    []string{"status", "live-github", "--base", defaultBranch},
+		Timeout: longCommandTimeout,
+	})
+	h.recordLiveGitHubDuration("codemesh_status_hydrated", statusHydrated)
+	if statusHydrated.Status != "PASS" {
+		if h.recordLiveGitHubCommandSkipOrFail(cfg, statusHydrated, remote) {
+			return
+		}
+		h.record(statusHydrated)
+		return
+	}
+	if !liveHydratedStatusLooksUsable(statusHydrated.Stdout, defaultBranch) {
+		if h.recordLiveGitHubCommandSkipOrFail(cfg, statusHydrated, remote) {
+			return
+		}
+		h.record(statusHydrated)
+		h.record(result{Name: statusHydrated.Name + " assertion", Status: "FAIL", Error: "hydrated status did not report usable checkout path and base", ExitCode: -1})
+		return
+	}
+	h.record(statusHydrated)
+	if !h.expectLiveCommandOutput(statusHydrated, "path_present: true", "base: "+defaultBranch) {
+		return
+	}
+	if !h.expectLiveGitHubState(remote, seedPath) {
+		return
+	}
+	if !h.expectLiveHostPathIsolation() {
+		return
+	}
+	h.live.GitHub.SecretSafety = "pass"
+}
+
+func (h *harness) recordLiveGitHubDuration(name string, r result) {
+	if h.live == nil || h.live.GitHub == nil || r.Duration == "" {
+		return
+	}
+	h.live.GitHub.CommandDurations[name] = r.Duration
+}
+
+func (h *harness) recordLiveGitHubSkipOrFail(cfg liveConfig, name, reason, duration string, exitCode int) {
+	if h.live != nil {
+		h.live.SkipReasons = append(h.live.SkipReasons, reason)
+	}
+	status := "SKIP"
+	if cfg.Strict {
+		status = "FAIL"
+	}
+	if h.live != nil && h.live.GitHub != nil && h.live.GitHub.SecretSafety == "pending" {
+		if status == "SKIP" {
+			h.live.GitHub.SecretSafety = "skipped"
+		} else {
+			h.live.GitHub.SecretSafety = "not_run"
+		}
+	}
+	if duration == "" {
+		duration = formatDuration(0)
+	}
+	h.record(result{Name: name, Status: status, Error: reason, Duration: duration, ExitCode: exitCode})
+}
+
+func (h *harness) recordLiveGitHubCommandSkipOrFail(cfg liveConfig, r result, remote string) bool {
+	reason := liveGitHubCommandFailureReason(r, remote)
+	if !r.TimedOut && !isSkippableLiveGitHubSmokeError(errors.New(reason)) {
+		return false
+	}
+	h.recordLiveGitHubSkipOrFail(cfg, r.Name, reason, r.Duration, r.ExitCode)
+	return true
+}
+
+func liveGitHubCommandFailureReason(r result, remote string) string {
+	detail := strings.TrimSpace(strings.Join([]string{r.Error, r.Stdout, r.Stderr}, "\n"))
+	if detail == "" {
+		detail = fmt.Sprintf("command exited %d", r.ExitCode)
+	}
+	return "live GitHub remote unavailable: " + redactLiveGitHubDetail(detail, remote)
+}
+
+func redactLiveGitHubDetail(detail, remote string) string {
+	redacted := redactedLiveGitHubRemote(remote)
+	detail = strings.ReplaceAll(detail, remote, redacted)
+	if strings.HasSuffix(remote, "/") {
+		return detail
+	}
+	return strings.ReplaceAll(detail, remote+"/", redacted+"/")
+}
+
+func redactedLiveGitHubRemote(remote string) string {
+	parsed, err := url.Parse(remote)
+	if err != nil || parsed.Scheme == "" {
+		return remote
+	}
+	if parsed.User != nil {
+		parsed.User = url.User("redacted")
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+func liveGitHubReportRemote(remote string) string {
+	if validateLiveGitHubRemote(remote) != nil {
+		return "invalid CODEMESH_LIVE_GITHUB_REPO"
+	}
+	return redactedLiveGitHubRemote(remote)
+}
+
+func (h *harness) expectLiveCommandOutput(r result, fragments ...string) bool {
+	if r.Status != "PASS" {
+		return false
+	}
+	if resultContainsAll(r, fragments...) {
+		return true
+	}
+	for _, fragment := range fragments {
+		if !strings.Contains(r.Stdout, fragment) {
+			h.record(result{Name: r.Name + " assertion", Status: "FAIL", Error: fmt.Sprintf("stdout did not include %q", fragment), ExitCode: -1})
+			return false
+		}
+	}
+	return true
+}
+
+func liveHydratedStatusLooksUsable(output, base string) bool {
+	if !strings.Contains(output, "path_present: true") || !strings.Contains(output, "base: "+base) {
+		return false
+	}
+	if !strings.Contains(output, "blockers: none") {
+		return false
+	}
+	return strings.Contains(output, "state: present") || strings.Contains(output, "state: stale")
+}
+
+func resultContainsAll(r result, fragments ...string) bool {
+	for _, fragment := range fragments {
+		if !strings.Contains(r.Stdout, fragment) {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *harness) expectGitCheckoutAtBase(name, path, base string) bool {
+	inside, _, err := h.exec(path, "git", "rev-parse", "--is-inside-work-tree")
+	if err != nil || strings.TrimSpace(inside) != "true" {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("path is not a Git checkout: %v", err), ExitCode: -1})
+		return false
+	}
+	branch, _, err := h.exec(path, "git", "branch", "--show-current")
+	if err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if strings.TrimSpace(branch) != base {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("checkout branch = %q, want %q", strings.TrimSpace(branch), base), ExitCode: -1})
+		return false
+	}
+	return true
+}
+
+func (h *harness) expectGitOrigin(name, path, remote string) bool {
+	origin, _, err := h.exec(path, "git", "remote", "get-url", "origin")
+	if err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if strings.TrimSpace(origin) != remote {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("origin = %q, want %q", strings.TrimSpace(origin), remote), ExitCode: -1})
+		return false
+	}
+	return true
+}
+
+func (h *harness) expectLiveGitHubState(remote, localPath string) bool {
+	rows, err := readProjectRowsFromStore(filepath.Join(h.codemeshHome, "codemesh.db"))
+	if err != nil {
+		h.record(result{Name: "live github state read", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if len(rows) != 1 {
+		h.record(result{Name: "live github state row count", Status: "FAIL", Error: fmt.Sprintf("project row count = %d, want 1", len(rows)), ExitCode: -1})
+		return false
+	}
+	row := rows[0]
+	if row.Alias != "live-github" || row.CloneURL != remote || row.LocalPath != localPath {
+		h.record(result{Name: "live github state row", Status: "FAIL", Error: fmt.Sprintf("project row = %#v, want alias live-github clone %s path %s", row, remote, localPath), ExitCode: -1})
+		return false
+	}
+	if inside, err := pathInside(h.workspace, row.LocalPath); err != nil || !inside {
+		h.record(result{Name: "live github state path isolation", Status: "FAIL", Error: fmt.Sprintf("local path outside live workspace: %s (%v)", row.LocalPath, err), ExitCode: -1})
+		return false
+	}
+	h.record(result{Name: "live github state row", Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func (h *harness) expectLiveHostPathIsolation() bool {
+	forbidden := h.forbiddenHostPathMarkers()
+	for _, r := range h.results {
+		if containsAnyFragment(r.Stdout, forbidden) || containsAnyFragment(r.Stderr, forbidden) || containsAnyFragment(r.Error, forbidden) {
+			h.record(result{Name: "live github command output path isolation", Status: "FAIL", Error: "host workspace or normal CodeMesh home path appeared in command output", ExitCode: -1})
+			return false
+		}
+	}
+	for _, path := range h.stateStorePaths() {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			h.record(result{Name: "live github state path isolation", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+			return false
+		}
+		if containsAnyFragment(string(data), forbidden) {
+			h.record(result{Name: "live github state path isolation", Status: "FAIL", Error: "host workspace or normal CodeMesh home path appeared in state store", ExitCode: -1})
+			return false
+		}
+	}
+	h.record(result{Name: "live github command/state path isolation", Status: "PASS", ExitCode: 0})
+	return true
 }
 
 func (h *harness) finishLive() int {
@@ -721,6 +1093,10 @@ func (h *harness) caseSecretSafetyReportAndStateStore() bool {
 		h.record(result{Name: "secret safety JSON report", Status: "FAIL", Error: "fake env secret marker appeared in e2e JSON report", ExitCode: -1})
 		return false
 	}
+	if h.mode == modeLive && liveReportContainsForbiddenPaths(reportData, h.forbiddenHostPathMarkers()) {
+		h.record(result{Name: "live github report path isolation", Status: "FAIL", Error: "host workspace or normal CodeMesh home path appeared in live report outputs or isolation metadata", ExitCode: -1})
+		return false
+	}
 	for _, path := range h.stateStorePaths() {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -753,6 +1129,44 @@ func (h *harness) stateStorePaths() []string {
 func containsAnySecret(value string, secrets []string) bool {
 	for _, secret := range secrets {
 		if secret != "" && strings.Contains(value, secret) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyFragment(value string, fragments []string) bool {
+	for _, fragment := range fragments {
+		if fragment != "" && strings.Contains(value, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func liveReportContainsForbiddenPaths(data []byte, forbidden []string) bool {
+	var r report
+	if err := json.Unmarshal(data, &r); err != nil {
+		return containsAnyFragment(string(data), forbidden)
+	}
+	values := []string{
+		r.Isolation.CodeMeshHome,
+		r.Isolation.Home,
+		r.Isolation.Workspace,
+		r.Isolation.RunDir,
+		r.Isolation.GitConfig,
+	}
+	for _, result := range r.Results {
+		values = append(values, result.Stdout, result.Stderr, result.Error)
+	}
+	if r.Live != nil {
+		values = append(values, r.Live.SkipReasons...)
+		if r.Live.GitHub != nil {
+			values = append(values, r.Live.GitHub.RemoteURL, r.Live.GitHub.DefaultBranch, r.Live.GitHub.SecretSafety)
+		}
+	}
+	for _, value := range values {
+		if containsAnyFragment(value, forbidden) {
 			return true
 		}
 	}
@@ -2389,6 +2803,21 @@ func repoRoot() (string, error) {
 	return root, nil
 }
 
+func repoRootForMode(mode string) (string, error) {
+	root, err := repoRoot()
+	if err == nil {
+		return root, nil
+	}
+	if mode != modeLive {
+		return "", err
+	}
+	wd, wdErr := os.Getwd()
+	if wdErr != nil {
+		return "", err
+	}
+	return wd, nil
+}
+
 func treeStateForAlias(output, alias string) (string, bool) {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
@@ -2510,13 +2939,80 @@ func liveConfigFromEnv(lookup func(string) (string, bool)) liveConfig {
 	targetValue, _ := lookup("CODEMESH_E2E_LIVE_TARGETS")
 	targets := splitLiveTargets(targetValue)
 	if len(targets) == 0 {
-		targets = []string{"live guardrails"}
+		targets = []string{"github remote smoke"}
 	}
 	return liveConfig{
 		OptIn:   optInSet && truthyEnv(optInValue),
 		Strict:  strictSet && truthyEnv(strictValue),
 		Targets: targets,
 	}
+}
+
+func liveGitHubRemoteFromEnv(lookup func(string) (string, bool)) string {
+	if value, ok := lookup("CODEMESH_LIVE_GITHUB_REPO"); ok {
+		if remote := strings.TrimSpace(value); remote != "" {
+			return remote
+		}
+	}
+	return defaultLiveGitHubRemote
+}
+
+func validateLiveGitHubRemote(remote string) error {
+	parsed, err := url.Parse(strings.TrimSpace(remote))
+	if err != nil || parsed.Scheme != "https" || strings.ToLower(parsed.Hostname()) != "github.com" || strings.Trim(parsed.Path, "/") == "" {
+		return errors.New("CODEMESH_LIVE_GITHUB_REPO must be an HTTPS GitHub remote such as https://github.com/OWNER/REPO.git")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("CODEMESH_LIVE_GITHUB_REPO must not include credentials, query strings, or fragments")
+	}
+	return nil
+}
+
+func parseRemoteDefaultBranch(output string) (string, error) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "ref: refs/heads/") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "ref:" || fields[2] != "HEAD" {
+			continue
+		}
+		branch := strings.TrimPrefix(fields[1], "refs/heads/")
+		if branch != "" {
+			return branch, nil
+		}
+	}
+	return "", errors.New("remote default branch was not discoverable from HEAD symref")
+}
+
+func isSkippableLiveGitHubSmokeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	detail := strings.ToLower(err.Error())
+	skippableFragments := []string{
+		"executable file not found",
+		"could not resolve host",
+		"failed to connect",
+		"connection refused",
+		"connection reset",
+		"connection timed out",
+		"operation timed out",
+		"timeout after",
+		"network is unreachable",
+		"temporary failure",
+		"tls handshake timeout",
+		"early eof",
+		"remote end hung up",
+		"proxyconnect tcp",
+		"fetch-failed",
+		"rate limit",
+		"too many requests",
+		"returned error: 429",
+		"returned error: 403",
+	}
+	return containsAnyFragment(detail, skippableFragments)
 }
 
 func truthyEnv(value string) bool {
@@ -2801,6 +3297,29 @@ func isolatedEnv(codemeshHome, workspace, home string) []string {
 		"GOSUMDB=off",
 	)
 	return env
+}
+
+func (h *harness) forbiddenHostPathMarkers() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return nil
+	}
+	candidates := []string{
+		filepath.Join(home, ".codemesh"),
+		filepath.Join(home, "Projects"),
+		filepath.Join(home, "Code"),
+	}
+	var markers []string
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if inside, err := pathInside(h.tmp, candidate); err == nil && inside {
+			continue
+		}
+		markers = append(markers, candidate)
+	}
+	return markers
 }
 
 func envHasKey(env []string, key string) bool {

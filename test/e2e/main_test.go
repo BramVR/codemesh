@@ -171,7 +171,7 @@ func TestLiveOptInParsing(t *testing.T) {
 	if cfg.OptIn || cfg.Strict {
 		t.Fatalf("default live config = %#v, want no opt-in and non-strict", cfg)
 	}
-	if len(cfg.Targets) != 1 || cfg.Targets[0] != "live guardrails" {
+	if len(cfg.Targets) != 1 || cfg.Targets[0] != "github remote smoke" {
 		t.Fatalf("default targets = %#v", cfg.Targets)
 	}
 
@@ -190,6 +190,130 @@ func TestLiveOptInParsing(t *testing.T) {
 	cfg = liveConfigFromEnv(mapLookup(map[string]string{"CODEMESH_E2E_LIVE": "0"}))
 	if cfg.OptIn {
 		t.Fatalf("CODEMESH_E2E_LIVE=0 enabled live config")
+	}
+}
+
+func TestLiveGitHubRemoteDefaultsAndOverride(t *testing.T) {
+	if got := liveGitHubRemoteFromEnv(mapLookup(nil)); got != defaultLiveGitHubRemote {
+		t.Fatalf("default GitHub remote = %q, want %q", got, defaultLiveGitHubRemote)
+	}
+	if got := liveGitHubRemoteFromEnv(mapLookup(map[string]string{"CODEMESH_LIVE_GITHUB_REPO": " https://github.com/BramVR/other.git "})); got != "https://github.com/BramVR/other.git" {
+		t.Fatalf("override GitHub remote = %q", got)
+	}
+}
+
+func TestParseRemoteDefaultBranchFromSymref(t *testing.T) {
+	output := "ref: refs/heads/trunk\tHEAD\n0123456789abcdef\tHEAD\n"
+	got, err := parseRemoteDefaultBranch(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "trunk" {
+		t.Fatalf("default branch = %q, want trunk", got)
+	}
+	if _, err := parseRemoteDefaultBranch("0123456789abcdef\tHEAD\n"); err == nil {
+		t.Fatalf("parseRemoteDefaultBranch accepted missing symref")
+	}
+}
+
+func TestLiveGitHubRemoteRedaction(t *testing.T) {
+	raw := "https://redactme@github.com/BramVR/codemesh.git?x=y#frag"
+	got := redactedLiveGitHubRemote(raw)
+	if got != "https://redacted@github.com/BramVR/codemesh.git" {
+		t.Fatalf("redacted remote = %q", got)
+	}
+	reason := liveGitHubCommandFailureReason(result{Error: "failed " + raw}, raw)
+	if strings.Contains(reason, "redactme") || strings.Contains(reason, "x=y") || strings.Contains(reason, "#frag") {
+		t.Fatalf("failure reason leaked credential-bearing remote: %s", reason)
+	}
+	if got := liveGitHubReportRemote("credential-bearing invalid remote"); got != "invalid CODEMESH_LIVE_GITHUB_REPO" {
+		t.Fatalf("invalid report remote = %q", got)
+	}
+	if got := liveGitHubReportRemote(defaultLiveGitHubRemote); got != defaultLiveGitHubRemote {
+		t.Fatalf("valid report remote = %q", got)
+	}
+}
+
+func TestSkippableLiveGitHubSmokeErrors(t *testing.T) {
+	for _, message := range []string{
+		"exec: \"git\": executable file not found in $PATH",
+		"fatal: unable to access 'https://github.com/BramVR/codemesh.git/': Could not resolve host: github.com",
+		"fatal: unable to access 'https://github.com/BramVR/codemesh.git/': The requested URL returned error: 429",
+		"remote: rate limit exceeded",
+		"blocker: fetch-failed git fetch failed: connection timed out",
+	} {
+		if !isSkippableLiveGitHubSmokeError(errors.New(message)) {
+			t.Fatalf("error was not skippable: %s", message)
+		}
+	}
+}
+
+func TestLiveGitHubCommandFailureSkipClassification(t *testing.T) {
+	h := testHarness(t)
+	h.live = &reportLive{GitHub: &reportLiveGitHub{SecretSafety: "pending"}}
+	nonTransient := result{Name: "live github default branch", Status: "FAIL", Error: "remote: Repository not found.", ExitCode: 128}
+	if h.recordLiveGitHubCommandSkipOrFail(liveConfig{}, nonTransient, defaultLiveGitHubRemote) {
+		t.Fatalf("non-transient repository failure was converted to skip")
+	}
+	if len(h.results) != 0 {
+		t.Fatalf("unexpected result recorded for non-transient failure: %#v", h.results)
+	}
+
+	transient := result{Name: "live github default branch", Status: "FAIL", Stderr: "fatal: unable to access: Could not resolve host: github.com", ExitCode: 128, Duration: "1ms"}
+	if !h.recordLiveGitHubCommandSkipOrFail(liveConfig{}, transient, defaultLiveGitHubRemote) {
+		t.Fatalf("transient network failure was not converted to skip")
+	}
+	if len(h.results) != 1 || h.results[0].Status != "SKIP" || h.live.GitHub.SecretSafety != "skipped" {
+		t.Fatalf("transient result = %#v secret safety=%q", h.results, h.live.GitHub.SecretSafety)
+	}
+
+	h.results = nil
+	h.live.GitHub.SecretSafety = "pending"
+	timeout := result{Name: "live github seed clone", Status: "FAIL", Error: "timeout after 2m0s", TimedOut: true, ExitCode: -1, Duration: "2m0s"}
+	if !h.recordLiveGitHubCommandSkipOrFail(liveConfig{}, timeout, defaultLiveGitHubRemote) {
+		t.Fatalf("timed-out network command was not converted to skip")
+	}
+	if len(h.results) != 1 || h.results[0].Status != "SKIP" {
+		t.Fatalf("timeout result = %#v", h.results)
+	}
+}
+
+func TestLiveReportPathIsolationIgnoresIntentionalBinaryAndLockMetadata(t *testing.T) {
+	forbidden := []string{filepath.Join("home", "Projects")}
+	r := report{
+		Binary: reportBinary{Path: filepath.Join("home", "Projects", "codemesh", "dist", "codemesh")},
+		Live:   &reportLive{LockPath: filepath.Join("home", "Projects", "locks", "host.lock")},
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if liveReportContainsForbiddenPaths(data, forbidden) {
+		t.Fatalf("binary or lock metadata was treated as live state leakage")
+	}
+
+	r.Results = []result{{Name: "leak", Stdout: filepath.Join("home", "Projects", "codemesh")}}
+	data, err = json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !liveReportContainsForbiddenPaths(data, forbidden) {
+		t.Fatalf("result output path leakage was not detected")
+	}
+}
+
+func TestLiveHydratedStatusAllowsStaleDefaultBranch(t *testing.T) {
+	stale := "project: live-github\nstate: stale\npath_present: true\nbase: trunk\nwarning: stale-checkout local base branch advanced\nblockers: none\n"
+	if !liveHydratedStatusLooksUsable(stale, "trunk") {
+		t.Fatalf("stale hydrated status should be usable")
+	}
+	fetchFailed := "project: live-github\nstate: stale\npath_present: true\nbase: trunk\nblocker: fetch-failed git fetch failed: connection timed out\n"
+	if liveHydratedStatusLooksUsable(fetchFailed, "trunk") {
+		t.Fatalf("fetch-failed hydrated status should not be usable")
+	}
+	missing := "project: live-github\nstate: missing\npath_present: false\nbase: trunk\n"
+	if liveHydratedStatusLooksUsable(missing, "trunk") {
+		t.Fatalf("missing hydrated status should not be usable")
 	}
 }
 
@@ -239,10 +363,12 @@ func TestLiveStrictMissingPrerequisitesFails(t *testing.T) {
 	t.Setenv("CODEMESH_E2E_LIVE", "1")
 	t.Setenv("CODEMESH_E2E_LIVE_STRICT", "1")
 	t.Setenv("CODEMESH_E2E_LIVE_LOCK_DIR", filepath.Join(t.TempDir(), "locks"))
+	t.Setenv("PATH", "")
 
 	h := testHarness(t)
 	h.mode = modeLive
-	h.bin = filepath.Join(h.tmp, "bin", "codemesh")
+	h.bin = os.Args[0]
+	h.externalBin = true
 	h.reportPath = filepath.Join(h.tmp, "reports", "live.json")
 	if err := h.setupIsolation(); err != nil {
 		t.Fatal(err)
@@ -250,8 +376,8 @@ func TestLiveStrictMissingPrerequisitesFails(t *testing.T) {
 	if code := h.runLive(); code == 0 {
 		t.Fatalf("runLive exit = 0, want strict prerequisite failure")
 	}
-	if len(h.results) == 0 || h.results[0].Status != "FAIL" {
-		t.Fatalf("results = %#v, want first live result failure", h.results)
+	if len(h.results) == 0 || h.results[0].Name != "live github git prerequisite" || h.results[0].Status != "FAIL" {
+		t.Fatalf("results = %#v, want strict missing-git failure", h.results)
 	}
 }
 
@@ -420,6 +546,24 @@ func TestDefaultCommandDirUsesRepoRoot(t *testing.T) {
 
 	if got := h.defaultCommandDir(); got != h.root {
 		t.Fatalf("default command dir = %s, want repo root %s", got, h.root)
+	}
+}
+
+func TestLiveRepoRootFallsBackToWorkingDirectoryWhenGitIsMissing(t *testing.T) {
+	t.Setenv("PATH", "")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := repoRootForMode(modeLive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != wd {
+		t.Fatalf("live root = %s, want working directory %s", root, wd)
+	}
+	if _, err := repoRootForMode(modeSource); err == nil {
+		t.Fatalf("source mode accepted missing git")
 	}
 }
 

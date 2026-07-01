@@ -38,13 +38,27 @@ Opt in only when the live prerequisites are free and available:
 CODEMESH_E2E_LIVE=1 make e2e-live
 ```
 
+Opted-in live mode runs a read-only GitHub remote smoke through the real `codemesh` CLI. By default it targets the current public repository:
+
+```sh
+https://github.com/BramVR/codemesh.git
+```
+
+Override the public HTTPS GitHub remote with:
+
+```sh
+CODEMESH_E2E_LIVE=1 CODEMESH_LIVE_GITHUB_REPO=https://github.com/OWNER/REPO.git make e2e-live
+```
+
+The GitHub smoke discovers the remote `HEAD` default branch with `git ls-remote --symref`, clones a temporary seed checkout, registers it with `codemesh add`, removes the checkout so the project is missing, runs `codemesh status`, runs `codemesh hydrate`, and verifies the hydrated checkout origin and branch. All CodeMesh state, `HOME`, Git config, workspace paths, and command cwd remain under the harness temp root.
+
 Strict mode turns missing live prerequisites into failures:
 
 ```sh
 CODEMESH_E2E_LIVE=1 CODEMESH_E2E_LIVE_STRICT=1 make e2e-live
 ```
 
-`CODEMESH_E2E_LIVE_TARGETS` may name comma-separated live target labels for report audit trails. Until real live targets exist, opted-in live mode records `no live targets configured` as `SKIP`, or as `FAIL` in strict mode. Live checks must continue to skip unless free, safe prerequisites are present.
+`CODEMESH_E2E_LIVE_TARGETS` may name comma-separated live target labels for report audit trails. Network unavailable, GitHub rate limiting, or a missing `git` executable records `SKIP` by default and exits 0; strict mode records the same condition as `FAIL`. Live checks must continue to skip unless free, safe prerequisites are present.
 
 Override the report path:
 
@@ -62,7 +76,7 @@ The report includes:
 - `mode`: `source` for the normal source-built runner, `packaged` for `make e2e-packaged`, or `live` for `make e2e-live`.
 - `binary`: executable path plus whether it was an external packaged binary.
 - `isolation`: isolated `CODEMESH_HOME`, `HOME`, workspace, run directory, and Git config path.
-- `live`: live opt-in status, strict mode, target labels, skip reasons, and the host-scoped lock path/label when a lock was acquired.
+- `live`: live opt-in status, strict mode, target labels, skip reasons, GitHub remote URL, discovered default branch, command durations, per-smoke secret-safety result, and the host-scoped lock path/label when a lock was acquired.
 - `summary`: `pass`, `fail`, `skip`, and `total` counts derived from recorded case results.
 - `secret_safety`: whether report redaction is active and how many known fake fixture values were redacted.
 - `results`: per-case status, duration, exit code, and captured output for failing or diagnostic cases.
@@ -79,7 +93,7 @@ Each run creates a temp workspace with:
 - an empty temp Git config.
 - local Git fixtures for future Project Registry, Readiness, Hydration, and Agent Prep cases.
 
-The harness does not use GitHub, secrets, GUI automation, AppleScript, the user's normal CodeMesh home, or personal workspace projects.
+Offline and packaged modes do not use GitHub, secrets, GUI automation, AppleScript, the user's normal CodeMesh home, or personal workspace projects. Live mode may use the configured public GitHub remote after explicit opt-in, but still keeps local state and workspace paths isolated under the harness temp root.
 
 Live mode uses the same isolation roots before it evaluates opt-in state. If future live checks run commands, their default cwd is the isolated run directory under the harness temp root, not the repository checkout.
 
@@ -126,7 +140,7 @@ A scenario owns:
 
 Use `s.command(...)` for commands that should exit successfully. Use `s.expectedFailure(...)` when a non-zero CLI exit is the expected user-visible behavior, then convert the result to `PASS` only after checking stderr/stdout. Use `s.expectOutput` and `s.expectNoOutput` for stdout assertions, and `s.expectPathExists` / `s.expectPathMissing` for durable filesystem effects.
 
-Keep new cases vertical: arrange fixtures, run one real CLI command, assert user-visible output, then assert the durable filesystem or state effect. Avoid reading secrets, using host project paths, calling GitHub, or weakening the isolated `CODEMESH_HOME`, `HOME`, `GIT_CONFIG_GLOBAL`, local remotes, and temp workspace boundaries.
+Keep new offline cases vertical: arrange fixtures, run one real CLI command, assert user-visible output, then assert the durable filesystem or state effect. Avoid reading secrets, using host project paths, calling GitHub, or weakening the isolated `CODEMESH_HOME`, `HOME`, `GIT_CONFIG_GLOBAL`, local remotes, and temp workspace boundaries.
 
 Offline Git fixtures cover:
 
@@ -215,5 +229,5 @@ From `steipete/oracle`:
 ## Intentionally Not Run Live
 
 - Poll/wait helpers: no async CodeMesh behavior exists yet.
-- Live/network checks: no live target exists yet; `make e2e-live` records an audited skip unless explicitly opted in and free prerequisites are available.
+- Provider, GUI, and multi-machine checks: no live target exists yet, so those future checks must record audited skips unless explicitly opted in and free prerequisites are available.
 - Screenshot proof: not applicable to the current CLI-only harness.
