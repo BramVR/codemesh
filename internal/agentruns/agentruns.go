@@ -253,10 +253,7 @@ func (m Manager) Execute(ctx context.Context, req ExecuteRequest) (CommandRecord
 		return CommandRecord{}, fmt.Errorf("decode agent run %q metadata: %w", row.ID, err)
 	}
 	outputDir := filepath.Join(runDir, "outputs")
-	if err := os.MkdirAll(outputDir, 0o700); err != nil {
-		return CommandRecord{}, fmt.Errorf("create command output directory: %w", err)
-	}
-	if err := ensureManagedOutputDir(runDir, outputDir); err != nil {
+	if err := ensureOrCreateManagedOutputDir(runDir, outputDir); err != nil {
 		return CommandRecord{}, err
 	}
 	ordinal := len(metadata.Commands) + 1
@@ -465,6 +462,18 @@ func pathInside(parent, child string) (bool, error) {
 		return false, err
 	}
 	return rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."), nil
+}
+
+func ensureOrCreateManagedOutputDir(runDir, outputDir string) error {
+	if _, err := os.Lstat(outputDir); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("check command output directory %q: %w", outputDir, err)
+		}
+		if err := os.Mkdir(outputDir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("create command output directory: %w", err)
+		}
+	}
+	return ensureManagedOutputDir(runDir, outputDir)
 }
 
 func ensureManagedOutputDir(runDir, outputDir string) error {

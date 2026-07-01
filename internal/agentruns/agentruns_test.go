@@ -418,6 +418,39 @@ func TestExecuteRefusesSymlinkedOutputDirectory(t *testing.T) {
 	}
 }
 
+func TestExecuteRefusesDanglingSymlinkedOutputDirectoryBeforeCreate(t *testing.T) {
+	root := t.TempDir()
+	agents := filepath.Join(root, "agents")
+	runDir := managedRun(t, agents, "run-one")
+	workspace := filepath.Join(runDir, "workspace")
+	outside := filepath.Join(root, "outside-output", "created-by-mkdir")
+	if err := os.Symlink(outside, filepath.Join(runDir, "outputs")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	store := &memoryStore{runs: []state.AgentRun{{
+		ID:            "run-one",
+		WorkspacePath: workspace,
+		MetadataJSON:  `{"run_id":"run-one","ready_path":"` + filepath.ToSlash(workspace) + `","project":{"alias":"codemesh"},"base":"main","created_at":"2026-06-23T12:00:00Z"}`,
+		CreatedAt:     time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC),
+	}}}
+
+	_, err := Manager{Store: store, AgentsDir: agents}.Execute(context.Background(), ExecuteRequest{
+		RunID:   "run-one",
+		Label:   "dangling output",
+		Command: []string{"git", "status"},
+	})
+
+	if err == nil {
+		t.Fatal("Execute error = nil, want output symlink refusal")
+	}
+	if !strings.Contains(err.Error(), "symlinked directory") {
+		t.Fatalf("error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(outside)); !os.IsNotExist(err) {
+		t.Fatalf("outside output parent exists or stat failed: %v", err)
+	}
+}
+
 func TestExecuteMapsTimeoutToExitCode124(t *testing.T) {
 	root := t.TempDir()
 	agents := filepath.Join(root, "agents")
