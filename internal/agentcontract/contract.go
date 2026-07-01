@@ -32,6 +32,7 @@ type Input struct {
 	Base              string
 	Profile           string
 	ResolvedCommit    string
+	BaseProvenance    BaseProvenance
 	ReadinessDecision string
 	HandoffDocs       []HandoffDoc
 	Diagnostics       Diagnostics
@@ -56,6 +57,7 @@ type Contract struct {
 	Base              string          `json:"base"`
 	Profile           string          `json:"profile"`
 	ResolvedCommit    string          `json:"resolved_commit"`
+	BaseProvenance    BaseProvenance  `json:"base_provenance"`
 	ReadinessDecision string          `json:"readiness_decision"`
 	HandoffDocs       []HandoffDoc    `json:"handoff_docs"`
 	Diagnostics       Diagnostics     `json:"diagnostics"`
@@ -110,6 +112,10 @@ type BaseProvenance struct {
 	Base           string `json:"base"`
 	ResolvedCommit string `json:"resolved_commit"`
 	Remote         string `json:"remote"`
+	FetchedBase    string `json:"fetched_base"`
+	FetchedCommit  string `json:"fetched_commit"`
+	PreparedHEAD   string `json:"prepared_head"`
+	MatchesFetched bool   `json:"matches_fetched"`
 }
 
 type ListProjection struct {
@@ -130,6 +136,10 @@ func DefaultProducer(version string) Producer {
 }
 
 func New(input Input) Contract {
+	base := strings.TrimSpace(input.Base)
+	resolvedCommit := strings.TrimSpace(input.ResolvedCommit)
+	remote := input.Project.Remote
+	baseProvenance := normalizeBaseProvenance(input.BaseProvenance, base, resolvedCommit, remote)
 	return Contract{
 		ContractVersion: normalizeVersion(ContractVersion),
 		Producer:        normalizeProducer(input.Producer),
@@ -143,9 +153,10 @@ func New(input Input) Contract {
 			LocalPath:  input.Project.LocalPath,
 			ProjectID:  input.Project.ProjectID,
 		},
-		Base:              strings.TrimSpace(input.Base),
+		Base:              base,
 		Profile:           strings.TrimSpace(input.Profile),
-		ResolvedCommit:    strings.TrimSpace(input.ResolvedCommit),
+		ResolvedCommit:    resolvedCommit,
+		BaseProvenance:    baseProvenance,
 		ReadinessDecision: strings.TrimSpace(input.ReadinessDecision),
 		HandoffDocs:       append([]HandoffDoc(nil), input.HandoffDocs...),
 		Diagnostics: Diagnostics{
@@ -206,8 +217,7 @@ func Decode(data []byte) (Contract, error) {
 	if contract.ContractVersion != ContractVersion {
 		return Contract{}, fmt.Errorf("unsupported agent run contract version: %d", contract.ContractVersion)
 	}
-	contract.Producer = normalizeProducer(contract.Producer)
-	return contract, nil
+	return normalizeContract(contract), nil
 }
 
 func Validate(contract Contract) error {
@@ -289,6 +299,7 @@ func normalizeContract(contract Contract) Contract {
 	}
 	contract.Producer = normalizeProducer(contract.Producer)
 	contract.Project.CloneURL = RedactCloneURL(contract.Project.CloneURL)
+	contract.BaseProvenance = normalizeBaseProvenance(contract.BaseProvenance, contract.Base, contract.ResolvedCommit, contract.Project.Remote)
 	if contract.HandoffDocs == nil {
 		contract.HandoffDocs = []HandoffDoc{}
 	}
@@ -299,6 +310,32 @@ func normalizeContract(contract Contract) Contract {
 		contract.Diagnostics.Blockers = []Diagnostic{}
 	}
 	return contract
+}
+
+func normalizeBaseProvenance(provenance BaseProvenance, base, resolvedCommit, remote string) BaseProvenance {
+	provenance.Base = strings.TrimSpace(firstNonEmpty(provenance.Base, base))
+	provenance.ResolvedCommit = strings.TrimSpace(firstNonEmpty(provenance.ResolvedCommit, resolvedCommit))
+	provenance.Remote = strings.TrimSpace(firstNonEmpty(provenance.Remote, remote))
+	if provenance.FetchedBase == "" && provenance.FetchedCommit == "" && provenance.PreparedHEAD == "" {
+		provenance.FetchedBase = provenance.Base
+		provenance.FetchedCommit = provenance.ResolvedCommit
+		provenance.PreparedHEAD = provenance.ResolvedCommit
+	} else {
+		provenance.FetchedBase = strings.TrimSpace(provenance.FetchedBase)
+		provenance.FetchedCommit = strings.TrimSpace(provenance.FetchedCommit)
+		provenance.PreparedHEAD = strings.TrimSpace(firstNonEmpty(provenance.PreparedHEAD, provenance.ResolvedCommit))
+	}
+	provenance.MatchesFetched = provenance.FetchedCommit != "" && provenance.PreparedHEAD != "" && provenance.FetchedCommit == provenance.PreparedHEAD
+	return provenance
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func normalizeVersion(version int) int {

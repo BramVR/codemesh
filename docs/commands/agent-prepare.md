@@ -21,7 +21,7 @@ Prepare a temporary agent workspace for one registered project. CodeMesh checks 
 
 Preparation does not execute an agent command. Use [`codemesh agent run`](agent-run.md) after prepare when you want CodeMesh to run one explicit local command inside the prepared workspace and append command output paths to the run contract.
 
-When `--base` is omitted, CodeMesh lets Agent Prep choose its current default base. `--profile` records the intended agent profile in run metadata.
+When `--base` is omitted, Agent Prep chooses the repo policy base, discoverable remote default branch, or `main` fallback in that order. `--profile` records the intended agent profile in run metadata.
 
 Use `--json` to emit the stable Command Result shape. The payload reports readiness, readiness diagnostics, handoff doc count, run id, ready path, run contract path, selected base, profile, and resolved commit. Blocked readiness uses exit class `readiness-blocked` and returns exit code 1 without creating an Agent Run. Secret values are not included.
 
@@ -44,7 +44,7 @@ When warnings exist, stdout prints one `warning: <code> <message>` line per warn
 
 `handoff_docs` is a count only. The selected doc paths and their source metadata live in `<ready_path>/codemesh-run.json`.
 
-`codemesh-run.json` is an Agent Run Contract. It records the contract version, producer/version metadata, run id, project identity, registered remote, selected base, resolved commit, readiness decision, and diagnostics. Handoff docs are recorded as paths and source metadata only; their file contents are not embedded.
+`codemesh-run.json` is an Agent Run Contract. It records the contract version, producer/version metadata, run id, project identity, registered remote, selected base, resolved commit, checkout provenance, readiness decision, and diagnostics. Checkout provenance includes the fetched base, fetched commit, prepared HEAD, and whether the prepared HEAD matches the fetched commit. Handoff docs are recorded as paths and source metadata only; their file contents are not embedded.
 
 ## Handoff Docs
 

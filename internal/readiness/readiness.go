@@ -23,6 +23,8 @@ const (
 	StateBlocked State = "blocked"
 )
 
+var errRemoteDefaultNotAdvertised = errors.New("remote HEAD did not advertise a default branch")
+
 type Options struct {
 	BaseBranch  string
 	CheckRemote bool
@@ -39,6 +41,8 @@ type ProjectReport struct {
 	State            State
 	LocalPathPresent bool
 	BaseBranch       string
+	FetchedBase      string
+	FetchedCommit    string
 	Warnings         []Diagnostic
 	Blockers         []Diagnostic
 }
@@ -98,10 +102,10 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 		})
 		return report, nil
 	}
-	if requestedBase == "" {
+	if requestedBase == "" && projectPolicy.BaseBranchSet {
 		base = projectPolicy.BaseBranch
+		report.BaseBranch = base
 	}
-	report.BaseBranch = base
 
 	dirty, err := gitOutput(ctx, project.LocalPath, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
@@ -120,14 +124,25 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 		})
 	}
 
+	if !opts.CheckRemote {
+		if checkEnvReadiness(&report, projectPolicy, envLookup(opts.Env)); len(report.Blockers) != 0 {
+			return report, nil
+		}
+		return report, nil
+	}
+	remote, ok := sourceRemote(ctx, &report)
+	if !ok {
+		return report, nil
+	}
+	if requestedBase == "" && !projectPolicy.BaseBranchSet {
+		if !selectSourceRemoteDefaultOrFallback(ctx, &report, remote) {
+			return report, nil
+		}
+	}
 	if checkEnvReadiness(&report, projectPolicy, envLookup(opts.Env)); len(report.Blockers) != 0 {
 		return report, nil
 	}
-	if !opts.CheckRemote {
-		return report, nil
-	}
-	remote, ok := evaluateSourceRemote(ctx, &report)
-	if !ok {
+	if !validateSelectedBase(ctx, &report) {
 		return report, nil
 	}
 	fetchSourceBase(ctx, &report, remote)
@@ -175,8 +190,10 @@ func EvaluateHandoff(ctx context.Context, project state.Project, opts Options) (
 			})
 			return HandoffDecision{Report: report}, nil
 		}
-		base = sourcePolicy.BaseBranch
-		report.BaseBranch = base
+		if sourcePolicy.BaseBranchSet {
+			base = sourcePolicy.BaseBranch
+			report.BaseBranch = base
+		}
 	}
 
 	dirty, err := gitOutput(ctx, project.LocalPath, "status", "--porcelain", "--untracked-files=all")
@@ -196,8 +213,17 @@ func EvaluateHandoff(ctx context.Context, project state.Project, opts Options) (
 		})
 	}
 
-	remote, ok := evaluateSourceRemote(ctx, &report)
+	remote, ok := sourceRemote(ctx, &report)
 	if !ok {
+		return HandoffDecision{Report: report, Policy: sourcePolicy}, nil
+	}
+	if requestedBase == "" && !sourcePolicy.BaseBranchSet {
+		if !selectSourceRemoteDefaultOrFallback(ctx, &report, remote) {
+			return HandoffDecision{Report: report, Policy: sourcePolicy}, nil
+		}
+		base = report.BaseBranch
+	}
+	if !validateSelectedBase(ctx, &report) {
 		return HandoffDecision{Report: report, Policy: sourcePolicy}, nil
 	}
 	if !fetchSourceBase(ctx, &report, remote) {
@@ -217,28 +243,34 @@ func EvaluateHandoff(ctx context.Context, project state.Project, opts Options) (
 }
 
 func evaluateMissingSourceHandoff(ctx context.Context, report ProjectReport, requestedBase string, opts Options) (HandoffDecision, error) {
+	clone := cloneURL(report.Project)
+	if clone == "" {
+		report.State = StateBlocked
+		report.Blockers = append(report.Blockers, Diagnostic{Code: "origin-missing", Message: "registered project has no clone URL"})
+		return HandoffDecision{Report: report, Policy: policy.Defaults(), SourcePathMissing: true}, nil
+	}
 	base := requestedBase
 	if base == "" {
 		base = policy.Defaults().BaseBranch
-		if defaultBranch, err := remoteDefaultBranch(ctx, cloneURL(report.Project)); err == nil {
+		if defaultBranch, err := remoteDefaultBranch(ctx, clone); err == nil {
 			base = defaultBranch
-			if remotePolicy, err := policyFromRemoteBase(ctx, cloneURL(report.Project), defaultBranch); err == nil {
-				base = remotePolicy.BaseBranch
-			} else if !strings.Contains(err.Error(), "clone policy probe") {
+			remotePolicy, err := policyFromRemoteBase(ctx, clone, defaultBranch)
+			if err != nil && !strings.Contains(err.Error(), "clone policy probe") {
 				return HandoffDecision{}, err
 			}
+			if err == nil && remotePolicy.BaseBranchSet {
+				base = remotePolicy.BaseBranch
+			}
+		} else if !errors.Is(err, errRemoteDefaultNotAdvertised) {
+			report.State = StateStale
+			report.Blockers = append(report.Blockers, Diagnostic{Code: "fetch-failed", Message: gitops.RedactCloneOutput(gitops.CommandDetail(err), clone)})
+			return HandoffDecision{Report: report, Policy: policy.Defaults(), SourcePathMissing: true}, nil
 		}
 	}
 	report.BaseBranch = base
 	if err := validateBaseBranch(ctx, base); err != nil {
 		report.State = StateBlocked
 		report.Blockers = append(report.Blockers, Diagnostic{Code: "invalid-base", Message: err.Error()})
-		return HandoffDecision{Report: report, Policy: policy.Defaults(), SourcePathMissing: true}, nil
-	}
-	clone := cloneURL(report.Project)
-	if clone == "" {
-		report.State = StateBlocked
-		report.Blockers = append(report.Blockers, Diagnostic{Code: "origin-missing", Message: "registered project has no clone URL"})
 		return HandoffDecision{Report: report, Policy: policy.Defaults(), SourcePathMissing: true}, nil
 	}
 	refs, err := gitOutput(ctx, "", "ls-remote", clone, "refs/heads/"+base)
@@ -255,6 +287,8 @@ func evaluateMissingSourceHandoff(ctx context.Context, report ProjectReport, req
 		})
 		return HandoffDecision{Report: report, Policy: policy.Defaults(), SourcePathMissing: true}, nil
 	}
+	report.FetchedBase = base
+	report.FetchedCommit = remoteRefCommit(refs, base)
 	readyPolicy, err := policyFromRemoteBase(ctx, clone, base)
 	if err != nil {
 		report.State = StateBlocked
@@ -266,11 +300,22 @@ func evaluateMissingSourceHandoff(ctx context.Context, report ProjectReport, req
 }
 
 func evaluateSourceRemote(ctx context.Context, report *ProjectReport) (string, bool) {
+	if !validateSelectedBase(ctx, report) {
+		return "", false
+	}
+	return sourceRemote(ctx, report)
+}
+
+func validateSelectedBase(ctx context.Context, report *ProjectReport) bool {
 	if err := validateBaseBranch(ctx, report.BaseBranch); err != nil {
 		report.State = StateBlocked
 		report.Blockers = append(report.Blockers, Diagnostic{Code: "invalid-base", Message: err.Error()})
-		return "", false
+		return false
 	}
+	return true
+}
+
+func sourceRemote(ctx context.Context, report *ProjectReport) (string, bool) {
 	remote, err := gitOutput(ctx, report.Project.LocalPath, "remote", "get-url", "origin")
 	if err != nil {
 		report.State = StateBlocked
@@ -293,6 +338,30 @@ func evaluateSourceRemote(ctx context.Context, report *ProjectReport) (string, b
 		return "", false
 	}
 	return remote, true
+}
+
+func selectRemoteDefaultOrFallback(ctx context.Context, report *ProjectReport, remote string) bool {
+	defaultBranch, err := remoteDefaultBranch(ctx, remote)
+	return applyRemoteDefaultOrFallback(report, defaultBranch, err, remote)
+}
+
+func selectSourceRemoteDefaultOrFallback(ctx context.Context, report *ProjectReport, remote string) bool {
+	defaultBranch, err := sourceRemoteDefaultBranch(ctx, report.Project.LocalPath)
+	return applyRemoteDefaultOrFallback(report, defaultBranch, err, remote)
+}
+
+func applyRemoteDefaultOrFallback(report *ProjectReport, defaultBranch string, err error, redactedRemote string) bool {
+	if err == nil {
+		report.BaseBranch = defaultBranch
+		return true
+	}
+	if errors.Is(err, errRemoteDefaultNotAdvertised) {
+		report.BaseBranch = policy.Defaults().BaseBranch
+		return true
+	}
+	report.State = StateStale
+	report.Blockers = append(report.Blockers, Diagnostic{Code: "fetch-failed", Message: gitops.RedactCloneOutput(gitops.CommandDetail(err), redactedRemote)})
+	return false
 }
 
 func fetchSourceBase(ctx context.Context, report *ProjectReport, remote string) bool {
@@ -322,6 +391,8 @@ func fetchSourceBase(ctx context.Context, report *ProjectReport, remote string) 
 		})
 		return false
 	}
+	report.FetchedBase = base
+	report.FetchedCommit = strings.TrimSpace(remoteCommit)
 	localRef := "refs/heads/" + base
 	if _, err := gitOutput(ctx, report.Project.LocalPath, "rev-parse", "--verify", "--quiet", localRef); err == nil {
 		if _, err := gitOutput(ctx, report.Project.LocalPath, "merge-base", "--is-ancestor", strings.TrimSpace(remoteCommit), localRef); err != nil {
@@ -378,6 +449,18 @@ func remoteDefaultBranch(ctx context.Context, clone string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return remoteDefaultBranchFromOutput(output)
+}
+
+func sourceRemoteDefaultBranch(ctx context.Context, repo string) (string, error) {
+	output, err := gitOutput(ctx, repo, "ls-remote", "--symref", "origin", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return remoteDefaultBranchFromOutput(output)
+}
+
+func remoteDefaultBranchFromOutput(output string) (string, error) {
 	for _, line := range strings.Split(output, "\n") {
 		if !strings.HasPrefix(line, "ref: refs/heads/") || !strings.HasSuffix(line, "\tHEAD") {
 			continue
@@ -387,7 +470,18 @@ func remoteDefaultBranch(ctx context.Context, clone string) (string, error) {
 			return branch, nil
 		}
 	}
-	return "", errors.New("remote HEAD did not advertise a default branch")
+	return "", errRemoteDefaultNotAdvertised
+}
+
+func remoteRefCommit(output, base string) string {
+	wantRef := "refs/heads/" + base
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == wantRef {
+			return fields[0]
+		}
+	}
+	return ""
 }
 
 func cloneURL(project state.Project) string {

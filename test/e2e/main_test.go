@@ -650,8 +650,8 @@ func TestOfflineGitFixturesCreateLocalRemotesAndClones(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fixtures.Projects) != 8 {
-		t.Fatalf("fixture count = %d, want 8", len(fixtures.Projects))
+	if len(fixtures.Projects) != 9 {
+		t.Fatalf("fixture count = %d, want 9", len(fixtures.Projects))
 	}
 
 	clean := fixtures.Project("clean-repo")
@@ -669,6 +669,22 @@ func TestOfflineGitFixturesCreateLocalRemotesAndClones(t *testing.T) {
 	}
 	if dirtyStatus := gitStatus(t, h, dirty.Source); dirtyStatus == "" {
 		t.Fatalf("dirty fixture status empty")
+	}
+
+	remoteDefault := fixtures.Project("remote-default-dev")
+	if remoteDefault == nil {
+		t.Fatalf("remote default fixture missing")
+	}
+	if remoteDefault.BaseBranch != "develop" {
+		t.Fatalf("remote default base branch = %q, want develop", remoteDefault.BaseBranch)
+	}
+	if branch := currentBranch(t, h, remoteDefault.Source); branch != "main" {
+		t.Fatalf("remote default source branch = %q, want main", branch)
+	}
+	if stdout, _, err := h.exec(remoteDefault.Remote, "git", "symbolic-ref", "--short", "HEAD"); err != nil {
+		t.Fatal(err)
+	} else if strings.TrimSpace(stdout) != "develop" {
+		t.Fatalf("remote default HEAD = %q, want develop", strings.TrimSpace(stdout))
 	}
 
 	missingPath := fixtures.Project("missing-project-path")
@@ -841,6 +857,15 @@ func assertGitStatus(t *testing.T, h *harness, dir, want string) {
 func gitStatus(t *testing.T, h *harness, dir string) string {
 	t.Helper()
 	stdout, _, err := h.exec(dir, "git", "status", "--porcelain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(stdout)
+}
+
+func currentBranch(t *testing.T, h *harness, dir string) string {
+	t.Helper()
+	stdout, _, err := h.exec(dir, "git", "branch", "--show-current")
 	if err != nil {
 		t.Fatal(err)
 	}

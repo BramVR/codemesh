@@ -18,6 +18,9 @@ func TestResolveAbsentPolicyUsesDefaults(t *testing.T) {
 	if got.BaseBranch != "main" {
 		t.Fatalf("BaseBranch = %q, want main", got.BaseBranch)
 	}
+	if got.BaseBranchSet {
+		t.Fatalf("BaseBranchSet = true, want false for absent policy")
+	}
 	if got.Env.Mode != EnvModeWarn {
 		t.Fatalf("Env.Mode = %q, want %q", got.Env.Mode, EnvModeWarn)
 	}
@@ -48,6 +51,9 @@ func TestResolveValidPolicy(t *testing.T) {
 
 	if got.BaseBranch != "release/main" {
 		t.Fatalf("BaseBranch = %q, want release/main", got.BaseBranch)
+	}
+	if !got.BaseBranchSet {
+		t.Fatalf("BaseBranchSet = false, want true")
 	}
 	if got.Env.Mode != EnvModeBlock {
 		t.Fatalf("Env.Mode = %q, want %q", got.Env.Mode, EnvModeBlock)
@@ -104,6 +110,9 @@ func TestDocumentedPolicyExampleParses(t *testing.T) {
 
 	if got.BaseBranch != "main" {
 		t.Fatalf("BaseBranch = %q, want main", got.BaseBranch)
+	}
+	if !got.BaseBranchSet {
+		t.Fatalf("BaseBranchSet = false, want true for documented agent.base")
 	}
 	if got.Env.Mode != EnvModeBlock {
 		t.Fatalf("Env.Mode = %q, want %q", got.Env.Mode, EnvModeBlock)
