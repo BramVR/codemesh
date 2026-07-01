@@ -367,6 +367,42 @@ func TestEvaluateProjectRejectsInvalidBaseBranch(t *testing.T) {
 	}
 }
 
+func TestEvaluateHandoffUsesRequestedRemoteBasePolicyAndKeepsDirtyWarning(t *testing.T) {
+	project := createReadinessFixture(t, "handoff-remote-policy")
+	runGit(t, project.LocalPath, "checkout", "-b", "feature")
+	runGit(t, project.LocalPath, "checkout", "main")
+	writeFixturePolicy(t, project, `agent:
+  env:
+    mode: block
+    required_files:
+      - .env.local
+`)
+	commitFixturePolicy(t, project)
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	runGit(t, project.LocalPath, "checkout", "feature")
+	if err := os.WriteFile(filepath.Join(project.LocalPath, "dirty.txt"), []byte("local change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	decision, err := EvaluateHandoff(context.Background(), project, Options{BaseBranch: "main", Env: keyOnlyEnv{}})
+	if err != nil {
+		t.Fatalf("EvaluateHandoff error = %v", err)
+	}
+
+	if decision.Report.BaseBranch != "main" {
+		t.Fatalf("BaseBranch = %q, want main", decision.Report.BaseBranch)
+	}
+	if !hasDiagnostic(decision.Report.Warnings, "dirty-checkout") {
+		t.Fatalf("warnings = %v, want dirty-checkout", decision.Report.Warnings)
+	}
+	if !hasDiagnostic(decision.Report.Blockers, "missing-env-file") {
+		t.Fatalf("blockers = %v, want missing-env-file from requested remote base policy", decision.Report.Blockers)
+	}
+	if decision.Policy.Env.Mode != "block" {
+		t.Fatalf("policy env mode = %q, want block", decision.Policy.Env.Mode)
+	}
+}
+
 func evaluateFixture(t *testing.T, project state.Project, opts Options) ProjectReport {
 	t.Helper()
 	report, err := EvaluateProject(context.Background(), project, opts)

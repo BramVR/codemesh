@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BramVR/codemesh/internal/gitops"
+	"github.com/BramVR/codemesh/internal/readiness"
 	"github.com/BramVR/codemesh/internal/state"
 )
 
@@ -546,6 +547,35 @@ func TestPrepareStopsOnReadinessBlockerBeforeWorkspacePrep(t *testing.T) {
 	}
 }
 
+func TestPrepareReturnsSharedReadinessDecisionDiagnostics(t *testing.T) {
+	project := createFixtureProject(t, "shared-readiness")
+	writeFile(t, filepath.Join(project.LocalPath, ".codemesh.yml"), "agent:\n  env:\n    mode: block\n    required_keys:\n      - CODEMESH_TEST_REQUIRED\n")
+	runGit(t, project.LocalPath, "add", ".codemesh.yml")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Require env")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	store := newMemoryStore(project)
+	preparer := testPreparer(t.TempDir(), store)
+
+	decision, err := readiness.EvaluateHandoff(context.Background(), project, readiness.Options{})
+	if err != nil {
+		t.Fatalf("EvaluateHandoff error = %v", err)
+	}
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias})
+
+	if err == nil {
+		t.Fatal("Prepare error = nil, want shared readiness blocker")
+	}
+	if result.Base != decision.Report.BaseBranch {
+		t.Fatalf("Base = %q, want readiness base %q", result.Base, decision.Report.BaseBranch)
+	}
+	if diagnosticCodes(result.Diagnostics.Blockers) != readinessCodes(decision.Report.Blockers) {
+		t.Fatalf("blocker codes = %s, want readiness codes %s", diagnosticCodes(result.Diagnostics.Blockers), readinessCodes(decision.Report.Blockers))
+	}
+	if len(store.runs) != 0 {
+		t.Fatalf("recorded runs = %d, want 0", len(store.runs))
+	}
+}
+
 func TestPrepareStopsOnInvalidPolicyIncludeDocsBeforeWorkspacePrep(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -794,6 +824,22 @@ func hasDiagnostic(diagnostics []Diagnostic, code string) bool {
 		}
 	}
 	return false
+}
+
+func diagnosticCodes(diagnostics []Diagnostic) string {
+	codes := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		codes = append(codes, diagnostic.Code)
+	}
+	return strings.Join(codes, ",")
+}
+
+func readinessCodes(diagnostics []readiness.Diagnostic) string {
+	codes := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		codes = append(codes, diagnostic.Code)
+	}
+	return strings.Join(codes, ",")
 }
 
 func writeFile(t *testing.T, path, content string) {
