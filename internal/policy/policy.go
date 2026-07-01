@@ -2,13 +2,14 @@ package policy
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/BramVR/codemesh/internal/gitops"
 	"gopkg.in/yaml.v3"
 )
 
@@ -122,13 +123,9 @@ func ParseBytes(path string, data []byte) (Policy, error) {
 }
 
 func validateBaseBranch(path, base string) error {
-	cmd := exec.Command("git", "check-ref-format", "--branch", base)
-	output, err := cmd.CombinedOutput()
+	_, err := gitops.Process().Output(context.Background(), "", "check-ref-format", "--branch", base)
 	if err != nil {
-		detail := strings.TrimSpace(string(output))
-		if detail == "" {
-			detail = err.Error()
-		}
+		detail := gitops.CommandDetail(err)
 		return fmt.Errorf("invalid %s: agent.base %q is not a valid Git branch name: %s", path, base, detail)
 	}
 	return nil

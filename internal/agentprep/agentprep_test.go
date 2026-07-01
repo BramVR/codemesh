@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/state"
 )
 
@@ -445,7 +446,7 @@ func TestPrepareDoesNotFollowRepoSymlinkForMetadata(t *testing.T) {
 func TestMetadataCloneURLRedactsCredentialBearingURLParts(t *testing.T) {
 	raw := "https://user:secret@example.invalid/org/repo.git?token=secret#frag"
 
-	got := redactedCloneURLForMetadata(raw)
+	got := gitops.RedactURLForMetadata(raw)
 
 	if strings.Contains(got, "secret") || strings.Contains(got, "token") || strings.Contains(got, "frag") {
 		t.Fatalf("redacted clone URL leaked credential-bearing parts: %s", got)

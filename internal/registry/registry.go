@@ -5,12 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/state"
 )
 
@@ -22,6 +21,7 @@ type Store interface {
 
 type Registry struct {
 	store Store
+	git   gitops.Client
 }
 
 type Entry struct {
@@ -48,11 +48,11 @@ type ScanSkip struct {
 }
 
 func New(store Store) *Registry {
-	return &Registry{store: store}
+	return &Registry{store: store, git: gitops.Process()}
 }
 
 func (r *Registry) AddPath(ctx context.Context, path, alias string) (state.Project, error) {
-	inspected, err := InspectGitProject(path)
+	inspected, err := r.git.InspectProject(ctx, path)
 	if err != nil {
 		return state.Project{}, err
 	}
@@ -66,7 +66,7 @@ func (r *Registry) AddPath(ctx context.Context, path, alias string) (state.Proje
 	return r.store.AddProject(ctx, state.Project{
 		Alias:            alias,
 		NormalizedRemote: remote,
-		CloneURL:         cloneURLFor(inspected.Remote, inspected.Root),
+		CloneURL:         gitops.CloneURLFor(inspected.Remote, inspected.Root),
 		LocalPath:        inspected.Root,
 	})
 }
@@ -124,7 +124,7 @@ func (r *Registry) ScanWorkspace(ctx context.Context, root string) (ScanResult, 
 		}
 		discoveredRoots = append(discoveredRoots, projectPath)
 
-		inspected, err := InspectGitProject(projectPath)
+		inspected, err := r.git.InspectProject(ctx, projectPath)
 		if err != nil {
 			result.Skipped = append(result.Skipped, ScanSkip{Path: projectPath, Reason: "unsupported Git repo: " + err.Error()})
 			if d.IsDir() {
@@ -145,7 +145,7 @@ func (r *Registry) ScanWorkspace(ctx context.Context, root string) (ScanResult, 
 		project, action, err := r.store.UpsertProject(ctx, state.Project{
 			Alias:            alias,
 			NormalizedRemote: remote,
-			CloneURL:         cloneURLFor(inspected.Remote, inspected.Root),
+			CloneURL:         gitops.CloneURLFor(inspected.Remote, inspected.Root),
 			LocalPath:        inspected.Root,
 		})
 		if err != nil {
@@ -186,7 +186,7 @@ func (r *Registry) Hydrate(ctx context.Context, alias string) (HydrateResult, er
 		if project.Alias != alias {
 			continue
 		}
-		alreadyPresent, err := hydrateProject(ctx, project)
+		alreadyPresent, err := hydrateProject(ctx, r.git, project)
 		if err != nil {
 			return HydrateResult{}, err
 		}
@@ -195,11 +195,11 @@ func (r *Registry) Hydrate(ctx context.Context, alias string) (HydrateResult, er
 	return HydrateResult{}, fmt.Errorf("unknown project: %s", alias)
 }
 
-func hydrateProject(ctx context.Context, project state.Project) (bool, error) {
+func hydrateProject(ctx context.Context, git gitops.Client, project state.Project) (bool, error) {
 	info, err := os.Stat(project.LocalPath)
 	switch {
 	case err == nil:
-		if gitCheckoutMatches(project) {
+		if gitCheckoutMatches(ctx, git, project) {
 			return true, nil
 		}
 		if !info.IsDir() {
@@ -224,24 +224,22 @@ func hydrateProject(ctx context.Context, project state.Project) (bool, error) {
 	if cloneURL == "" {
 		cloneURL = project.NormalizedRemote
 	}
-	cmd := exec.CommandContext(ctx, "git", "clone", cloneURL, project.LocalPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("clone %q into %q: %s", redactedCloneURL(cloneURL), project.LocalPath, redactedCloneOutput(string(output), cloneURL))
+	if _, err := git.Output(ctx, "", "clone", cloneURL, project.LocalPath); err != nil {
+		return false, fmt.Errorf("clone %q into %q: %s", redactedCloneURL(cloneURL), project.LocalPath, redactedCloneOutput(gitops.CommandDetail(err), cloneURL))
 	}
 	return false, nil
 }
 
-func gitCheckoutMatches(project state.Project) bool {
-	inside, err := gitOutput(project.LocalPath, "rev-parse", "--is-inside-work-tree")
+func gitCheckoutMatches(ctx context.Context, git gitops.Client, project state.Project) bool {
+	inside, err := git.Output(ctx, project.LocalPath, "rev-parse", "--is-inside-work-tree")
 	if err != nil || strings.TrimSpace(inside) != "true" {
 		return false
 	}
-	root, err := gitOutput(project.LocalPath, "rev-parse", "--show-toplevel")
+	root, err := git.Output(ctx, project.LocalPath, "rev-parse", "--show-toplevel")
 	if err != nil || !samePath(strings.TrimSpace(root), project.LocalPath) {
 		return false
 	}
-	remote, err := gitOutput(project.LocalPath, "remote", "get-url", "origin")
+	remote, err := git.Output(ctx, project.LocalPath, "remote", "get-url", "origin")
 	if err != nil {
 		return false
 	}
@@ -253,49 +251,15 @@ func gitCheckoutMatches(project state.Project) bool {
 }
 
 func cloneURLFor(remote, baseDir string) string {
-	remote = strings.TrimSpace(remote)
-	if remote == "" {
-		return remote
-	}
-	if _, _, _, ok := splitSCPLikeRemote(remote); ok {
-		return remote
-	}
-	parsed, err := url.Parse(remote)
-	if err == nil && parsed.Scheme != "" {
-		if parsed.User != nil {
-			if parsed.Scheme == "http" || parsed.Scheme == "https" {
-				parsed.User = nil
-				return parsed.String()
-			}
-			if _, hasPassword := parsed.User.Password(); hasPassword {
-				parsed.User = url.User(parsed.User.Username())
-				return parsed.String()
-			}
-		}
-		return remote
-	}
-	if baseDir != "" && !filepath.IsAbs(remote) {
-		return filepath.Clean(filepath.Join(baseDir, remote))
-	}
-	return remote
+	return gitops.CloneURLFor(remote, baseDir)
 }
 
 func redactedCloneURL(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" || parsed.User == nil {
-		return raw
-	}
-	parsed.User = url.User("redacted")
-	return parsed.String()
+	return gitops.RedactURLForMetadata(raw)
 }
 
 func redactedCloneOutput(output, cloneURL string) string {
-	detail := strings.TrimSpace(output)
-	redacted := redactedCloneURL(cloneURL)
-	if redacted != cloneURL {
-		detail = strings.ReplaceAll(detail, cloneURL, redacted)
-	}
-	return detail
+	return gitops.RedactCloneOutput(output, cloneURL)
 }
 
 func samePath(a, b string) bool {
@@ -372,111 +336,25 @@ type InspectedGitProject struct {
 }
 
 func InspectGitProject(path string) (InspectedGitProject, error) {
-	if strings.TrimSpace(path) == "" {
-		return InspectedGitProject{}, errors.New("project path is required")
-	}
-	root, err := gitOutput(path, "rev-parse", "--show-toplevel")
+	inspected, err := gitops.Process().InspectProject(context.Background(), path)
 	if err != nil {
-		return InspectedGitProject{}, fmt.Errorf("inspect Git project: %w", err)
-	}
-	root = strings.TrimSpace(root)
-	remote, err := gitOutput(root, "config", "--get", "remote.origin.url")
-	if err != nil {
-		return InspectedGitProject{}, fmt.Errorf("read origin remote: %w", err)
-	}
-	remote = strings.TrimSpace(remote)
-	if remote == "" {
-		return InspectedGitProject{}, errors.New("Git project has no origin remote")
+		return InspectedGitProject{}, err
 	}
 	return InspectedGitProject{
-		Root:   root,
-		Remote: remote,
-		Alias:  strings.TrimSuffix(filepath.Base(strings.TrimSpace(root)), ".git"),
+		Root:   inspected.Root,
+		Remote: inspected.Remote,
+		Alias:  inspected.Alias,
 	}, nil
 }
 
 func NormalizeRemote(remote string) (string, error) {
-	return NormalizeRemoteFrom(remote, "")
+	return gitops.NormalizeRemote(remote)
 }
 
 func NormalizeRemoteFrom(remote, baseDir string) (string, error) {
-	remote = strings.TrimSpace(remote)
-	if remote == "" {
-		return "", errors.New("remote is required")
-	}
-	if user, host, path, ok := splitSCPLikeRemote(remote); ok {
-		if host == "github.com" {
-			return normalizeGitHubPath(path)
-		}
-		path = strings.TrimPrefix(path, "/")
-		path = strings.TrimSuffix(path, ".git")
-		return fmt.Sprintf("ssh://%s@%s/%s", user, host, path), nil
-	}
-
-	parsed, err := url.Parse(remote)
-	if err == nil && parsed.Scheme != "" {
-		host := strings.ToLower(parsed.Hostname())
-		if host == "github.com" {
-			return normalizeGitHubPath(parsed.Path)
-		}
-		if parsed.Scheme == "file" {
-			return filepath.Clean(parsed.Path), nil
-		}
-		host = strings.ToLower(parsed.Host)
-		path := strings.TrimSuffix(parsed.EscapedPath(), ".git")
-		if parsed.User != nil {
-			return fmt.Sprintf("%s://%s@%s%s", parsed.Scheme, parsed.User.Username(), host, path), nil
-		}
-		return fmt.Sprintf("%s://%s%s", parsed.Scheme, host, path), nil
-	}
-
-	if baseDir != "" && !filepath.IsAbs(remote) {
-		return filepath.Clean(filepath.Join(baseDir, remote)), nil
-	}
-	abs, err := filepath.Abs(remote)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Clean(abs), nil
-}
-
-func splitSCPLikeRemote(remote string) (string, string, string, bool) {
-	if strings.Contains(remote, "://") {
-		return "", "", "", false
-	}
-	at := strings.Index(remote, "@")
-	if at <= 0 {
-		return "", "", "", false
-	}
-	rest := remote[at+1:]
-	colon := strings.Index(rest, ":")
-	if colon <= 0 || colon == len(rest)-1 {
-		return "", "", "", false
-	}
-	user := remote[:at]
-	host := strings.ToLower(rest[:colon])
-	path := rest[colon+1:]
-	return user, host, path, true
-}
-
-func normalizeGitHubPath(path string) (string, error) {
-	path = strings.TrimPrefix(path, "/")
-	path = strings.TrimSuffix(path, "/")
-	path = strings.TrimSuffix(path, ".git")
-	if path == "" || !strings.Contains(path, "/") {
-		return "", fmt.Errorf("invalid GitHub remote path %q", path)
-	}
-	return "https://github.com/" + path, nil
+	return gitops.NormalizeRemoteFrom(remote, baseDir)
 }
 
 func gitOutput(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	output, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("git %s failed: %s", strings.Join(args, " "), strings.TrimSpace(string(exitErr.Stderr)))
-		}
-		return "", err
-	}
-	return string(output), nil
+	return gitops.Process().Output(context.Background(), dir, args...)
 }

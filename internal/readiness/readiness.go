@@ -5,12 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/policy"
-	"github.com/BramVR/codemesh/internal/registry"
 	"github.com/BramVR/codemesh/internal/state"
 )
 
@@ -129,21 +128,25 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 		})
 		return report, nil
 	}
-	if remote, err := gitOutput(ctx, project.LocalPath, "remote", "get-url", "origin"); err != nil {
+	remote, err := gitOutput(ctx, project.LocalPath, "remote", "get-url", "origin")
+	if err != nil {
 		report.State = StateBlocked
 		report.Blockers = append(report.Blockers, Diagnostic{
 			Code:    "origin-missing",
 			Message: err.Error(),
 		})
 		return report, nil
-	} else if normalized, err := registry.NormalizeRemoteFrom(strings.TrimSpace(remote), project.LocalPath); err != nil {
+	}
+	normalized, err := gitops.NormalizeRemoteFrom(strings.TrimSpace(remote), project.LocalPath)
+	if err != nil {
 		report.State = StateBlocked
 		report.Blockers = append(report.Blockers, Diagnostic{
 			Code:    "origin-unsupported",
 			Message: err.Error(),
 		})
 		return report, nil
-	} else if normalized != project.NormalizedRemote {
+	}
+	if normalized != project.NormalizedRemote {
 		report.State = StateBlocked
 		report.Blockers = append(report.Blockers, Diagnostic{
 			Code:    "remote-mismatch",
@@ -152,7 +155,7 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 		return report, nil
 	}
 	if _, err := gitOutput(ctx, project.LocalPath, "fetch", "--quiet", "origin", "refs/heads/"+base); err != nil {
-		if strings.Contains(err.Error(), "couldn't find remote ref") {
+		if gitops.IsMissingRemoteRef(err) {
 			report.State = StateBlocked
 			report.Blockers = append(report.Blockers, Diagnostic{
 				Code:    "missing-base",
@@ -163,7 +166,7 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 		report.State = StateStale
 		report.Blockers = append(report.Blockers, Diagnostic{
 			Code:    "fetch-failed",
-			Message: err.Error(),
+			Message: gitops.RedactCloneOutput(err.Error(), strings.TrimSpace(remote)),
 		})
 		return report, nil
 	}
@@ -247,27 +250,13 @@ func (processEnv) HasEnvKey(key string) bool {
 }
 
 func validateBaseBranch(ctx context.Context, base string) error {
-	cmd := exec.CommandContext(ctx, "git", "check-ref-format", "--branch", base)
-	output, err := cmd.CombinedOutput()
+	err := gitops.Process().ValidateBranchName(ctx, base)
 	if err != nil {
-		detail := strings.TrimSpace(string(output))
-		if detail == "" {
-			detail = err.Error()
-		}
-		return fmt.Errorf("invalid base branch %q: %s", base, detail)
+		return err
 	}
 	return nil
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		detail := strings.TrimSpace(string(output))
-		if detail == "" {
-			detail = err.Error()
-		}
-		return "", fmt.Errorf("git %s failed: %s", strings.Join(args, " "), detail)
-	}
-	return string(output), nil
+	return gitops.Process().Output(ctx, dir, args...)
 }
