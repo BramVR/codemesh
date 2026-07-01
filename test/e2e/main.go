@@ -286,7 +286,7 @@ func (h *harness) caseMachineRegisterWorkflow() {
 	}
 
 	register := s.command("machine register human output", "machine", "register", firstRoot)
-	if register.Status != "PASS" || !s.expectOutput(register, "machine registered", "id: ", "hostname: ", "os: ", "architecture: ", "workspace_root: "+firstRoot, "created_at: ", "updated_at: ") {
+	if register.Status != "PASS" || !s.expectOutput(register, "machine registered", "id: ", "hostname: ", "os: ", "architecture: ", "workspace_root: "+firstRoot, "registered_at: ", "updated_at: ") {
 		return
 	}
 	firstID := valueAfterPrefix(register.Stdout, "id: ")

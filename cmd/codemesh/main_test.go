@@ -173,7 +173,7 @@ func TestMachineRegisterCreatesStableIdentityAndUpdatesFacts(t *testing.T) {
 		t.Fatalf("machine register exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, want := range []string{"machine registered", "id: ", "hostname: ", "os: ", "architecture: ", "workspace_root: " + firstRoot, "created_at: ", "updated_at: "} {
+	for _, want := range []string{"machine registered", "id: ", "hostname: ", "os: ", "architecture: ", "workspace_root: " + firstRoot, "registered_at: ", "updated_at: "} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("machine register output missing %q:\n%s", want, output)
 		}
@@ -215,13 +215,13 @@ func TestMachineRegisterJSONOutput(t *testing.T) {
 		OS            string `json:"os"`
 		Architecture  string `json:"architecture"`
 		WorkspaceRoot string `json:"workspace_root"`
-		CreatedAt     string `json:"created_at"`
+		RegisteredAt  string `json:"registered_at"`
 		UpdatedAt     string `json:"updated_at"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatalf("machine register JSON did not parse: %v\n%s", err, stdout.String())
 	}
-	if payload.ID == "" || payload.Hostname == "" || payload.OS == "" || payload.Architecture == "" || payload.WorkspaceRoot != workspace || payload.CreatedAt == "" || payload.UpdatedAt == "" {
+	if payload.ID == "" || payload.Hostname == "" || payload.OS == "" || payload.Architecture == "" || payload.WorkspaceRoot != workspace || payload.RegisteredAt == "" || payload.UpdatedAt == "" {
 		t.Fatalf("machine register JSON missing facts: %#v", payload)
 	}
 	if stderr.Len() != 0 {

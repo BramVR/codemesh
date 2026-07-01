@@ -297,6 +297,13 @@ func TestMigrateAddsMachineFactsWithoutLosingExistingState(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "codemesh.db")
 	createOldProjectDatabase(t, dbPath, "/tmp/codemesh", "https://github.com/BramVR/codemesh")
+	db := openRawDB(t, dbPath)
+	if _, err := db.Exec(`insert into machines(name, created_at) values('legacy-host', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("insert legacy machine fixture: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	store, err := Open(dbPath)
 	if err != nil {
@@ -325,6 +332,13 @@ func TestMigrateAddsMachineFactsWithoutLosingExistingState(t *testing.T) {
 	}
 	if machine.ID == "" || machine.Hostname != "first-host" || machine.OS != "darwin" || machine.Architecture != "arm64" || machine.WorkspaceRoot != "/tmp/workspace" || machine.CreatedAt.IsZero() || machine.UpdatedAt.IsZero() {
 		t.Fatalf("machine facts = %#v", machine)
+	}
+	var machineRows int
+	if err := store.db.QueryRowContext(ctx, `select count(*) from machines`).Scan(&machineRows); err != nil {
+		t.Fatalf("count machines: %v", err)
+	}
+	if machineRows != 1 {
+		t.Fatalf("machine row count = %d, want legacy row reused", machineRows)
 	}
 }
 

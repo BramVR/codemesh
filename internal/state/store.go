@@ -557,19 +557,24 @@ func (s *SQLiteStore) RegisterMachine(ctx context.Context, facts MachineFacts) (
 	var rowID int64
 	var machineID, createdAtText string
 	err = tx.QueryRowContext(ctx, `
-select id, machine_id, coalesce(registered_at, created_at)
+select id, coalesce(machine_id, ''), coalesce(registered_at, created_at)
 from machines
-where machine_id is not null and machine_id != ''
-order by id
+order by case when machine_id is not null and machine_id != '' then 0 else 1 end, id
 limit 1
 `).Scan(&rowID, &machineID, &createdAtText)
 	switch {
 	case err == nil:
+		if machineID == "" {
+			machineID, err = newMachineID()
+			if err != nil {
+				return Machine{}, err
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `
 update machines
-set name = ?, hostname = ?, os = ?, architecture = ?, workspace_root = ?, updated_at = ?
+set name = ?, machine_id = ?, hostname = ?, os = ?, architecture = ?, workspace_root = ?, registered_at = ?, updated_at = ?
 where id = ?
-`, facts.Hostname, facts.Hostname, facts.OS, facts.Architecture, facts.WorkspaceRoot, nowText, rowID); err != nil {
+`, facts.Hostname, machineID, facts.Hostname, facts.OS, facts.Architecture, facts.WorkspaceRoot, createdAtText, nowText, rowID); err != nil {
 			return Machine{}, fmt.Errorf("update machine facts: %w", err)
 		}
 	case errors.Is(err, sql.ErrNoRows):

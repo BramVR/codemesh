@@ -113,7 +113,7 @@ func runMachineRegister(args []string, stdout, stderr io.Writer) int {
 			OS:            machine.OS,
 			Architecture:  machine.Architecture,
 			WorkspaceRoot: machine.WorkspaceRoot,
-			CreatedAt:     machine.CreatedAt.UTC().Format(time.RFC3339),
+			RegisteredAt:  machine.CreatedAt.UTC().Format(time.RFC3339),
 			UpdatedAt:     machine.UpdatedAt.UTC().Format(time.RFC3339),
 		}); err != nil {
 			fmt.Fprintf(stderr, "encode machine registration: %v\n", err)
@@ -121,7 +121,7 @@ func runMachineRegister(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	fmt.Fprintf(stdout, "machine registered\nid: %s\nhostname: %s\nos: %s\narchitecture: %s\nworkspace_root: %s\ncreated_at: %s\nupdated_at: %s\n",
+	fmt.Fprintf(stdout, "machine registered\nid: %s\nhostname: %s\nos: %s\narchitecture: %s\nworkspace_root: %s\nregistered_at: %s\nupdated_at: %s\n",
 		machine.ID,
 		machine.Hostname,
 		machine.OS,
@@ -139,7 +139,7 @@ type machineRegisterJSON struct {
 	OS            string `json:"os"`
 	Architecture  string `json:"architecture"`
 	WorkspaceRoot string `json:"workspace_root"`
-	CreatedAt     string `json:"created_at"`
+	RegisteredAt  string `json:"registered_at"`
 	UpdatedAt     string `json:"updated_at"`
 }
 
