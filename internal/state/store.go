@@ -5,13 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/gitops"
 	_ "modernc.org/sqlite"
 )
 
@@ -242,8 +241,7 @@ func gitOriginURL(ctx context.Context, localPath string) (string, bool) {
 	if err != nil || !info.IsDir() {
 		return "", false
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", localPath, "config", "--get", "remote.origin.url")
-	output, err := cmd.Output()
+	output, err := gitops.Process().Output(ctx, localPath, "config", "--get", "remote.origin.url")
 	if err != nil {
 		return "", false
 	}
@@ -252,106 +250,11 @@ func gitOriginURL(ctx context.Context, localPath string) (string, bool) {
 }
 
 func cloneURLForStore(remote, baseDir string) string {
-	remote = strings.TrimSpace(remote)
-	if remote == "" {
-		return remote
-	}
-	if isSCPLikeCloneURL(remote) {
-		return remote
-	}
-	parsed, err := url.Parse(remote)
-	if err == nil && parsed.Scheme != "" {
-		if parsed.User != nil {
-			if parsed.Scheme == "http" || parsed.Scheme == "https" {
-				parsed.User = nil
-				return parsed.String()
-			}
-			if _, hasPassword := parsed.User.Password(); hasPassword {
-				parsed.User = url.User(parsed.User.Username())
-				return parsed.String()
-			}
-		}
-		return remote
-	}
-	if baseDir != "" && !filepath.IsAbs(remote) {
-		return filepath.Clean(filepath.Join(baseDir, remote))
-	}
-	return remote
+	return gitops.CloneURLFor(remote, baseDir)
 }
 
 func normalizeRemoteForStore(remote, baseDir string) (string, error) {
-	remote = strings.TrimSpace(remote)
-	if remote == "" {
-		return "", errors.New("remote is required")
-	}
-	if user, host, path, ok := splitSCPLikeCloneURL(remote); ok {
-		if host == "github.com" {
-			return normalizeGitHubPathForStore(path)
-		}
-		path = strings.TrimPrefix(path, "/")
-		path = strings.TrimSuffix(path, ".git")
-		return fmt.Sprintf("ssh://%s@%s/%s", user, host, path), nil
-	}
-
-	parsed, err := url.Parse(remote)
-	if err == nil && parsed.Scheme != "" {
-		host := strings.ToLower(parsed.Hostname())
-		if host == "github.com" {
-			return normalizeGitHubPathForStore(parsed.Path)
-		}
-		if parsed.Scheme == "file" {
-			return filepath.Clean(parsed.Path), nil
-		}
-		host = strings.ToLower(parsed.Host)
-		path := strings.TrimSuffix(parsed.EscapedPath(), ".git")
-		if parsed.User != nil {
-			return fmt.Sprintf("%s://%s@%s%s", parsed.Scheme, parsed.User.Username(), host, path), nil
-		}
-		return fmt.Sprintf("%s://%s%s", parsed.Scheme, host, path), nil
-	}
-
-	if baseDir != "" && !filepath.IsAbs(remote) {
-		return filepath.Clean(filepath.Join(baseDir, remote)), nil
-	}
-	abs, err := filepath.Abs(remote)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Clean(abs), nil
-}
-
-func isSCPLikeCloneURL(remote string) bool {
-	_, _, _, ok := splitSCPLikeCloneURL(remote)
-	return ok
-}
-
-func splitSCPLikeCloneURL(remote string) (string, string, string, bool) {
-	if strings.Contains(remote, "://") {
-		return "", "", "", false
-	}
-	at := strings.Index(remote, "@")
-	if at <= 0 {
-		return "", "", "", false
-	}
-	rest := remote[at+1:]
-	colon := strings.Index(rest, ":")
-	if colon <= 0 || colon == len(rest)-1 {
-		return "", "", "", false
-	}
-	user := remote[:at]
-	host := strings.ToLower(rest[:colon])
-	path := rest[colon+1:]
-	return user, host, path, true
-}
-
-func normalizeGitHubPathForStore(path string) (string, error) {
-	path = strings.TrimPrefix(path, "/")
-	path = strings.TrimSuffix(path, "/")
-	path = strings.TrimSuffix(path, ".git")
-	if path == "" || !strings.Contains(path, "/") {
-		return "", fmt.Errorf("invalid GitHub remote path %q", path)
-	}
-	return "https://github.com/" + path, nil
+	return gitops.NormalizeRemoteFrom(remote, baseDir)
 }
 
 type migrationTx interface {

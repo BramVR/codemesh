@@ -7,17 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/policy"
-	"github.com/BramVR/codemesh/internal/registry"
 	"github.com/BramVR/codemesh/internal/state"
 )
 
@@ -176,7 +174,7 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		Project: ProjectInfo{
 			Alias:      project.Alias,
 			Remote:     project.NormalizedRemote,
-			CloneURL:   redactedCloneURLForMetadata(cloneURL),
+			CloneURL:   gitops.RedactURLForMetadata(cloneURL),
 			SourcePath: project.LocalPath,
 			LocalPath:  project.LocalPath,
 			ProjectID:  project.ID,
@@ -310,7 +308,7 @@ func evaluateForPrep(ctx context.Context, project state.Project, base string) (D
 		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{Code: "origin-missing", Message: err.Error()})
 		return diagnostics, nil
 	}
-	normalized, err := registry.NormalizeRemoteFrom(strings.TrimSpace(remote), project.LocalPath)
+	normalized, err := gitops.NormalizeRemoteFrom(strings.TrimSpace(remote), project.LocalPath)
 	if err != nil {
 		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{Code: "origin-unsupported", Message: err.Error()})
 		return diagnostics, nil
@@ -323,14 +321,14 @@ func evaluateForPrep(ctx context.Context, project state.Project, base string) (D
 		return diagnostics, nil
 	}
 	if _, err := gitOutput(ctx, project.LocalPath, "fetch", "--quiet", "origin", "refs/heads/"+base); err != nil {
-		if strings.Contains(err.Error(), "couldn't find remote ref") {
+		if gitops.IsMissingRemoteRef(err) {
 			diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{
 				Code:    "missing-base",
 				Message: fmt.Sprintf("base branch %q was not found on origin", base),
 			})
 			return diagnostics, nil
 		}
-		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{Code: "fetch-failed", Message: redactedCloneOutput(err.Error(), strings.TrimSpace(remote))})
+		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{Code: "fetch-failed", Message: gitops.RedactCloneOutput(err.Error(), strings.TrimSpace(remote))})
 		return diagnostics, nil
 	}
 	basePolicy, err := policyFromFetchedBase(ctx, project.LocalPath, base)
@@ -620,87 +618,18 @@ func handoffDocExists(root, rel string) (bool, error) {
 }
 
 func gitClone(ctx context.Context, cloneURL, base, readyPath string) error {
-	cmd := exec.CommandContext(ctx, "git", "clone", "--branch", base, "--single-branch", cloneURL, readyPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		detail := strings.TrimSpace(string(output))
-		if detail == "" {
-			detail = err.Error()
-		}
-		return fmt.Errorf("clone agent workspace: %s", redactedCloneOutput(detail, cloneURL))
+	if _, err := gitops.Process().Output(ctx, "", "clone", "--branch", base, "--single-branch", cloneURL, readyPath); err != nil {
+		return fmt.Errorf("clone agent workspace: %s", gitops.RedactCloneOutput(gitops.CommandDetail(err), cloneURL))
 	}
 	return nil
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		detail := strings.TrimSpace(string(output))
-		if detail == "" {
-			detail = err.Error()
-		}
-		return "", fmt.Errorf("git %s failed: %s", strings.Join(args, " "), detail)
-	}
-	return string(output), nil
+	return gitops.Process().Output(ctx, dir, args...)
 }
 
 func validateBaseBranch(ctx context.Context, base string) error {
-	cmd := exec.CommandContext(ctx, "git", "check-ref-format", "--branch", base)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		detail := strings.TrimSpace(string(output))
-		if detail == "" {
-			detail = err.Error()
-		}
-		return fmt.Errorf("invalid base branch %q: %s", base, detail)
-	}
-	return nil
-}
-
-func redactedCloneURLForMetadata(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" {
-		return raw
-	}
-	if parsed.User != nil {
-		parsed.User = url.User("redacted")
-	}
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String()
-}
-
-func redactedCloneOutput(output, cloneURL string) string {
-	redacted := redactedCloneURLForMetadata(cloneURL)
-	if redacted != cloneURL {
-		output = strings.ReplaceAll(output, cloneURL, redacted)
-		output = strings.ReplaceAll(output, cloneURL+"/", redacted+"/")
-	}
-	parsed, err := url.Parse(cloneURL)
-	if err != nil || parsed.Scheme == "" {
-		return output
-	}
-	candidates := []string{}
-	withoutUser := *parsed
-	withoutUser.User = nil
-	candidates = append(candidates, withoutUser.String())
-	withoutFragment := *parsed
-	withoutFragment.Fragment = ""
-	candidates = append(candidates, withoutFragment.String())
-	withoutUserFragment := withoutUser
-	withoutUserFragment.Fragment = ""
-	candidates = append(candidates, withoutUserFragment.String())
-	withoutQuery := withoutFragment
-	withoutQuery.RawQuery = ""
-	candidates = append(candidates, withoutQuery.String())
-	for _, candidate := range candidates {
-		if candidate != "" && candidate != redacted {
-			output = strings.ReplaceAll(output, candidate, redacted)
-			output = strings.ReplaceAll(output, candidate+"/", redacted+"/")
-		}
-	}
-	return output
+	return gitops.Process().ValidateBranchName(ctx, base)
 }
 
 func writeNewFile(path string, data []byte, perm os.FileMode) error {

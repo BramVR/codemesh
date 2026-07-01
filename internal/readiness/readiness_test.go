@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/state"
 )
 
@@ -260,6 +261,27 @@ func TestEvaluateProjectReportsFetchFailureAsStaleBlocker(t *testing.T) {
 	}
 	if !hasDiagnostic(report.Blockers, "fetch-failed") {
 		t.Fatalf("blockers = %v, want fetch-failed", report.Blockers)
+	}
+}
+
+func TestEvaluateProjectRedactsCredentialBearingFetchFailure(t *testing.T) {
+	project := createReadinessFixture(t, "redacted-fetch")
+	rawRemote := "https://user:redactme@example.invalid/org/repo.git?credential=redactme#fragment"
+	normalized, err := gitops.NormalizeRemote(rawRemote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project.NormalizedRemote = normalized
+	runGit(t, project.LocalPath, "remote", "set-url", "origin", rawRemote)
+
+	report := evaluateFixture(t, project, Options{BaseBranch: "main", CheckRemote: true})
+
+	if !hasDiagnostic(report.Blockers, "fetch-failed") {
+		t.Fatalf("blockers = %v, want fetch-failed", report.Blockers)
+	}
+	message := report.Blockers[0].Message
+	if strings.Contains(message, "redactme") || strings.Contains(message, "credential") || strings.Contains(message, "fragment") {
+		t.Fatalf("fetch failure leaked credential-bearing URL parts: %s", message)
 	}
 }
 
