@@ -40,6 +40,8 @@ When warnings exist, stdout prints one `warning: <code> <message>` line per warn
 
 `handoff_docs` is a count only. The selected doc paths and their source metadata live in `<ready_path>/codemesh-run.json`.
 
+`codemesh-run.json` also records the run id, project identity, registered remote, selected base, resolved commit, readiness decision, and diagnostics. Handoff docs are recorded as paths and source metadata only; their file contents are not embedded.
+
 ## Handoff Docs
 
 Agent Prep records handoff docs as project-relative paths only. It does not copy docs, embed doc contents, or read doc contents into metadata.
@@ -76,6 +78,7 @@ codemesh agent prepare demo-project --base main --profile codex
 
 - Prepares temporary clones only; it does not create shared worktrees from the source checkout.
 - Uses local policy and readiness checks; it does not provision credentials or materialize secret values.
+- Can prepare from the registered clone URL when the desired source checkout path is missing; selected-base env key policy still applies, and required local env files are reported missing when no source checkout exists.
 - Does not start or manage an agent process.
 - Records handoff doc paths only; it does not include doc text in stdout, `codemesh-run.json`, or local state.
 - Does not sync prepared workspaces between machines.

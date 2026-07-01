@@ -50,7 +50,7 @@ Override the public HTTPS GitHub remote with:
 CODEMESH_E2E_LIVE=1 CODEMESH_LIVE_GITHUB_REPO=https://github.com/OWNER/REPO.git make e2e-live
 ```
 
-The GitHub smoke discovers the remote `HEAD` default branch with `git ls-remote --symref`, clones a temporary seed checkout, registers it with `codemesh add`, removes the checkout so the project is missing, runs `codemesh status`, runs `codemesh hydrate`, and verifies the hydrated checkout origin and branch. All CodeMesh state, `HOME`, Git config, workspace paths, and command cwd remain under the harness temp root.
+The GitHub smoke discovers the remote `HEAD` default branch with `git ls-remote --symref`, clones a temporary seed checkout, registers it with `codemesh add`, removes the checkout so the project is missing, runs `codemesh status`, runs `codemesh agent prepare`, verifies the prepared workspace and `codemesh-run.json`, confirms `codemesh runs` can read the run, runs guarded cleanup, then runs `codemesh hydrate` and verifies the hydrated checkout origin and branch. All CodeMesh state, `HOME`, Git config, workspace paths, and command cwd remain under the harness temp root.
 
 Strict mode turns missing live prerequisites into failures:
 
@@ -76,7 +76,7 @@ The report includes:
 - `mode`: `source` for the normal source-built runner, `packaged` for `make e2e-packaged`, or `live` for `make e2e-live`.
 - `binary`: executable path plus whether it was an external packaged binary.
 - `isolation`: isolated `CODEMESH_HOME`, `HOME`, workspace, run directory, and Git config path.
-- `live`: live opt-in status, strict mode, target labels, skip reasons, GitHub remote URL, discovered default branch, command durations, per-smoke secret-safety result, and the host-scoped lock path/label when a lock was acquired.
+- `live`: live opt-in status, strict mode, target labels, skip reasons, GitHub remote URL, discovered default branch, command durations for GitHub status, Agent Prep, runs, cleanup, and hydration smoke steps, per-smoke secret-safety result, and the host-scoped lock path/label when a lock was acquired.
 - `summary`: `pass`, `fail`, `skip`, and `total` counts derived from recorded case results.
 - `secret_safety`: whether report redaction is active and how many known fake fixture values were redacted.
 - `results`: per-case status, duration, exit code, and captured output for failing or diagnostic cases.
@@ -159,7 +159,7 @@ Readiness e2e coverage runs `codemesh tree` and `codemesh status` against the sa
 
 Hydration e2e coverage uses the local bare Git remotes from the offline fixture set. It registers a known project, removes its desired local path to make it missing, runs `codemesh hydrate <project>`, and verifies the real CLI recreates the checkout without reaching GitHub or creating directories for unrelated missing projects.
 
-Agent Prep e2e coverage uses the same local bare Git remotes and isolated CodeMesh home. It scans the fixture sources, runs `codemesh agent prepare <project>` for a clean source checkout, verifies `ready_path` points under CodeMesh-managed agents storage with a real Git checkout at the requested base and `codemesh-run.json`, checks the State store `agent_runs` metadata references the prepared workspace, checks dirty source checkout warnings do not block prep, verifies stdout reports `handoff_docs: N`, verifies default and policy-selected handoff docs are resolved from the prepared clone and recorded as paths without contents, verifies unmatched policy patterns emit `handoff-doc-missing` warnings, checks Env readiness warn mode still prepares with diagnostics and metadata, verifies blocking env readiness stops prep with missing file/key diagnostics only, and confirms present fake env values/file contents are not written to run metadata.
+Agent Prep e2e coverage uses the same local bare Git remotes and isolated CodeMesh home. It scans the fixture sources, runs `codemesh agent prepare <project>` for a clean source checkout, verifies `ready_path` points under CodeMesh-managed agents storage with a real Git checkout at the requested base and `codemesh-run.json`, checks the State store `agent_runs` metadata references the prepared workspace, checks dirty source checkout warnings do not block prep, verifies stdout reports `handoff_docs: N`, verifies default and policy-selected handoff docs are resolved from the prepared clone and recorded as paths without contents, verifies unmatched policy patterns emit `handoff-doc-missing` warnings, checks Env readiness warn mode still prepares with diagnostics and metadata, verifies blocking env readiness stops prep with missing file/key diagnostics only, and confirms present fake env values/file contents are not written to run metadata. Opted-in live coverage also proves Agent Prep can prepare from a public GitHub remote when the registered source checkout path is missing.
 
 Agent Run cleanup coverage reuses that isolated Agent Prep state. It runs `codemesh runs` to verify stored run metadata, then `codemesh clean --older-than 0d` to verify the guarded runner removes only the prepared workspace under the temp CodeMesh home and updates local metadata.
 

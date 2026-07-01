@@ -40,23 +40,26 @@ type Request struct {
 }
 
 type Result struct {
-	RunID       string
-	ReadyPath   string
-	Base        string
-	Profile     string
-	Diagnostics Diagnostics
-	Metadata    Metadata
+	RunID          string
+	ReadyPath      string
+	Base           string
+	Profile        string
+	ResolvedCommit string
+	Diagnostics    Diagnostics
+	Metadata       Metadata
 }
 
 type Metadata struct {
-	RunID       string       `json:"run_id"`
-	ReadyPath   string       `json:"ready_path"`
-	Project     ProjectInfo  `json:"project"`
-	Base        string       `json:"base"`
-	Profile     string       `json:"profile"`
-	HandoffDocs []HandoffDoc `json:"handoff_docs"`
-	Diagnostics Diagnostics  `json:"diagnostics"`
-	CreatedAt   string       `json:"created_at"`
+	RunID             string       `json:"run_id"`
+	ReadyPath         string       `json:"ready_path"`
+	Project           ProjectInfo  `json:"project"`
+	Base              string       `json:"base"`
+	Profile           string       `json:"profile"`
+	ResolvedCommit    string       `json:"resolved_commit"`
+	ReadinessDecision string       `json:"readiness_decision"`
+	HandoffDocs       []HandoffDoc `json:"handoff_docs"`
+	Diagnostics       Diagnostics  `json:"diagnostics"`
+	CreatedAt         string       `json:"created_at"`
 }
 
 type ProjectInfo struct {
@@ -112,13 +115,14 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if len(pathDiagnostics.Blockers) != 0 {
+	sourcePathMissing := diagnosticsHaveCode(pathDiagnostics.Blockers, "missing-path")
+	if len(pathDiagnostics.Blockers) != 0 && !sourcePathMissing {
 		return Result{
 			Profile:     strings.TrimSpace(req.Profile),
 			Diagnostics: pathDiagnostics,
 		}, BlockedError{Diagnostics: pathDiagnostics}
 	}
-	base, err := p.resolveBase(project, req.Base)
+	base, err := p.resolveBase(ctx, project, req.Base, sourcePathMissing)
 	if err != nil {
 		return Result{}, err
 	}
@@ -157,9 +161,36 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	if err := gitClone(ctx, cloneURL, base, readyPath); err != nil {
 		return Result{}, err
 	}
-	readyPolicy, err := policy.Resolve(readyPath)
+	resolvedCommit, err := gitResolvedCommit(ctx, readyPath)
 	if err != nil {
 		return Result{}, err
+	}
+	var readyPolicy policy.Policy
+	if sourcePathMissing {
+		readyPolicy, err = policyFromPreparedClone(ctx, readyPath)
+	} else {
+		readyPolicy, err = policy.Resolve(readyPath)
+	}
+	if err != nil {
+		if sourcePathMissing {
+			diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{Code: "invalid-policy", Message: err.Error()})
+			return Result{
+				Base:        base,
+				Profile:     strings.TrimSpace(req.Profile),
+				Diagnostics: diagnostics,
+			}, BlockedError{Diagnostics: diagnostics}
+		}
+		return Result{}, err
+	}
+	if sourcePathMissing {
+		addEnvDiagnostics(project.LocalPath, readyPolicy, &diagnostics)
+		if len(diagnostics.Blockers) != 0 {
+			return Result{
+				Base:        base,
+				Profile:     strings.TrimSpace(req.Profile),
+				Diagnostics: diagnostics,
+			}, BlockedError{Diagnostics: diagnostics}
+		}
 	}
 	handoffDocs, handoffWarnings, err := handoffDocs(readyPath, readyPolicy.IncludeDocs)
 	if err != nil {
@@ -179,11 +210,13 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 			LocalPath:  project.LocalPath,
 			ProjectID:  project.ID,
 		},
-		Base:        base,
-		Profile:     strings.TrimSpace(req.Profile),
-		HandoffDocs: handoffDocs,
-		Diagnostics: diagnostics,
-		CreatedAt:   now.Format(time.RFC3339),
+		Base:              base,
+		Profile:           strings.TrimSpace(req.Profile),
+		ResolvedCommit:    resolvedCommit,
+		ReadinessDecision: "ready",
+		HandoffDocs:       handoffDocs,
+		Diagnostics:       diagnostics,
+		CreatedAt:         now.Format(time.RFC3339),
 	}
 	metadataJSON, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
@@ -205,12 +238,13 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	runRecorded = true
 
 	return Result{
-		RunID:       runID,
-		ReadyPath:   readyPath,
-		Base:        base,
-		Profile:     strings.TrimSpace(req.Profile),
-		Diagnostics: diagnostics,
-		Metadata:    metadata,
+		RunID:          runID,
+		ReadyPath:      readyPath,
+		Base:           base,
+		Profile:        strings.TrimSpace(req.Profile),
+		ResolvedCommit: resolvedCommit,
+		Diagnostics:    diagnostics,
+		Metadata:       metadata,
 	}, nil
 }
 
@@ -227,15 +261,68 @@ func (p Preparer) lookupProject(ctx context.Context, alias string) (state.Projec
 	return state.Project{}, fmt.Errorf("unknown project: %s", alias)
 }
 
-func (p Preparer) resolveBase(project state.Project, requestedBase string) (string, error) {
+func (p Preparer) resolveBase(ctx context.Context, project state.Project, requestedBase string, sourcePathMissing bool) (string, error) {
 	if base := strings.TrimSpace(requestedBase); base != "" {
 		return base, nil
+	}
+	if sourcePathMissing {
+		return resolveMissingSourceBase(ctx, project)
+	}
+	if _, err := os.Stat(project.LocalPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return policy.Defaults().BaseBranch, nil
+		}
+		return "", fmt.Errorf("check project path %q: %w", project.LocalPath, err)
 	}
 	projectPolicy, err := policy.Resolve(project.LocalPath)
 	if err != nil {
 		return "", err
 	}
 	return projectPolicy.BaseBranch, nil
+}
+
+func resolveMissingSourceBase(ctx context.Context, project state.Project) (string, error) {
+	base := policy.Defaults().BaseBranch
+	cloneURL := project.CloneURL
+	if cloneURL == "" {
+		cloneURL = project.NormalizedRemote
+	}
+	defaultBranch, err := remoteDefaultBranch(ctx, cloneURL)
+	if err != nil {
+		return base, nil
+	}
+	base = defaultBranch
+	probeRoot, err := os.MkdirTemp("", "codemesh-policy-probe-*")
+	if err != nil {
+		return "", fmt.Errorf("create policy probe: %w", err)
+	}
+	defer os.RemoveAll(probeRoot)
+	probePath := filepath.Join(probeRoot, "workspace")
+	if err := gitClone(ctx, cloneURL, defaultBranch, probePath); err != nil {
+		return base, nil
+	}
+	projectPolicy, err := policyFromPreparedClone(ctx, probePath)
+	if err != nil {
+		return "", err
+	}
+	return projectPolicy.BaseBranch, nil
+}
+
+func remoteDefaultBranch(ctx context.Context, cloneURL string) (string, error) {
+	output, err := gitOutput(ctx, "", "ls-remote", "--symref", cloneURL, "HEAD")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.HasPrefix(line, "ref: refs/heads/") || !strings.HasSuffix(line, "\tHEAD") {
+			continue
+		}
+		branch := strings.TrimSuffix(strings.TrimPrefix(line, "ref: refs/heads/"), "\tHEAD")
+		if branch != "" {
+			return branch, nil
+		}
+	}
+	return "", errors.New("remote HEAD did not advertise a default branch")
 }
 
 func evaluateSourcePath(project state.Project) (Diagnostics, error) {
@@ -283,6 +370,9 @@ func evaluateForPrep(ctx context.Context, project state.Project, base string) (D
 	pathDiagnostics, err := evaluateSourcePath(project)
 	if err != nil {
 		return Diagnostics{}, err
+	}
+	if diagnosticsHaveCode(pathDiagnostics.Blockers, "missing-path") {
+		return evaluateMissingSourceForPrep(ctx, project, base)
 	}
 	if len(pathDiagnostics.Blockers) != 0 {
 		diagnostics.Blockers = append(diagnostics.Blockers, pathDiagnostics.Blockers...)
@@ -340,6 +430,44 @@ func evaluateForPrep(ctx context.Context, project state.Project, base string) (D
 	return diagnostics, nil
 }
 
+func diagnosticsHaveCode(diagnostics []Diagnostic, code string) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func evaluateMissingSourceForPrep(ctx context.Context, project state.Project, base string) (Diagnostics, error) {
+	var diagnostics Diagnostics
+	if err := validateBaseBranch(ctx, base); err != nil {
+		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{Code: "invalid-base", Message: err.Error()})
+		return diagnostics, nil
+	}
+	cloneURL := project.CloneURL
+	if cloneURL == "" {
+		cloneURL = project.NormalizedRemote
+	}
+	if cloneURL == "" {
+		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{Code: "origin-missing", Message: "registered project has no clone URL"})
+		return diagnostics, nil
+	}
+	refs, err := gitOutput(ctx, "", "ls-remote", cloneURL, "refs/heads/"+base)
+	if err != nil {
+		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{Code: "fetch-failed", Message: gitops.RedactCloneOutput(gitops.CommandDetail(err), cloneURL)})
+		return diagnostics, nil
+	}
+	if strings.TrimSpace(refs) == "" {
+		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{
+			Code:    "missing-base",
+			Message: fmt.Sprintf("base branch %q was not found on origin", base),
+		})
+		return diagnostics, nil
+	}
+	return diagnostics, nil
+}
+
 func policyFromFetchedBase(ctx context.Context, repo, base string) (policy.Policy, error) {
 	data, err := gitOutput(ctx, repo, "show", "FETCH_HEAD:"+policy.FileName)
 	if err != nil {
@@ -349,6 +477,17 @@ func policyFromFetchedBase(ctx context.Context, repo, base string) (policy.Polic
 		return policy.Policy{}, err
 	}
 	return policy.ParseBytes("origin/"+base+":"+policy.FileName, []byte(data))
+}
+
+func policyFromPreparedClone(ctx context.Context, repo string) (policy.Policy, error) {
+	data, err := gitOutput(ctx, repo, "show", "HEAD:"+policy.FileName)
+	if err != nil {
+		if strings.Contains(err.Error(), "does not exist") || strings.Contains(err.Error(), "exists on disk, but not in") {
+			return policy.Defaults(), nil
+		}
+		return policy.Policy{}, err
+	}
+	return policy.ParseBytes("HEAD:"+policy.FileName, []byte(data))
 }
 
 func addEnvDiagnostics(sourcePath string, projectPolicy policy.Policy, diagnostics *Diagnostics) {
@@ -622,6 +761,14 @@ func gitClone(ctx context.Context, cloneURL, base, readyPath string) error {
 		return fmt.Errorf("clone agent workspace: %s", gitops.RedactCloneOutput(gitops.CommandDetail(err), cloneURL))
 	}
 	return nil
+}
+
+func gitResolvedCommit(ctx context.Context, readyPath string) (string, error) {
+	commit, err := gitOutput(ctx, readyPath, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve agent workspace commit: %w", err)
+	}
+	return strings.TrimSpace(commit), nil
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
