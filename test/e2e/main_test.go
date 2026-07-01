@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -128,6 +129,9 @@ func TestWriteReportIncludesAuditMetadataSummaryAndSecretSafety(t *testing.T) {
 	}
 	if got.Mode != modeSource || got.Binary.Path != h.bin || got.Binary.Kind != "built-from-source" || got.Binary.External {
 		t.Fatalf("binary metadata = %#v mode = %q", got.Binary, got.Mode)
+	}
+	if got.Host.OS != runtime.GOOS || got.Host.Arch != runtime.GOARCH || got.Host.GoVersion != runtime.Version() {
+		t.Fatalf("host metadata = %#v", got.Host)
 	}
 	if got.Isolation.CodeMeshHome != h.codemeshHome || got.Isolation.Home != h.home || got.Isolation.Workspace != h.workspace || got.Isolation.RunDir != h.runDir {
 		t.Fatalf("isolation metadata = %#v", got.Isolation)

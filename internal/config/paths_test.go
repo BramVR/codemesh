@@ -22,7 +22,7 @@ func TestResolveHomeUsesOverride(t *testing.T) {
 func TestResolveHomeDefaultsUnderUserHome(t *testing.T) {
 	homeRoot := t.TempDir()
 	t.Setenv("CODEMESH_HOME", "")
-	t.Setenv("HOME", homeRoot)
+	setUserHome(t, homeRoot)
 
 	home, err := ResolveHome()
 
@@ -52,4 +52,12 @@ func TestResolvePathsDerivesDatabaseAndAgentsDir(t *testing.T) {
 	if want := filepath.Join(root, "agents"); paths.AgentsDir != want {
 		t.Fatalf("agents dir = %q, want %q", paths.AgentsDir, want)
 	}
+}
+
+func setUserHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
 }
