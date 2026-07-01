@@ -13,12 +13,12 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 - [`codemesh init [workspace-root]`](commands/init.md)
 - [`codemesh add <path> [--alias name]`](commands/add.md)
 - [`codemesh scan [workspace-root]`](commands/scan.md)
-- [`codemesh tree`](commands/tree.md)
+- [`codemesh tree [--json]`](commands/tree.md)
 - [`codemesh status [project] [--base branch] [--json]`](commands/status.md)
 - [`codemesh doctor <project> [--base branch] [--strict] [--json]`](commands/doctor.md)
-- [`codemesh hydrate <project>`](commands/hydrate.md)
+- [`codemesh hydrate <project> [--json]`](commands/hydrate.md)
 - [`codemesh machine register [workspace-root] [--json]`](commands/machine-register.md)
-- [`codemesh agent prepare <project> [--base branch] [--profile name]`](commands/agent-prepare.md)
+- [`codemesh agent prepare <project> [--base branch] [--profile name] [--json]`](commands/agent-prepare.md)
 - [`codemesh agent run <run-id> --label label [--timeout duration] -- <command...>`](commands/agent-run.md)
 - [`codemesh runs`](commands/runs.md)
 - [`codemesh clean [--older-than age]`](commands/clean.md)
@@ -53,11 +53,13 @@ git clone "$remote" "$workspace/demo-project"
 codemesh init "$workspace"
 codemesh add "$workspace/demo-project" --alias demo-project
 codemesh tree
+codemesh tree --json
 codemesh status demo-project --base main
 codemesh status demo-project --base main --json
 codemesh doctor demo-project --base main
 codemesh doctor demo-project --base main --strict --json
 codemesh agent prepare demo-project --base main --profile codex
+codemesh agent prepare demo-project --base main --profile codex --json
 run_id="$(codemesh runs | awk '/^- / {print $2; exit}')"
 codemesh agent run "$run_id" --label workspace-root -- git rev-parse --show-toplevel
 codemesh runs

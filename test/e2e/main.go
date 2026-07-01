@@ -1156,6 +1156,13 @@ func (h *harness) caseReadinessStatusFixtureWorkflow() {
 	if tree.Status != "PASS" {
 		return
 	}
+	treeJSON := s.command("readiness tree json scanned fixtures", "tree", "--json")
+	if treeJSON.Status != "PASS" || !s.expectTreeJSON(treeJSON, "readiness-blocked", map[string]string{
+		"clean-repo":   "present",
+		"dirty-source": "dirty",
+	}) {
+		return
+	}
 
 	clean := s.command("readiness status clean repo", "status", "clean-repo", "--base", "main")
 	if clean.Status != "PASS" || !s.expectOutput(clean, "state: present", "path_present: true", "warnings: none", "blockers: none") {
@@ -1597,13 +1604,25 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 	if noop.Status != "PASS" || !s.expectOutput(noop, "project already present: hydrate-target", "path: "+target.Source) {
 		return
 	}
+	hydrateJSON := s.command("hydrate missing fixture json", "hydrate", "hydrate-other", "--json")
+	if hydrateJSON.Status != "PASS" || !s.expectHydrateJSON(hydrateJSON, "success", "hydrate-other", "hydrated", other.Source, true, nil) {
+		return
+	}
+	noopJSON := s.command("hydrate already present fixture json", "hydrate", "hydrate-other", "--json")
+	if noopJSON.Status != "PASS" || !s.expectHydrateJSON(noopJSON, "success", "hydrate-other", "already-present", other.Source, true, nil) {
+		return
+	}
 
-	conflictResult := s.expectedFailure("hydrate path conflict refusal", "hydrate", "hydrate-conflict")
+	conflictResult := s.expectedFailure("hydrate path conflict refusal", "hydrate", "hydrate-conflict", "--json")
 	if conflictResult.Status != "FAIL" {
 		conflictResult.Status = "FAIL"
 		conflictResult.Error = "path conflict hydrate unexpectedly passed"
-	} else if !strings.Contains(conflictResult.Stderr, "path conflict") || !strings.Contains(conflictResult.Stderr, conflict.Source) {
-		conflictResult.Error = "path conflict hydrate did not report the unsafe path"
+	} else if conflictResult.ExitCode != 1 {
+		conflictResult.Error = fmt.Sprintf("path conflict exit code = %d, want 1", conflictResult.ExitCode)
+	} else if conflictResult.Stderr != "" {
+		conflictResult.Error = "path conflict hydrate wrote stderr: " + conflictResult.Stderr
+	} else if !s.expectHydrateJSON(conflictResult, "readiness-blocked", "hydrate-conflict", "path-conflict", conflict.Source, true, []string{"path-conflict"}) {
+		return
 	} else if got, err := os.ReadFile(conflictMarker); err != nil || string(got) != "do not overwrite\n" {
 		conflictResult.Error = fmt.Sprintf("path conflict marker changed or missing: got %q err %v", got, err)
 	} else {
@@ -1616,7 +1635,7 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 	}
 
 	after := s.command("hydration tree after", "tree")
-	if after.Status != "PASS" || !s.expectOutput(after, "hydrate-target present", "hydrate-other missing", "hydrate-conflict blocked") {
+	if after.Status != "PASS" || !s.expectOutput(after, "hydrate-target present", "hydrate-other present", "hydrate-conflict blocked") {
 		return
 	}
 
@@ -1716,6 +1735,11 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 		return
 	}
 
+	jsonPrepare := s.command("agent prep clean fixture json", "agent", "prepare", "clean-repo", "--base", "main", "--profile", "codex", "--json")
+	if jsonPrepare.Status != "PASS" || !s.expectAgentPrepareJSON(jsonPrepare, "success", "clean-repo", true, "main", "codex", 4, nil, nil) {
+		return
+	}
+
 	policyDocs := s.command("agent prep policy handoff docs", "agent", "prepare", "policy-docs", "--base", "main")
 	if policyDocs.Status != "PASS" || !s.expectOutput(policyDocs, "warning: handoff-doc-missing", "blockers: none", "handoff_docs: 7") {
 		return
@@ -1809,6 +1833,26 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 		envBlocked.Error = ""
 	}
 	s.record(envBlocked)
+	envBlockedJSON := s.expectedFailure("agent prep env blocker json", "agent", "prepare", "required-env-missing", "--json")
+	if envBlockedJSON.Status != "FAIL" {
+		envBlockedJSON.Status = "FAIL"
+		envBlockedJSON.Error = "env-blocked json prep unexpectedly passed"
+	} else if envBlockedJSON.ExitCode != 1 {
+		envBlockedJSON.Error = fmt.Sprintf("env-blocked json exit code = %d, want 1", envBlockedJSON.ExitCode)
+	} else if envBlockedJSON.Stderr != "" {
+		envBlockedJSON.Error = "env-blocked json wrote stderr: " + envBlockedJSON.Stderr
+	} else if !s.expectAgentPrepareJSON(envBlockedJSON, "readiness-blocked", "required-env-missing", false, "main", "", 0, nil, []string{"missing-env-file", "missing-env-key"}) {
+		return
+	} else if strings.Contains(envBlockedJSON.Stdout, "=") || containsAnySecret(envBlockedJSON.Stdout, fakeEnvFixtureSecrets()) {
+		envBlockedJSON.Error = "env-blocked json included env values"
+	} else {
+		envBlockedJSON.Status = "PASS"
+		envBlockedJSON.Error = ""
+	}
+	s.record(envBlockedJSON)
+	if envBlockedJSON.Status != "PASS" {
+		return
+	}
 
 	envWarn := s.command("agent prep env warning", "agent", "prepare", "required-env-warn", "--base", "main")
 	if envWarn.Status != "PASS" || !s.expectOutput(envWarn, "warning: missing-env-file", "warning: missing-env-key", "blockers: none", "ready_path: ") {
@@ -2671,6 +2715,166 @@ func (s *scenario) expectStatusJSON(r result, alias, exitClass, state, base stri
 		return false
 	}
 	return true
+}
+
+func (s *scenario) expectTreeJSON(r result, exitClass string, states map[string]string) bool {
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Projects []struct {
+				Alias       string `json:"alias"`
+				State       string `json:"state"`
+				Path        string `json:"path"`
+				PathPresent bool   `json:"path_present"`
+				Remote      string `json:"remote"`
+				Base        string `json:"base"`
+			} `json:"projects"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
+		s.failCommandAssertion(r, "stdout was not JSON: "+err.Error())
+		return false
+	}
+	if payload.Command != "tree" || payload.ExitClass != exitClass {
+		s.failCommandAssertion(r, fmt.Sprintf("command metadata = %#v, want command tree exit_class %s", payload, exitClass))
+		return false
+	}
+	seen := make(map[string]string, len(payload.Payload.Projects))
+	for _, project := range payload.Payload.Projects {
+		if project.Path == "" || project.Remote == "" || project.Base == "" {
+			s.failCommandAssertion(r, fmt.Sprintf("tree project missing canonical fields: %#v", project))
+			return false
+		}
+		seen[project.Alias] = project.State
+	}
+	for alias, want := range states {
+		if got, ok := seen[alias]; !ok || got != want {
+			s.failCommandAssertion(r, fmt.Sprintf("tree JSON state for %s = %q present=%t, want %q", alias, got, ok, want))
+			return false
+		}
+	}
+	return true
+}
+
+func (s *scenario) expectHydrateJSON(r result, exitClass, alias, outcome, path string, pathPresent bool, blockerCodes []string) bool {
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Project     string `json:"project"`
+			Outcome     string `json:"outcome"`
+			Path        string `json:"path"`
+			PathPresent bool   `json:"path_present"`
+			Remote      string `json:"remote"`
+		} `json:"payload"`
+		Diagnostics struct {
+			Blockers []struct {
+				Code string `json:"code"`
+			} `json:"blockers"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
+		s.failCommandAssertion(r, "stdout was not JSON: "+err.Error())
+		return false
+	}
+	got := payload.Payload
+	if payload.Command != "hydrate" || payload.ExitClass != exitClass || got.Project != alias || got.Outcome != outcome || got.Path != path || got.PathPresent != pathPresent || got.Remote == "" {
+		s.failCommandAssertion(r, fmt.Sprintf("hydrate JSON payload = %#v, want class=%s alias=%s outcome=%s path=%s present=%t", payload, exitClass, alias, outcome, path, pathPresent))
+		return false
+	}
+	if err := diagnosticCodesMatch("hydrate blockers", hydrateBlockerCodes(payload.Diagnostics.Blockers), blockerCodes); err != nil {
+		s.failCommandAssertion(r, err.Error())
+		return false
+	}
+	return true
+}
+
+func hydrateBlockerCodes(items []struct {
+	Code string `json:"code"`
+}) []string {
+	codes := make([]string, 0, len(items))
+	for _, item := range items {
+		codes = append(codes, item.Code)
+	}
+	return codes
+}
+
+func (s *scenario) expectAgentPrepareJSON(r result, exitClass, alias string, ready bool, base, profile string, handoffDocsCount int, warningCodes, blockerCodes []string) bool {
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Project          string `json:"project"`
+			Ready            bool   `json:"ready"`
+			RunID            string `json:"run_id"`
+			Base             string `json:"base"`
+			Profile          string `json:"profile"`
+			HandoffDocsCount int    `json:"handoff_docs_count"`
+			RunContractPath  string `json:"run_contract_path"`
+			ReadyPath        string `json:"ready_path"`
+			ResolvedCommit   string `json:"resolved_commit"`
+			Diagnostics      struct {
+				Warnings []struct {
+					Code string `json:"code"`
+				} `json:"warnings"`
+				Blockers []struct {
+					Code string `json:"code"`
+				} `json:"blockers"`
+			} `json:"diagnostics"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
+		s.failCommandAssertion(r, "stdout was not JSON: "+err.Error())
+		return false
+	}
+	got := payload.Payload
+	if payload.Command != "agent prepare" || payload.ExitClass != exitClass || got.Project != alias || got.Ready != ready || got.Base != base || got.Profile != profile || got.HandoffDocsCount != handoffDocsCount {
+		s.failCommandAssertion(r, fmt.Sprintf("agent prepare JSON payload = %#v", payload))
+		return false
+	}
+	if ready {
+		if got.RunID == "" || got.ReadyPath == "" || got.RunContractPath != filepath.Join(got.ReadyPath, "codemesh-run.json") || got.ResolvedCommit == "" {
+			s.failCommandAssertion(r, fmt.Sprintf("agent prepare JSON missing ready fields: %#v", got))
+			return false
+		}
+		if _, err := os.Stat(got.RunContractPath); err != nil {
+			s.failCommandAssertion(r, "run contract path missing: "+err.Error())
+			return false
+		}
+	} else if got.RunID != "" || got.ReadyPath != "" || got.RunContractPath != "" || got.ResolvedCommit != "" {
+		s.failCommandAssertion(r, fmt.Sprintf("blocked agent prepare JSON included ready fields: %#v", got))
+		return false
+	}
+	if err := diagnosticCodesMatch("agent prepare warnings", agentPrepareWarningCodes(got.Diagnostics.Warnings), warningCodes); err != nil {
+		s.failCommandAssertion(r, err.Error())
+		return false
+	}
+	if err := diagnosticCodesMatch("agent prepare blockers", agentPrepareBlockerCodes(got.Diagnostics.Blockers), blockerCodes); err != nil {
+		s.failCommandAssertion(r, err.Error())
+		return false
+	}
+	return true
+}
+
+func agentPrepareWarningCodes(items []struct {
+	Code string `json:"code"`
+}) []string {
+	codes := make([]string, 0, len(items))
+	for _, item := range items {
+		codes = append(codes, item.Code)
+	}
+	return codes
+}
+
+func agentPrepareBlockerCodes(items []struct {
+	Code string `json:"code"`
+}) []string {
+	codes := make([]string, 0, len(items))
+	for _, item := range items {
+		codes = append(codes, item.Code)
+	}
+	return codes
 }
 
 func doctorJSONMatches(raw, alias, exitClass, handoff, state, base string, strict bool, warningCodes, blockerCodes []string) error {

@@ -12,7 +12,7 @@ permalink: /commands/agent-prepare
 ## Syntax
 
 ```sh
-codemesh agent prepare <project> [--base branch] [--profile name]
+codemesh agent prepare <project> [--base branch] [--profile name] [--json]
 ```
 
 ## Purpose
@@ -22,6 +22,8 @@ Prepare a temporary agent workspace for one registered project. CodeMesh checks 
 Preparation does not execute an agent command. Use [`codemesh agent run`](agent-run.md) after prepare when you want CodeMesh to run one explicit local command inside the prepared workspace and append command output paths to the run contract.
 
 When `--base` is omitted, CodeMesh lets Agent Prep choose its current default base. `--profile` records the intended agent profile in run metadata.
+
+Use `--json` to emit the stable Command Result shape. The payload reports readiness, readiness diagnostics, handoff doc count, run id, ready path, run contract path, selected base, profile, and resolved commit. Blocked readiness uses exit class `readiness-blocked` and returns exit code 1 without creating an Agent Run. Secret values are not included.
 
 ## Output Contract
 
@@ -74,6 +76,7 @@ git clone "$remote" "$workspace/demo-project"
 codemesh init "$workspace"
 codemesh add "$workspace/demo-project" --alias demo-project
 codemesh agent prepare demo-project --base main --profile codex
+codemesh agent prepare demo-project --base main --profile codex --json
 ```
 
 ## Current Limitations

@@ -34,6 +34,15 @@ type HydrateResult struct {
 	AlreadyPresent bool
 }
 
+type PathConflictError struct {
+	Path   string
+	Reason string
+}
+
+func (e PathConflictError) Error() string {
+	return fmt.Sprintf("path conflict: %s %s", e.Path, e.Reason)
+}
+
 type ScanResult struct {
 	WorkspaceRoot string
 	Added         []state.Project
@@ -188,7 +197,7 @@ func (r *Registry) Hydrate(ctx context.Context, alias string) (HydrateResult, er
 		}
 		alreadyPresent, err := hydrateProject(ctx, r.git, project)
 		if err != nil {
-			return HydrateResult{}, err
+			return HydrateResult{Project: project}, err
 		}
 		return HydrateResult{Project: project, AlreadyPresent: alreadyPresent}, nil
 	}
@@ -203,14 +212,14 @@ func hydrateProject(ctx context.Context, git gitops.Client, project state.Projec
 			return true, nil
 		}
 		if !info.IsDir() {
-			return false, fmt.Errorf("path conflict: %s exists and is not a directory", project.LocalPath)
+			return false, PathConflictError{Path: project.LocalPath, Reason: "exists and is not a directory"}
 		}
 		empty, err := dirIsEmpty(project.LocalPath)
 		if err != nil {
 			return false, err
 		}
 		if !empty {
-			return false, fmt.Errorf("path conflict: %s exists and is not empty", project.LocalPath)
+			return false, PathConflictError{Path: project.LocalPath, Reason: "exists and is not empty"}
 		}
 	case errors.Is(err, os.ErrNotExist):
 		if err := os.MkdirAll(filepath.Dir(project.LocalPath), 0o755); err != nil {
