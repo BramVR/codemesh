@@ -28,10 +28,11 @@ It keeps the canonical project tree visible, checks whether projects are present
 - Hydrates registered missing projects through explicit Git clones.
 - Prepares temporary agent workspaces from clean Git bases.
 - Checks env readiness by names and paths only.
+- Reports declared toolchain readiness without installing or building environments.
 
 ## What It Does Not Do
 
-CodeMesh does not replace Git, sync arbitrary files, become a cloud drive, create daemon or mount behavior, create automatic placeholders, store raw secrets, or materialize secret values in the MVP.
+CodeMesh does not replace Git, sync arbitrary files, become a cloud drive, create daemon or mount behavior, create automatic placeholders, store raw secrets, materialize secret values, or install/build toolchains in the MVP.
 
 ## Current Shape
 
@@ -42,6 +43,7 @@ CodeMesh does not replace Git, sync arbitrary files, become a cloud drive, creat
 | Doctor | Agent handoff preflight without creating run state. |
 | Agent Prep | Temporary clone, selected base, policy check, and run metadata. |
 | Env Readiness and Binding | Missing file/key detection plus fake-provider bundle proof without live secret providers. |
+| Toolchain Readiness | Policy-declared status reporting and delegation only. |
 
 ## Source
 

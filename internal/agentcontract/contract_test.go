@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BramVR/codemesh/internal/toolchain"
 )
 
 func TestEncodeWritesVersionProducerAndRedactsMetadataBytes(t *testing.T) {
@@ -47,6 +49,7 @@ func TestEncodeWritesVersionProducerAndRedactsMetadataBytes(t *testing.T) {
 				Values:  "not-recorded",
 			},
 		},
+		Toolchain:         []toolchain.Result{{Name: "go", Status: toolchain.StatusPresent}},
 		ReadinessDecision: "ready",
 		CreatedAt:         time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC),
 	})
@@ -112,6 +115,9 @@ func TestEncodeWritesVersionProducerAndRedactsMetadataBytes(t *testing.T) {
 		if !strings.Contains(raw, `"materialization_status": "materialized"`) || !strings.Contains(raw, `"allowed_scopes": [`) || !strings.Contains(raw, `"present": true`) {
 			t.Fatalf("%s metadata missing env materialization summary:\n%s", label, raw)
 		}
+		if !strings.Contains(raw, `"toolchain": [`) || !strings.Contains(raw, `"name": "go"`) || !strings.Contains(raw, `"status": "present"`) {
+			t.Fatalf("%s metadata missing toolchain readiness:\n%s", label, raw)
+		}
 	}
 	if string(fileBytes) != string(stateBytes) || string(onDisk) != string(stateBytes) {
 		t.Fatal("contract file bytes and state metadata bytes diverged")
@@ -163,12 +169,12 @@ func TestEncodePreservesEmptyContractListsAsArrays(t *testing.T) {
 		t.Fatalf("Encode error = %v", err)
 	}
 	raw := string(data)
-	for _, want := range []string{`"requirements": []`, `"allowed_scopes": []`, `"handoff_docs": []`, `"warnings": []`, `"blockers": []`} {
+	for _, want := range []string{`"requirements": []`, `"allowed_scopes": []`, `"toolchain": []`, `"handoff_docs": []`, `"warnings": []`, `"blockers": []`} {
 		if !strings.Contains(raw, want) {
 			t.Fatalf("encoded contract missing %s:\n%s", want, raw)
 		}
 	}
-	if strings.Contains(raw, `"requirements": null`) || strings.Contains(raw, `"allowed_scopes": null`) || strings.Contains(raw, `"handoff_docs": null`) || strings.Contains(raw, `"warnings": null`) || strings.Contains(raw, `"blockers": null`) {
+	if strings.Contains(raw, `"requirements": null`) || strings.Contains(raw, `"allowed_scopes": null`) || strings.Contains(raw, `"toolchain": null`) || strings.Contains(raw, `"handoff_docs": null`) || strings.Contains(raw, `"warnings": null`) || strings.Contains(raw, `"blockers": null`) {
 		t.Fatalf("encoded contract used null list fields:\n%s", raw)
 	}
 }

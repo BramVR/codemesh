@@ -26,6 +26,7 @@ type Policy struct {
 	BaseBranch    string
 	BaseBranchSet bool
 	Env           EnvPolicy
+	Toolchain     ToolchainPolicy
 	IncludeDocs   []string
 }
 
@@ -35,14 +36,20 @@ type EnvPolicy struct {
 	RequiredKeys  []string
 }
 
+type ToolchainPolicy struct {
+	Mode         EnvMode
+	Requirements []string
+}
+
 type policyFile struct {
 	Agent agentPolicy `yaml:"agent"`
 }
 
 type agentPolicy struct {
-	Base        string    `yaml:"base"`
-	Env         envPolicy `yaml:"env"`
-	IncludeDocs []string  `yaml:"include_docs"`
+	Base        string          `yaml:"base"`
+	Env         envPolicy       `yaml:"env"`
+	Toolchain   toolchainPolicy `yaml:"toolchain"`
+	IncludeDocs []string        `yaml:"include_docs"`
 }
 
 type envPolicy struct {
@@ -51,10 +58,18 @@ type envPolicy struct {
 	RequiredKeys  []string `yaml:"required_keys"`
 }
 
+type toolchainPolicy struct {
+	Mode         string   `yaml:"mode"`
+	Requirements []string `yaml:"requirements"`
+}
+
 func Defaults() Policy {
 	return Policy{
 		BaseBranch: "main",
 		Env: EnvPolicy{
+			Mode: EnvModeWarn,
+		},
+		Toolchain: ToolchainPolicy{
 			Mode: EnvModeWarn,
 		},
 	}
@@ -112,6 +127,20 @@ func ParseBytes(path string, data []byte) (Policy, error) {
 	if err := validateRequiredKeys(path, raw.Agent.Env.RequiredKeys); err != nil {
 		return Policy{}, err
 	}
+	if mode := strings.TrimSpace(raw.Agent.Toolchain.Mode); mode != "" {
+		switch EnvMode(mode) {
+		case EnvModeWarn, EnvModeBlock:
+			p.Toolchain.Mode = EnvMode(mode)
+		default:
+			return Policy{}, fmt.Errorf("invalid %s: agent.toolchain.mode must be %q or %q", path, EnvModeWarn, EnvModeBlock)
+		}
+	}
+	if err := validateStrings(path, "agent.toolchain.requirements", raw.Agent.Toolchain.Requirements); err != nil {
+		return Policy{}, err
+	}
+	if err := validateToolchainRequirements(path, raw.Agent.Toolchain.Requirements); err != nil {
+		return Policy{}, err
+	}
 	if err := validateStrings(path, "agent.include_docs", raw.Agent.IncludeDocs); err != nil {
 		return Policy{}, err
 	}
@@ -120,6 +149,7 @@ func ParseBytes(path string, data []byte) (Policy, error) {
 	}
 	p.Env.RequiredFiles = append([]string(nil), raw.Agent.Env.RequiredFiles...)
 	p.Env.RequiredKeys = append([]string(nil), raw.Agent.Env.RequiredKeys...)
+	p.Toolchain.Requirements = append([]string(nil), raw.Agent.Toolchain.Requirements...)
 	p.IncludeDocs = append([]string(nil), raw.Agent.IncludeDocs...)
 	return p, nil
 }
@@ -147,6 +177,15 @@ func validateRequiredKeys(path string, values []string) error {
 	for i, value := range values {
 		if strings.Contains(value, "=") || strings.TrimSpace(value) != value {
 			return fmt.Errorf("invalid %s: agent.env.required_keys[%d] must be an env key name, not a value assignment", path, i)
+		}
+	}
+	return nil
+}
+
+func validateToolchainRequirements(path string, values []string) error {
+	for i, value := range values {
+		if strings.ContainsAny(value, " \t\r\n") || strings.TrimSpace(value) != value {
+			return fmt.Errorf("invalid %s: agent.toolchain.requirements[%d] must be a toolchain requirement name, not a command", path, i)
 		}
 	}
 	return nil

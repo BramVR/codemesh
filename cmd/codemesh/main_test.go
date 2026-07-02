@@ -728,6 +728,68 @@ func TestDoctorReportsActionableBlockers(t *testing.T) {
 	assertNoAgentRuns(t, home)
 }
 
+func TestDoctorReportsToolchainReadinessInHumanAndJSON(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	repo := createCommittedLocalRemoteClone(t, "doctor-toolchain")
+	if err := os.WriteFile(filepath.Join(repo, ".codemesh.yml"), []byte("agent:\n  toolchain:\n    mode: warn\n    requirements:\n      - go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".codemesh.yml")
+	runGit(t, repo, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Declare toolchain")
+	runGit(t, repo, "push", "origin", "main")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", repo}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"doctor", "doctor-toolchain", "--base", "main"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doctor exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "toolchain: go unknown") || !strings.Contains(stdout.String(), "warning: unknown-toolchain") {
+		t.Fatalf("doctor human output missing toolchain readiness:\n%s", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("doctor stderr = %q, want empty", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"doctor", "doctor-toolchain", "--base", "main", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doctor --json exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Toolchain []struct {
+				Name   string `json:"name"`
+				Status string `json:"status"`
+			} `json:"toolchain"`
+			Diagnostics struct {
+				Warnings []struct {
+					Code string `json:"code"`
+				} `json:"warnings"`
+			} `json:"diagnostics"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("doctor --json stdout was not JSON: %v\nstdout:\n%s", err, stdout.String())
+	}
+	if payload.Command != "doctor" || payload.ExitClass != "readiness-warning" {
+		t.Fatalf("doctor JSON metadata = %#v", payload)
+	}
+	if len(payload.Payload.Toolchain) != 1 || payload.Payload.Toolchain[0].Name != "go" || payload.Payload.Toolchain[0].Status != "unknown" {
+		t.Fatalf("toolchain payload = %#v", payload.Payload.Toolchain)
+	}
+	if len(payload.Payload.Diagnostics.Warnings) != 1 || payload.Payload.Diagnostics.Warnings[0].Code != "unknown-toolchain" {
+		t.Fatalf("doctor diagnostics = %#v", payload.Payload.Diagnostics)
+	}
+	assertNoAgentRuns(t, home)
+}
+
 func TestStatusWithoutProjectSummarizesKnownProjects(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "codemesh-home")
 	clean := createCommittedLocalRemoteClone(t, "clean-repo")

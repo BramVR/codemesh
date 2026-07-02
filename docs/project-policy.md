@@ -1,7 +1,7 @@
 ---
-summary: "Repo-local Project Policy reference for defaults, env readiness, include-docs, and no-secret-values behavior."
+summary: "Repo-local Project Policy reference for defaults, env readiness, toolchain readiness, include-docs, and no-secret-values behavior."
 read_when:
-  - Changing `.codemesh.yml`, policy parsing, env readiness, include-docs, Agent Prep policy behavior, or no-secret-values handling.
+  - Changing `.codemesh.yml`, policy parsing, env readiness, toolchain readiness, include-docs, Agent Prep policy behavior, or no-secret-values handling.
 ---
 
 # Project Policy Reference
@@ -34,6 +34,11 @@ agent:
     required_keys:
       - CODEMESH_AGENT_TOKEN
       - CODEMESH_PROVIDER_PROFILE
+  toolchain:
+    mode: warn
+    requirements:
+      - go
+      - mise
   include_docs:
     - AGENTS.md
     - CONTEXT.md
@@ -51,6 +56,10 @@ agent:
 
 `agent.env.required_keys`: env variable names that must be present in the process environment. Entries are names only; assignments such as `TOKEN=value` are invalid.
 
+`agent.toolchain.mode`: action for missing or unknown toolchain requirements. Allowed values: `warn` or `block`. Default: `warn`.
+
+`agent.toolchain.requirements`: logical toolchain names that CodeMesh should report on before handoff, such as `go`, `node`, or `mise`. Entries are names only, not install commands or build scripts.
+
 `agent.include_docs`: project-relative docs or glob-like path patterns that express which project context should travel with an agent handoff. Absolute paths and paths escaping the checkout are invalid. The Policy Module parses and preserves the list; it does not read doc contents during readiness checks. Agent Prep treats these as additive handoff docs on top of the default docs it discovers for ordinary repos and records only matched project-relative paths plus source metadata.
 
 ## Readiness Behavior
@@ -65,6 +74,8 @@ Env requirements are checked without secret access:
 - missing requirements are warnings in `warn` mode and blockers in `block` mode
 
 Provider-specific binding references do not belong in `.codemesh.yml`. Use local private Env Bindings to map logical env key requirements to provider references.
+
+Toolchain requirements are reporting/delegation only. CodeMesh records `present`, `missing`, or `unknown` status from the active detection adapter; it does not install tools, run package-manager setup, or build development environments. Unknown status means CodeMesh could not prove the toolchain is present with the current adapter. Missing and unknown requirements follow `agent.toolchain.mode`: warnings in `warn` mode, blockers in `block` mode.
 
 Agent Prep uses the requested base when passed. Without `--base`, it resolves `agent.base` from policy, then the discoverable remote default branch, then `main`. Missing or invalid selected bases block readiness. Agent Prep checks the policy from the fetched base for handoff env requirements, while env file presence is checked against the local source checkout because those files are usually untracked local setup.
 

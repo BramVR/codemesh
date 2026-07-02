@@ -21,6 +21,7 @@ Expected result:
 - fresh temporary clone from the correct remote/base
 - source checkout warnings surfaced
 - env readiness checked
+- toolchain readiness reported when policy declares it
 - project docs discovered from the prepared clone
 - ready workspace path and `handoff_docs: N` count printed
 - run metadata stored for cleanup and audit
@@ -61,6 +62,7 @@ Responsibilities:
 - dirty source checkout warnings
 - base branch blockers
 - env readiness results
+- toolchain readiness results
 - final warn/block action
 
 Used by:
@@ -114,6 +116,29 @@ Used by:
 - `env bind`
 - `agent prepare`
 
+### Toolchain Readiness
+
+Owns toolchain readiness declaration and status reporting.
+
+Responsibilities:
+
+- repo policy toolchain requirement names
+- `present`, `missing`, and `unknown` status results
+- warn/block diagnostics
+- fake detector support for deterministic proof
+
+Non-responsibilities:
+
+- installing tools
+- running package-manager setup
+- building development environments
+
+Used by:
+
+- Readiness
+- `doctor`
+- Agent Run Contract
+
 ### Agent Prep
 
 Owns agent workspace prep.
@@ -142,6 +167,7 @@ Responsibilities:
 - contract version and producer metadata
 - project and checkout provenance
 - readiness diagnostics and handoff docs
+- toolchain status when checked
 - command execution records
 - redaction, validation, JSON encoding/decoding, and file writes
 - State Store metadata shape and run-list projections
@@ -199,6 +225,7 @@ Checks:
 - dirty source checkout
 - base branch exists
 - optional `.codemesh.yml` env requirements
+- optional `.codemesh.yml` toolchain requirements
 - optional Command Result JSON output for automation
 
 ### `codemesh doctor <project> [--base branch] [--strict] [--json]`
@@ -241,6 +268,7 @@ Rules:
 - checkout requested, policy, remote-default, or `main` fallback base
 - warn if source checkout is dirty
 - warn or block on env based on policy
+- warn or block on toolchain status based on policy
 - resolve default and policy-selected handoff docs from the prepared clone
 - write `codemesh-run.json`
 - optionally materialize fake-provider env bundles when allowed scopes intersect private bindings
@@ -260,7 +288,7 @@ Repo-local policy is optional.
 
 File: `.codemesh.yml`
 
-See [Project Policy Reference](project-policy.md) for the current `.codemesh.yml` interface, defaults, env readiness behavior, include-docs intent, and no-secret-values rule.
+See [Project Policy Reference](project-policy.md) for the current `.codemesh.yml` interface, defaults, env readiness behavior, toolchain readiness behavior, include-docs intent, and no-secret-values rule.
 
 ## State
 
@@ -294,12 +322,14 @@ Initial tables:
 10. Machine Registry and `machine register`.
 11. Doctor preflight and strict warning failure.
 12. Fake-provider Env Binding and agent-scoped env bundle metadata.
+13. Toolchain readiness declaration, doctor reporting, and Agent Run Contract status metadata.
 
 ## Planned Later
 
 - multi-machine sync
 - synced manifests or remote project indexes
 - live secret providers or env file writing
+- live toolchain provider integrations
 - daemon, mount, UI, placeholders, or file-level lazy hydration
 
 ## Non-Goals
@@ -308,6 +338,7 @@ Initial tables:
 - mount
 - automatic placeholders
 - live secret materialization
+- toolchain installation or environment builds
 - cloud sync
 - UI
 - file-level lazy hydration

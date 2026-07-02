@@ -14,6 +14,7 @@ import (
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/readiness"
 	"github.com/BramVR/codemesh/internal/state"
+	"github.com/BramVR/codemesh/internal/toolchain"
 )
 
 func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
@@ -83,6 +84,47 @@ func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
 	}
 	if !strings.Contains(store.runs[0].MetadataJSON, `"fetched_base": "main"`) || !strings.Contains(store.runs[0].MetadataJSON, `"matches_fetched": true`) {
 		t.Fatalf("stored metadata missing base provenance:\n%s", store.runs[0].MetadataJSON)
+	}
+}
+
+func TestPrepareRecordsToolchainReadinessInRunContract(t *testing.T) {
+	project := createFixtureProject(t, "prepare-toolchain")
+	writeFile(t, filepath.Join(project.LocalPath, ".codemesh.yml"), `agent:
+  toolchain:
+    mode: warn
+    requirements:
+      - go
+`)
+	runGit(t, project.LocalPath, "add", ".codemesh.yml")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Declare toolchain")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	store := newMemoryStore(project)
+	preparer := testPreparer(t.TempDir(), store)
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+	if err != nil {
+		t.Fatalf("Prepare error = %v", err)
+	}
+
+	if !hasDiagnostic(result.Diagnostics.Warnings, "unknown-toolchain") {
+		t.Fatalf("warnings = %#v, want unknown-toolchain", result.Diagnostics.Warnings)
+	}
+	if len(result.Metadata.Toolchain) != 1 || result.Metadata.Toolchain[0].Name != "go" || result.Metadata.Toolchain[0].Status != toolchain.StatusUnknown {
+		t.Fatalf("result metadata toolchain = %#v", result.Metadata.Toolchain)
+	}
+	metadata := readMetadata(t, result.ReadyPath)
+	if len(metadata.Toolchain) != 1 || metadata.Toolchain[0].Name != "go" || metadata.Toolchain[0].Status != toolchain.StatusUnknown {
+		t.Fatalf("file metadata toolchain = %#v", metadata.Toolchain)
+	}
+	if !strings.Contains(store.runs[0].MetadataJSON, `"toolchain": [`) || !strings.Contains(store.runs[0].MetadataJSON, `"status": "unknown"`) {
+		t.Fatalf("stored metadata missing toolchain readiness:\n%s", store.runs[0].MetadataJSON)
+	}
+	for _, path := range []string{"node_modules", ".tool-versions", ".codemesh-toolchain"} {
+		if _, err := os.Stat(filepath.Join(result.ReadyPath, path)); err == nil {
+			t.Fatalf("agent prep created %s; CodeMesh must report/delegate only", path)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("check %s: %v", path, err)
+		}
 	}
 }
 

@@ -9,8 +9,9 @@ CodeMesh keeps a developer's project tree, repo inventory, machine-local setup, 
 - Project index for a canonical workspace tree.
 - `codemesh status` showing missing, stale, dirty, and misconfigured projects.
 - Lazy repo setup from known Git remotes.
-- Per-project policy for ignored/local-only paths.
+- Per-project policy for agent base, env, toolchain, and handoff docs.
 - Env readiness plus fake-provider Env Binding without live secret providers.
+- Toolchain readiness reporting without installing or building environments.
 - Agent workspace provisioning with scoped access.
 
 ## Non-goals
@@ -64,7 +65,7 @@ Use `make docs:list` before docs or behavior changes to find relevant `Read when
 
 ## Status
 
-Scaffold plus local state bootstrap, Project Registry tracer bullets, Readiness status reporting, Doctor preflight, explicit missing-project hydration, Agent Prep, run listing, and guarded cleanup. The current command surface is documented in the [Command Catalog](docs/commands.md) and checked against CLI help.
+Scaffold plus local state bootstrap, Project Registry tracer bullets, Readiness status reporting, Doctor preflight, toolchain readiness reporting, explicit missing-project hydration, Agent Prep, run listing, and guarded cleanup. The current command surface is documented in the [Command Catalog](docs/commands.md) and checked against CLI help.
 
 ## Docs
 
