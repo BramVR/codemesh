@@ -21,7 +21,9 @@ Preflight whether one registered project is ready for agent handoff. Doctor uses
 
 Doctor does not create a temporary agent workspace, write `codemesh-run.json`, or record an Agent Run. Use it before handoff automation when you want a fast green/warning/blocked answer without creating run state.
 
-Use `--json` to print the stable Command Result shape. The JSON includes `command`, `exit_class`, command-level `diagnostics`, and a payload with `handoff`, `strict`, project identity, selected base, source path presence, and readiness diagnostics.
+When Project Policy declares toolchain requirements, Doctor reports each checked toolchain status as `present`, `missing`, or `unknown`. Toolchain readiness is report/delegate only: Doctor does not install tools, run package-manager setup, or build environments.
+
+Use `--json` to print the stable Command Result shape. The JSON includes `command`, `exit_class`, command-level `diagnostics`, and a payload with `handoff`, `strict`, project identity, selected base, source path presence, toolchain status, and readiness diagnostics.
 
 Use `--strict` when warning-only readiness should fail automation. Strict mode does not change normal Agent Prep behavior: dirty checkout and warn-mode env diagnostics still remain warnings for `codemesh agent prepare`.
 
@@ -40,6 +42,12 @@ base: <base>
 source_path_missing: false
 warnings: none
 blockers: none
+```
+
+When policy declares toolchain requirements, human output includes one line per checked requirement:
+
+```txt
+toolchain: go unknown
 ```
 
 When blockers exist, stdout prints `handoff: blocked` plus one `blocker: <code> <message>` line per blocker and exits non-zero.
@@ -74,6 +82,7 @@ codemesh doctor demo-project --base main --strict --json
 - Preflights one project at a time.
 - Does not create an Agent Run, select handoff docs, clone a workspace, or print a ready path.
 - Uses readiness diagnostics only; it does not provision credentials or materialize secret values.
+- Reports toolchain status only; it does not install tools or build environments.
 - May use temporary Git operations to evaluate missing-source handoff readiness, but it removes those probes and records no run metadata.
 
 Back to [Command Catalog](../commands.md).

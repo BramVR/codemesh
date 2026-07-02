@@ -1,7 +1,7 @@
 ---
-summary: "Local CodeMesh home, SQLite schema, Project Registry, readiness, policy, env, Agent Runs, and cleanup state model."
+summary: "Local CodeMesh home, SQLite schema, Project Registry, readiness, policy, env, toolchain, Agent Runs, and cleanup state model."
 read_when:
-  - Changing CodeMesh home, SQLite schema, migrations, Project Registry storage, readiness state, hydration, Agent Runs, cleanup, or local filesystem behavior.
+  - Changing CodeMesh home, SQLite schema, migrations, Project Registry storage, readiness state, hydration, toolchain readiness, Agent Runs, cleanup, or local filesystem behavior.
 ---
 
 # Local State Model
@@ -105,7 +105,7 @@ Diagnostics are split into warnings and blockers. Dirty source checkouts and sta
 
 ## Project Policy
 
-Project policy is resolved at readiness time from the source checkout. See [Project Policy Reference](project-policy.md) for `.codemesh.yml` fields, defaults, validation, include-docs intent, and no-secret-values behavior.
+Project policy is resolved at readiness time from the source checkout. See [Project Policy Reference](project-policy.md) for `.codemesh.yml` fields, defaults, validation, env readiness, toolchain readiness, include-docs intent, and no-secret-values behavior.
 
 Resolution:
 
@@ -119,6 +119,18 @@ Policy is metadata only. The MVP does not store effective policy in SQLite.
 Env readiness is derived from the effective project policy.
 
 Checks and warn/block handling follow [Project Policy Reference](project-policy.md). Env readiness never reads, writes, stores, or prints secret values.
+
+## Toolchain Readiness
+
+Toolchain readiness is derived from the effective project policy when `agent.toolchain.requirements` is present.
+
+Each requirement records one status:
+
+- `present`: the active detector reported the named toolchain available.
+- `missing`: the active detector reported it absent.
+- `unknown`: the active detector could not prove presence or absence.
+
+Missing and unknown statuses follow policy `agent.toolchain.mode`: warning diagnostics in `warn` mode and blocker diagnostics in `block` mode. CodeMesh does not install tools, run package-manager setup, write toolchain files, create dependency directories, or build environments.
 
 ## Env Binding
 
@@ -165,6 +177,7 @@ The contract records metadata only:
 - base provenance with fetched base, fetched commit, prepared HEAD, and whether the prepared HEAD matches the fetched commit
 - handoff docs as project-relative paths available in the prepared clone, with source metadata such as `default` or `policy` and the original policy pattern when applicable
 - env requirements, allowed scopes, materialization status, and bundle presence/path/format with values marked not recorded
+- toolchain status results when checked
 - warnings and blockers from readiness
 - created timestamp
 

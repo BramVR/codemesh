@@ -11,6 +11,7 @@ import (
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/policy"
 	"github.com/BramVR/codemesh/internal/state"
+	"github.com/BramVR/codemesh/internal/toolchain"
 )
 
 type State string
@@ -29,6 +30,7 @@ type Options struct {
 	BaseBranch  string
 	CheckRemote bool
 	Env         EnvLookup
+	Toolchain   toolchain.Detector
 }
 
 type Diagnostic struct {
@@ -43,6 +45,7 @@ type ProjectReport struct {
 	BaseBranch       string
 	FetchedBase      string
 	FetchedCommit    string
+	Toolchain        []toolchain.Result
 	Warnings         []Diagnostic
 	Blockers         []Diagnostic
 }
@@ -128,6 +131,9 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 		if checkEnvReadiness(&report, projectPolicy, envLookup(opts.Env)); len(report.Blockers) != 0 {
 			return report, nil
 		}
+		if err := checkToolchainReadiness(ctx, &report, projectPolicy, opts.Toolchain); err != nil {
+			return ProjectReport{}, err
+		}
 		return report, nil
 	}
 	remote, ok := sourceRemote(ctx, &report)
@@ -141,6 +147,9 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 	}
 	if checkEnvReadiness(&report, projectPolicy, envLookup(opts.Env)); len(report.Blockers) != 0 {
 		return report, nil
+	}
+	if err := checkToolchainReadiness(ctx, &report, projectPolicy, opts.Toolchain); err != nil {
+		return ProjectReport{}, err
 	}
 	if !validateSelectedBase(ctx, &report) {
 		return report, nil
@@ -239,6 +248,11 @@ func EvaluateHandoff(ctx context.Context, project state.Project, opts Options) (
 		return HandoffDecision{Report: report, Policy: sourcePolicy}, nil
 	}
 	checkEnvReadiness(&report, readyPolicy, envLookup(opts.Env))
+	if len(report.Blockers) == 0 {
+		if err := checkToolchainReadiness(ctx, &report, readyPolicy, opts.Toolchain); err != nil {
+			return HandoffDecision{}, err
+		}
+	}
 	return HandoffDecision{Report: report, Policy: readyPolicy}, nil
 }
 
@@ -296,6 +310,11 @@ func evaluateMissingSourceHandoff(ctx context.Context, report ProjectReport, req
 		return HandoffDecision{Report: report, Policy: policy.Defaults(), SourcePathMissing: true}, nil
 	}
 	checkEnvReadiness(&report, readyPolicy, envLookup(opts.Env))
+	if len(report.Blockers) == 0 {
+		if err := checkToolchainReadiness(ctx, &report, readyPolicy, opts.Toolchain); err != nil {
+			return HandoffDecision{}, err
+		}
+	}
 	return HandoffDecision{Report: report, Policy: readyPolicy, SourcePathMissing: true}, nil
 }
 
@@ -527,6 +546,41 @@ func checkEnvReadiness(report *ProjectReport, projectPolicy policy.Policy, env E
 		return
 	}
 	report.Warnings = append(report.Warnings, missing...)
+}
+
+func checkToolchainReadiness(ctx context.Context, report *ProjectReport, projectPolicy policy.Policy, detector toolchain.Detector) error {
+	results, err := toolchain.Check(ctx, projectPolicy.Toolchain.Requirements, detector)
+	if err != nil {
+		return err
+	}
+	report.Toolchain = results
+	var diagnostics []Diagnostic
+	for _, result := range results {
+		switch result.Status {
+		case toolchain.StatusPresent:
+			continue
+		case toolchain.StatusMissing:
+			diagnostics = append(diagnostics, Diagnostic{
+				Code:    "missing-toolchain",
+				Message: fmt.Sprintf("toolchain requirement is missing: %s; install or build environment setup is delegated outside CodeMesh", result.Name),
+			})
+		case toolchain.StatusUnknown:
+			diagnostics = append(diagnostics, Diagnostic{
+				Code:    "unknown-toolchain",
+				Message: fmt.Sprintf("toolchain requirement status is unknown: %s; CodeMesh did not run installers or build environments", result.Name),
+			})
+		}
+	}
+	if len(diagnostics) == 0 {
+		return nil
+	}
+	if projectPolicy.Toolchain.Mode == policy.EnvModeBlock {
+		report.State = StateBlocked
+		report.Blockers = append(report.Blockers, diagnostics...)
+		return nil
+	}
+	report.Warnings = append(report.Warnings, diagnostics...)
+	return nil
 }
 
 func envLookup(env EnvLookup) EnvLookup {

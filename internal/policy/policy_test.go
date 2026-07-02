@@ -39,6 +39,11 @@ func TestResolveValidPolicy(t *testing.T) {
       - .env.local
     required_keys:
       - CODEMESH_TEST_REQUIRED
+  toolchain:
+    mode: block
+    requirements:
+      - go
+      - mise
   include_docs:
     - AGENTS.md
     - docs/adr/**
@@ -63,6 +68,12 @@ func TestResolveValidPolicy(t *testing.T) {
 	}
 	if strings.Join(got.Env.RequiredKeys, ",") != "CODEMESH_TEST_REQUIRED" {
 		t.Fatalf("RequiredKeys = %v", got.Env.RequiredKeys)
+	}
+	if got.Toolchain.Mode != EnvModeBlock {
+		t.Fatalf("Toolchain.Mode = %q, want %q", got.Toolchain.Mode, EnvModeBlock)
+	}
+	if strings.Join(got.Toolchain.Requirements, ",") != "go,mise" {
+		t.Fatalf("Toolchain.Requirements = %v", got.Toolchain.Requirements)
 	}
 	if strings.Join(got.IncludeDocs, ",") != "AGENTS.md,docs/adr/**" {
 		t.Fatalf("IncludeDocs = %v", got.IncludeDocs)
@@ -122,6 +133,12 @@ func TestDocumentedPolicyExampleParses(t *testing.T) {
 	}
 	if strings.Join(got.Env.RequiredKeys, ",") != "CODEMESH_AGENT_TOKEN,CODEMESH_PROVIDER_PROFILE" {
 		t.Fatalf("RequiredKeys = %v", got.Env.RequiredKeys)
+	}
+	if got.Toolchain.Mode != EnvModeWarn {
+		t.Fatalf("Toolchain.Mode = %q, want %q", got.Toolchain.Mode, EnvModeWarn)
+	}
+	if strings.Join(got.Toolchain.Requirements, ",") != "go,mise" {
+		t.Fatalf("Toolchain.Requirements = %v", got.Toolchain.Requirements)
 	}
 	if strings.Join(got.IncludeDocs, ",") != "AGENTS.md,CONTEXT.md,docs/adr/**" {
 		t.Fatalf("IncludeDocs = %v", got.IncludeDocs)

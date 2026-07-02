@@ -1336,6 +1336,12 @@ func (h *harness) caseDoctorPreflightWorkflow() {
 		h.record(result{Name: "doctor preflight workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
+	toolchainProject, err := h.createClonedFixtureWithSeed(s.fixtures, "doctor-toolchain", writeToolchainPolicy, nil)
+	if err != nil {
+		h.record(result{Name: "doctor preflight toolchain setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	s.fixtures.Projects = append(s.fixtures.Projects, toolchainProject)
 	scan := s.command("doctor preflight scan fixtures", "scan", s.fixtures.Sources)
 	if scan.Status != "PASS" {
 		return
@@ -1369,6 +1375,24 @@ func (h *harness) caseDoctorPreflightWorkflow() {
 	}
 	s.record(strict)
 	if strict.Status != "PASS" || !s.expectAgentRunRows("doctor preflight strict records no agent run", 0) {
+		return
+	}
+
+	toolchainHuman := s.command("doctor preflight toolchain human", "doctor", "doctor-toolchain", "--base", "main")
+	if toolchainHuman.Status != "PASS" || !s.expectOutput(toolchainHuman, "handoff: warning", "toolchain: go unknown", "warning: unknown-toolchain", "blockers: none") {
+		return
+	}
+	toolchainJSON := s.command("doctor preflight toolchain json", "doctor", "doctor-toolchain", "--base", "main", "--json")
+	if toolchainJSON.Status != "PASS" {
+		return
+	}
+	if err := doctorToolchainJSONMatches(toolchainJSON.Stdout, "doctor-toolchain", "go", "unknown"); err != nil {
+		toolchainJSON.Status = "FAIL"
+		toolchainJSON.Error = err.Error()
+		s.updateResult(toolchainJSON)
+		return
+	}
+	if !s.expectAgentRunRows("doctor preflight toolchain records no agent run", 0) {
 		return
 	}
 
@@ -1710,6 +1734,12 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 		h.record(result{Name: "agent prep fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
+	toolchainProject, err := h.createClonedFixtureWithSeed(s.fixtures, "agent-toolchain", writeToolchainPolicy, nil)
+	if err != nil {
+		h.record(result{Name: "agent prep toolchain setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	s.fixtures.Projects = append(s.fixtures.Projects, toolchainProject)
 	scan := s.command("agent prep scan fixtures", "scan", s.fixtures.Sources)
 	if scan.Status != "PASS" {
 		return
@@ -1798,6 +1828,15 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 
 	jsonPrepare := s.command("agent prep clean fixture json", "agent", "prepare", "clean-repo", "--base", "main", "--profile", "codex", "--json")
 	if jsonPrepare.Status != "PASS" || !s.expectAgentPrepareJSON(jsonPrepare, "success", "clean-repo", true, "main", "codex", 4, nil, nil) {
+		return
+	}
+
+	toolchainPrep := s.command("agent prep toolchain contract", "agent", "prepare", "agent-toolchain", "--base", "main")
+	if toolchainPrep.Status != "PASS" || !s.expectOutput(toolchainPrep, "warning: unknown-toolchain", "blockers: none", "ready_path: ") {
+		return
+	}
+	toolchainPath := s.expectReadyPath("agent prep toolchain ready path", toolchainPrep)
+	if toolchainPath == "" || !s.expectAgentRunToolchain("agent prep toolchain metadata", toolchainPath, "go", "unknown") {
 		return
 	}
 
@@ -3045,6 +3084,11 @@ func (h *harness) createOfflineGitFixturesAt(root string) (offlineGitFixtures, e
 	return fixtures, nil
 }
 
+func writeToolchainPolicy(path string) error {
+	policy := []byte("agent:\n  toolchain:\n    mode: warn\n    requirements:\n      - go\n")
+	return os.WriteFile(filepath.Join(path, ".codemesh.yml"), policy, 0o644)
+}
+
 func (h *harness) createClonedFixture(fixtures offlineGitFixtures, name string, mutate func(string) error) (gitFixtureProject, error) {
 	return h.createClonedFixtureWithSeed(fixtures, name, nil, mutate)
 }
@@ -3553,6 +3597,42 @@ func doctorJSONMatches(raw, alias, exitClass, handoff, state, base string, stric
 	return nil
 }
 
+func doctorToolchainJSONMatches(raw, alias, name, status string) error {
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Project   string `json:"project"`
+			Handoff   string `json:"handoff"`
+			Toolchain []struct {
+				Name   string `json:"name"`
+				Status string `json:"status"`
+			} `json:"toolchain"`
+			Diagnostics struct {
+				Warnings []struct {
+					Code string `json:"code"`
+				} `json:"warnings"`
+				Blockers []struct {
+					Code string `json:"code"`
+				} `json:"blockers"`
+			} `json:"diagnostics"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return fmt.Errorf("stdout was not JSON: %w", err)
+	}
+	if payload.Command != "doctor" || payload.ExitClass != "readiness-warning" || payload.Payload.Project != alias || payload.Payload.Handoff != "warning" {
+		return fmt.Errorf("toolchain doctor metadata = %#v", payload)
+	}
+	if len(payload.Payload.Toolchain) != 1 || payload.Payload.Toolchain[0].Name != name || payload.Payload.Toolchain[0].Status != status {
+		return fmt.Errorf("toolchain payload = %#v, want %s=%s", payload.Payload.Toolchain, name, status)
+	}
+	if len(payload.Payload.Diagnostics.Warnings) != 1 || payload.Payload.Diagnostics.Warnings[0].Code != "unknown-toolchain" || len(payload.Payload.Diagnostics.Blockers) != 0 {
+		return fmt.Errorf("toolchain diagnostics = %#v", payload.Payload.Diagnostics)
+	}
+	return nil
+}
+
 func doctorWarningCodes(items []struct {
 	Code string `json:"code"`
 }) []string {
@@ -3908,6 +3988,55 @@ func (s *scenario) expectAgentRunEnvMaterialization(name, readyPath, requirement
 	return true
 }
 
+func (s *scenario) expectAgentRunToolchain(name, readyPath, requirement, status string) bool {
+	fileMetadata, err := readAgentMetadata(filepath.Join(readyPath, "codemesh-run.json"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: "file metadata: " + err.Error(), ExitCode: -1})
+		return false
+	}
+	dbMetadata, err := readAgentRunMetadataFromStore(filepath.Join(s.codemeshHome, "codemesh.db"), fileMetadata.RunID)
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: "state metadata: " + err.Error(), ExitCode: -1})
+		return false
+	}
+	if !agentToolchainMatches(fileMetadata.Toolchain, requirement, status) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("file toolchain = %#v, want %s=%s", fileMetadata.Toolchain, requirement, status), ExitCode: -1})
+		return false
+	}
+	if !agentToolchainMatches(dbMetadata.Toolchain, requirement, status) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("state toolchain = %#v, want %s=%s", dbMetadata.Toolchain, requirement, status), ExitCode: -1})
+		return false
+	}
+	if !hasAgentDiagnostic(fileMetadata.Diagnostics.Warnings, "unknown-toolchain") || len(fileMetadata.Diagnostics.Blockers) != 0 {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("metadata diagnostics = %#v", fileMetadata.Diagnostics), ExitCode: -1})
+		return false
+	}
+	for _, path := range []string{"node_modules", ".tool-versions", ".codemesh-toolchain"} {
+		if _, err := os.Stat(filepath.Join(readyPath, path)); err == nil {
+			s.h.record(result{Name: name, Status: "FAIL", Error: "toolchain readiness created " + path, ExitCode: -1})
+			return false
+		} else if !errors.Is(err, os.ErrNotExist) {
+			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("check %s: %v", path, err), ExitCode: -1})
+			return false
+		}
+	}
+	s.h.record(result{Name: name, Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func agentToolchainMatches(items []agentToolchainStatus, name, status string) bool {
+	return len(items) == 1 && items[0].Name == name && items[0].Status == status
+}
+
+func hasAgentDiagnostic(items []agentDiagnostic, code string) bool {
+	for _, item := range items {
+		if item.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *scenario) expectAgentRunMetadataExcludes(name, readyPath string, fragments ...string) bool {
 	fileMetadata, err := readAgentMetadata(filepath.Join(readyPath, "codemesh-run.json"))
 	if err != nil {
@@ -4050,15 +4179,21 @@ type agentMetadata struct {
 		SourcePath        string `json:"source_path"`
 		SourcePathMissing bool   `json:"source_path_missing"`
 	} `json:"project"`
-	Base              string            `json:"base"`
-	Profile           string            `json:"profile"`
-	ResolvedCommit    string            `json:"resolved_commit"`
-	BaseProvenance    agentCommandBase  `json:"base_provenance"`
-	Env               agentEnvMetadata  `json:"env"`
-	ReadinessDecision string            `json:"readiness_decision"`
-	HandoffDocs       []agentHandoffDoc `json:"handoff_docs"`
-	Diagnostics       agentDiagnostics  `json:"diagnostics"`
-	Commands          []agentCommand    `json:"commands"`
+	Base              string                 `json:"base"`
+	Profile           string                 `json:"profile"`
+	ResolvedCommit    string                 `json:"resolved_commit"`
+	BaseProvenance    agentCommandBase       `json:"base_provenance"`
+	Env               agentEnvMetadata       `json:"env"`
+	Toolchain         []agentToolchainStatus `json:"toolchain"`
+	ReadinessDecision string                 `json:"readiness_decision"`
+	HandoffDocs       []agentHandoffDoc      `json:"handoff_docs"`
+	Diagnostics       agentDiagnostics       `json:"diagnostics"`
+	Commands          []agentCommand         `json:"commands"`
+}
+
+type agentToolchainStatus struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
 }
 
 type agentEnvMetadata struct {

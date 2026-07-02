@@ -25,6 +25,7 @@ import (
 	"github.com/BramVR/codemesh/internal/readiness"
 	"github.com/BramVR/codemesh/internal/registry"
 	"github.com/BramVR/codemesh/internal/state"
+	"github.com/BramVR/codemesh/internal/toolchain"
 )
 
 const version = "0.0.0-dev"
@@ -298,6 +299,7 @@ type doctorPayload struct {
 	Remote            string                    `json:"remote"`
 	Base              string                    `json:"base"`
 	SourcePathMissing bool                      `json:"source_path_missing"`
+	Toolchain         []toolchain.Result        `json:"toolchain"`
 	Diagnostics       commandresult.Diagnostics `json:"diagnostics"`
 }
 
@@ -319,6 +321,7 @@ func newDoctorResult(args parsedDoctorArgs, decision readiness.HandoffDecision) 
 		Remote:            decision.Report.Project.NormalizedRemote,
 		Base:              decision.Report.BaseBranch,
 		SourcePathMissing: decision.SourcePathMissing,
+		Toolchain:         toolchainResults(decision.Report.Toolchain),
 		Diagnostics:       diagnostics,
 	})
 }
@@ -335,8 +338,18 @@ func renderDoctorPayloadHuman(w io.Writer, payload doctorPayload) error {
 	if payload.Strict {
 		fmt.Fprintln(w, "strict: true")
 	}
+	for _, item := range payload.Toolchain {
+		fmt.Fprintf(w, "toolchain: %s %s\n", item.Name, item.Status)
+	}
 	printCommandDiagnostics(w, payload.Diagnostics)
 	return nil
+}
+
+func toolchainResults(results []toolchain.Result) []toolchain.Result {
+	if results == nil {
+		return []toolchain.Result{}
+	}
+	return append([]toolchain.Result(nil), results...)
 }
 
 func doctorExitCode(result commandresult.Result[doctorPayload]) int {

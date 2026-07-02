@@ -199,6 +199,7 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		ResolvedCommit:    resolvedCommit,
 		BaseProvenance:    baseProvenance,
 		Env:               envSummary,
+		Toolchain:         decision.Report.Toolchain,
 		ReadinessDecision: "ready",
 		HandoffDocs:       handoffDocs,
 		Diagnostics:       diagnostics,

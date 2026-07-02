@@ -26,6 +26,10 @@ Env readiness checks names and paths:
 - required env keys are checked for presence only
 - values are not read, stored, printed, or materialized
 
+## Toolchain Readiness
+
+Toolchain readiness reports declared tool names and statuses only. CodeMesh does not install tools, run package-manager setup, create dependency directories, or build environments.
+
 ## Explicit Non-Goals
 
 | Boundary | MVP stance |
@@ -35,6 +39,7 @@ Env readiness checks names and paths:
 | Daemon or mount layer | Out of scope. |
 | Automatic placeholders | Out of scope. |
 | Secret materialization | Out of scope. |
+| Toolchain installation | Out of scope. |
 | Build artifact sync | Out of scope by default. |
 
 ## Agent Handoff Safety

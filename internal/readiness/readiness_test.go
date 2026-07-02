@@ -10,6 +10,7 @@ import (
 
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/state"
+	"github.com/BramVR/codemesh/internal/toolchain"
 )
 
 func TestEvaluateProjectReportsPresentCheckout(t *testing.T) {
@@ -219,6 +220,54 @@ func TestEvaluateProjectBlocksOnMissingEnvRequirements(t *testing.T) {
 	}
 	if !hasDiagnostic(report.Blockers, "missing-env-file") || !hasDiagnostic(report.Blockers, "missing-env-key") {
 		t.Fatalf("blockers = %v, want missing env file and key", report.Blockers)
+	}
+}
+
+func TestEvaluateProjectReportsToolchainReadinessWithoutBuildingEnvironments(t *testing.T) {
+	project := createReadinessFixture(t, "toolchain-warn")
+	writeFixturePolicy(t, project, `agent:
+  toolchain:
+    mode: warn
+    requirements:
+      - go
+      - node
+      - mise
+`)
+	commitFixturePolicy(t, project)
+	detector := &recordingToolchainDetector{statuses: map[string]toolchain.Status{
+		"go":   toolchain.StatusPresent,
+		"node": toolchain.StatusMissing,
+	}}
+
+	report := evaluateFixture(t, project, Options{BaseBranch: "main", CheckRemote: false, Toolchain: detector})
+
+	if report.State != StatePresent {
+		t.Fatalf("state = %s, want %s; blockers=%v warnings=%v", report.State, StatePresent, report.Blockers, report.Warnings)
+	}
+	if got := toolchainStatus(report.Toolchain, "go"); got != toolchain.StatusPresent {
+		t.Fatalf("go status = %q, want present", got)
+	}
+	if got := toolchainStatus(report.Toolchain, "node"); got != toolchain.StatusMissing {
+		t.Fatalf("node status = %q, want missing", got)
+	}
+	if got := toolchainStatus(report.Toolchain, "mise"); got != toolchain.StatusUnknown {
+		t.Fatalf("mise status = %q, want unknown", got)
+	}
+	if !hasDiagnostic(report.Warnings, "missing-toolchain") || !hasDiagnostic(report.Warnings, "unknown-toolchain") {
+		t.Fatalf("warnings = %#v, want missing and unknown toolchain diagnostics", report.Warnings)
+	}
+	if len(report.Blockers) != 0 {
+		t.Fatalf("blockers = %#v, want none", report.Blockers)
+	}
+	if strings.Join(detector.calls, ",") != "go,mise,node" {
+		t.Fatalf("detector calls = %v, want sorted declared requirements only", detector.calls)
+	}
+	for _, path := range []string{"node_modules", ".tool-versions", ".codemesh-toolchain"} {
+		if _, err := os.Stat(filepath.Join(project.LocalPath, path)); err == nil {
+			t.Fatalf("readiness created %s; CodeMesh must report/delegate only", path)
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("check %s: %v", path, err)
+		}
 	}
 }
 
@@ -550,6 +599,15 @@ func hasDiagnostic(diagnostics []Diagnostic, code string) bool {
 	return false
 }
 
+func toolchainStatus(results []toolchain.Result, name string) toolchain.Status {
+	for _, result := range results {
+		if result.Name == name {
+			return result.Status
+		}
+	}
+	return ""
+}
+
 func createReadinessFixture(t *testing.T, name string) state.Project {
 	t.Helper()
 	root := t.TempDir()
@@ -604,4 +662,17 @@ type keyOnlyEnv map[string]bool
 
 func (e keyOnlyEnv) HasEnvKey(key string) bool {
 	return e[key]
+}
+
+type recordingToolchainDetector struct {
+	statuses map[string]toolchain.Status
+	calls    []string
+}
+
+func (d *recordingToolchainDetector) Detect(_ context.Context, name string) (toolchain.Status, error) {
+	d.calls = append(d.calls, name)
+	if status, ok := d.statuses[name]; ok {
+		return status, nil
+	}
+	return toolchain.StatusUnknown, nil
 }
