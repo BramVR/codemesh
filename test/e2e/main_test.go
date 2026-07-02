@@ -459,6 +459,61 @@ func TestLiveHydratedStatusAllowsStaleDefaultBranch(t *testing.T) {
 	}
 }
 
+func TestLiveCloneStrategyReportRecordsPassSkipAndStrictFailure(t *testing.T) {
+	h := testHarness(t)
+	h.live = &reportLive{GitHub: &reportLiveGitHub{}}
+	partial := reportLiveCloneStrategySelection{Name: "partial-clone", History: "partial", WorkingTree: "complete", Filter: "blob:none"}
+	sparse := reportLiveCloneStrategySelection{Name: "sparse-checkout", History: "full", WorkingTree: "sparse", SparsePaths: []string{"README.md"}}
+
+	h.recordLiveCloneStrategyPass("partial", "agent prepare", partial)
+	h.recordLiveCloneStrategySkipOrFail(liveConfig{}, "sparse", "hydrate", sparse, "git sparse checkout unsupported", "2ms", 1)
+	h.recordLiveCloneStrategySkipOrFail(liveConfig{Strict: true}, "strict sparse", "hydrate", sparse, "git sparse checkout unsupported", "3ms", 1)
+
+	got := h.live.GitHub.CloneStrategies
+	if len(got) != 3 {
+		t.Fatalf("clone strategies = %#v, want 3 records", got)
+	}
+	if got[0].Label != "partial" || got[0].Command != "agent prepare" || got[0].Status != "pass" || got[0].Strategy.Name != "partial-clone" || got[0].Strategy.Filter != "blob:none" {
+		t.Fatalf("pass strategy record = %#v", got[0])
+	}
+	if got[1].Status != "skipped" || got[1].SkipReason == "" || h.results[0].Status != "SKIP" {
+		t.Fatalf("non-strict skip record = %#v results=%#v", got[1], h.results)
+	}
+	if got[2].Status != "failed" || got[2].SkipReason == "" || h.results[1].Status != "FAIL" {
+		t.Fatalf("strict failure record = %#v results=%#v", got[2], h.results)
+	}
+}
+
+func TestSelectLiveSparsePathsUsesTrackedFilePair(t *testing.T) {
+	include, exclude, ok := selectLiveSparsePaths([]string{
+		".github/workflows/ci.yml",
+		"README.md",
+		"docs/e2e.md",
+		"go.mod",
+	})
+	if !ok || include != "README.md" || exclude != "go.mod" {
+		t.Fatalf("selected sparse paths = %q %q %t, want README.md go.mod true", include, exclude, ok)
+	}
+
+	include, exclude, ok = selectLiveSparsePaths([]string{"only.txt"})
+	if ok || include != "" || exclude != "" {
+		t.Fatalf("single tracked file selection = %q %q %t, want unavailable", include, exclude, ok)
+	}
+}
+
+func TestLiveAgentPrepareReadyExitClassAllowsWarnings(t *testing.T) {
+	for _, exitClass := range []string{"success", "readiness-warning"} {
+		if !liveAgentPrepareReadyExitClass(exitClass) {
+			t.Fatalf("exit class %q should be accepted for ready live Agent Prep", exitClass)
+		}
+	}
+	for _, exitClass := range []string{"readiness-blocked", "internal-error", ""} {
+		if liveAgentPrepareReadyExitClass(exitClass) {
+			t.Fatalf("exit class %q should not be accepted for ready live Agent Prep", exitClass)
+		}
+	}
+}
+
 func TestLiveDefaultRecordsSkipAndReportMetadata(t *testing.T) {
 	t.Setenv("CODEMESH_E2E_LIVE", "")
 	t.Setenv("CODEMESH_E2E_LIVE_STRICT", "")

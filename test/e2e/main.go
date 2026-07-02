@@ -101,10 +101,27 @@ type reportLive struct {
 }
 
 type reportLiveGitHub struct {
-	RemoteURL        string            `json:"remote_url"`
-	DefaultBranch    string            `json:"default_branch,omitempty"`
-	CommandDurations map[string]string `json:"command_durations,omitempty"`
-	SecretSafety     string            `json:"secret_safety,omitempty"`
+	RemoteURL        string                    `json:"remote_url"`
+	DefaultBranch    string                    `json:"default_branch,omitempty"`
+	CommandDurations map[string]string         `json:"command_durations,omitempty"`
+	CloneStrategies  []reportLiveCloneStrategy `json:"clone_strategies,omitempty"`
+	SecretSafety     string                    `json:"secret_safety,omitempty"`
+}
+
+type reportLiveCloneStrategy struct {
+	Label      string                           `json:"label"`
+	Command    string                           `json:"command"`
+	Status     string                           `json:"status"`
+	Strategy   reportLiveCloneStrategySelection `json:"strategy"`
+	SkipReason string                           `json:"skip_reason,omitempty"`
+}
+
+type reportLiveCloneStrategySelection struct {
+	Name        string   `json:"name"`
+	History     string   `json:"history"`
+	WorkingTree string   `json:"working_tree"`
+	Filter      string   `json:"filter,omitempty"`
+	SparsePaths []string `json:"sparse_paths,omitempty"`
 }
 
 type reportLiveProvider struct {
@@ -530,7 +547,7 @@ func (h *harness) caseLiveGitHubRemoteSmoke(cfg liveConfig) {
 	prepare := h.executeCommand(commandSpec{
 		Label:   "live github agent prepare missing project",
 		Name:    h.bin,
-		Args:    []string{"agent", "prepare", "live-github", "--base", defaultBranch, "--profile", "codex"},
+		Args:    []string{"agent", "prepare", "live-github", "--base", defaultBranch, "--profile", "codex", "--json"},
 		Timeout: longCommandTimeout,
 	})
 	h.recordLiveGitHubDuration("codemesh_agent_prepare", prepare)
@@ -542,10 +559,14 @@ func (h *harness) caseLiveGitHubRemoteSmoke(cfg liveConfig) {
 		return
 	}
 	h.record(prepare)
-	if !h.expectLiveCommandOutput(prepare, "agent workspace ready", "project: live-github", "base: "+defaultBranch, "profile: codex", "blockers: none", "handoff_docs: ", "ready_path: ") {
+	readyPath, ok := h.expectLiveAgentPrepareStrategyJSON("live github full agent prepare clone strategy", prepare, remote, seedPath, defaultBranch, reportLiveCloneStrategySelection{
+		Name:        "full-clone",
+		History:     "full",
+		WorkingTree: "complete",
+	})
+	if !ok {
 		return
 	}
-	readyPath := valueAfterPrefix(prepare.Stdout, "ready_path: ")
 	if !h.expectLiveAgentWorkspace(remote, seedPath, readyPath, defaultBranch) {
 		return
 	}
@@ -632,7 +653,7 @@ func (h *harness) caseLiveGitHubRemoteSmoke(cfg liveConfig) {
 	hydrate := h.executeCommand(commandSpec{
 		Label:   "live github hydrate missing project",
 		Name:    h.bin,
-		Args:    []string{"hydrate", "live-github"},
+		Args:    []string{"hydrate", "live-github", "--json"},
 		Timeout: longCommandTimeout,
 	})
 	h.recordLiveGitHubDuration("codemesh_hydrate", hydrate)
@@ -644,7 +665,11 @@ func (h *harness) caseLiveGitHubRemoteSmoke(cfg liveConfig) {
 		return
 	}
 	h.record(hydrate)
-	if !h.expectLiveCommandOutput(hydrate, "hydrated project: live-github") {
+	if !h.expectLiveHydrateStrategyJSON("live github full hydrate clone strategy", hydrate, "live-github", seedPath, true, reportLiveCloneStrategySelection{
+		Name:        "full-clone",
+		History:     "full",
+		WorkingTree: "complete",
+	}) {
 		return
 	}
 	if !h.expectGitCheckoutAtBase("live github hydrated checkout branch", seedPath, defaultBranch) {
@@ -679,6 +704,31 @@ func (h *harness) caseLiveGitHubRemoteSmoke(cfg liveConfig) {
 	h.record(statusHydrated)
 	if !h.expectLiveCommandOutput(statusHydrated, "path_present: true", "base: "+defaultBranch) {
 		return
+	}
+	sparseInclude, sparseExclude, sparseAvailable := h.liveSparseCheckoutPaths(seedPath)
+	if err := os.RemoveAll(seedPath); err != nil {
+		h.record(result{Name: "live github remove hydrated checkout for clone strategy smokes", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	h.runLiveAgentPrepareStrategySmoke(cfg, "partial", remote, seedPath, defaultBranch, []string{"--partial-clone"}, reportLiveCloneStrategySelection{
+		Name:        "partial-clone",
+		History:     "partial",
+		WorkingTree: "complete",
+		Filter:      "blob:none",
+	}, nil, nil)
+	if sparseAvailable {
+		h.runLiveAgentPrepareStrategySmoke(cfg, "sparse", remote, seedPath, defaultBranch, []string{"--sparse", sparseInclude}, reportLiveCloneStrategySelection{
+			Name:        "sparse-checkout",
+			History:     "full",
+			WorkingTree: "sparse",
+			SparsePaths: []string{sparseInclude},
+		}, []string{sparseInclude}, []string{sparseExclude})
+	} else {
+		h.recordLiveCloneStrategySkipOrFail(cfg, "sparse", "agent prepare", reportLiveCloneStrategySelection{
+			Name:        "sparse-checkout",
+			History:     "full",
+			WorkingTree: "sparse",
+		}, "live sparse checkout smoke requires at least two tracked files", "", -1)
 	}
 	if !h.expectLiveGitHubState(remote, seedPath) {
 		return
@@ -921,6 +971,43 @@ func (h *harness) recordLiveGitHubDuration(name string, r result) {
 	h.live.GitHub.CommandDurations[name] = r.Duration
 }
 
+func (h *harness) recordLiveCloneStrategyPass(label, command string, strategy reportLiveCloneStrategySelection) {
+	if h.live == nil || h.live.GitHub == nil {
+		return
+	}
+	h.live.GitHub.CloneStrategies = append(h.live.GitHub.CloneStrategies, reportLiveCloneStrategy{
+		Label:    label,
+		Command:  command,
+		Status:   "pass",
+		Strategy: strategy,
+	})
+}
+
+func (h *harness) recordLiveCloneStrategySkipOrFail(cfg liveConfig, label, command string, strategy reportLiveCloneStrategySelection, reason, duration string, exitCode int) {
+	status := "SKIP"
+	reportStatus := "skipped"
+	if cfg.Strict {
+		status = "FAIL"
+		reportStatus = "failed"
+	}
+	if h.live != nil {
+		h.live.SkipReasons = append(h.live.SkipReasons, reason)
+		if h.live.GitHub != nil {
+			h.live.GitHub.CloneStrategies = append(h.live.GitHub.CloneStrategies, reportLiveCloneStrategy{
+				Label:      label,
+				Command:    command,
+				Status:     reportStatus,
+				Strategy:   strategy,
+				SkipReason: reason,
+			})
+		}
+	}
+	if duration == "" {
+		duration = formatDuration(0)
+	}
+	h.record(result{Name: "live github " + label + " clone strategy", Status: status, Error: reason, Duration: duration, ExitCode: exitCode})
+}
+
 func (h *harness) recordLiveGitHubSkipOrFail(cfg liveConfig, name, reason, duration string, exitCode int) {
 	if h.live != nil {
 		h.live.SkipReasons = append(h.live.SkipReasons, reason)
@@ -1012,6 +1099,211 @@ func liveHydratedStatusLooksUsable(output, base string) bool {
 		return false
 	}
 	return strings.Contains(output, "state: present") || strings.Contains(output, "state: stale")
+}
+
+type liveAgentPrepareJSON struct {
+	Command   string `json:"command"`
+	ExitClass string `json:"exit_class"`
+	Payload   struct {
+		Project         string                           `json:"project"`
+		Ready           bool                             `json:"ready"`
+		RunID           string                           `json:"run_id"`
+		Base            string                           `json:"base"`
+		Profile         string                           `json:"profile"`
+		RunContractPath string                           `json:"run_contract_path"`
+		ReadyPath       string                           `json:"ready_path"`
+		CloneStrategy   reportLiveCloneStrategySelection `json:"clone_strategy"`
+	} `json:"payload"`
+}
+
+type liveHydrateJSON struct {
+	Command   string `json:"command"`
+	ExitClass string `json:"exit_class"`
+	Payload   struct {
+		Project       string                           `json:"project"`
+		Outcome       string                           `json:"outcome"`
+		Path          string                           `json:"path"`
+		PathPresent   bool                             `json:"path_present"`
+		CloneStrategy reportLiveCloneStrategySelection `json:"clone_strategy"`
+	} `json:"payload"`
+}
+
+func (h *harness) expectLiveAgentPrepareStrategyJSON(name string, r result, remote, registeredSourcePath, base string, want reportLiveCloneStrategySelection) (string, bool) {
+	var payload liveAgentPrepareJSON
+	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: "stdout was not JSON: " + err.Error(), ExitCode: -1})
+		return "", false
+	}
+	got := payload.Payload
+	if payload.Command != "agent prepare" || !liveAgentPrepareReadyExitClass(payload.ExitClass) || got.Project != "live-github" || !got.Ready || got.Base != base || got.Profile != "codex" || got.ReadyPath == "" || got.RunContractPath != filepath.Join(got.ReadyPath, "codemesh-run.json") {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("agent prepare JSON payload = %#v", payload), ExitCode: -1})
+		return "", false
+	}
+	if !liveCloneStrategyEqual(got.CloneStrategy, want) {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("command clone strategy = %#v, want %#v", got.CloneStrategy, want), ExitCode: -1})
+		return "", false
+	}
+	metadata, err := readAgentMetadata(got.RunContractPath)
+	if err != nil {
+		h.record(result{Name: name + " contract", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return "", false
+	}
+	if metadata.Project.CloneURL != remote || metadata.Project.SourcePath != registeredSourcePath || !metadata.Project.SourcePathMissing {
+		h.record(result{Name: name + " contract project", Status: "FAIL", Error: fmt.Sprintf("contract project = %#v", metadata.Project), ExitCode: -1})
+		return "", false
+	}
+	if !liveCloneStrategyEqual(metadata.CloneStrategy, want) {
+		h.record(result{Name: name + " contract", Status: "FAIL", Error: fmt.Sprintf("contract clone strategy = %#v, want %#v", metadata.CloneStrategy, want), ExitCode: -1})
+		return "", false
+	}
+	dbMetadata, err := readAgentRunMetadataFromStore(filepath.Join(h.codemeshHome, "codemesh.db"), got.RunID)
+	if err != nil {
+		h.record(result{Name: name + " state", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return "", false
+	}
+	if !liveCloneStrategyEqual(dbMetadata.CloneStrategy, want) {
+		h.record(result{Name: name + " state", Status: "FAIL", Error: fmt.Sprintf("state clone strategy = %#v, want %#v", dbMetadata.CloneStrategy, want), ExitCode: -1})
+		return "", false
+	}
+	reportLabel := strings.TrimSuffix(strings.TrimPrefix(name, "live github "), " clone strategy")
+	reportLabel = strings.TrimSuffix(reportLabel, " metadata")
+	h.recordLiveCloneStrategyPass(reportLabel, "agent prepare", want)
+	h.record(result{Name: name, Status: "PASS", ExitCode: 0})
+	return got.ReadyPath, true
+}
+
+func liveAgentPrepareReadyExitClass(exitClass string) bool {
+	return exitClass == "success" || exitClass == "readiness-warning"
+}
+
+func (h *harness) expectLiveHydrateStrategyJSON(name string, r result, alias, path string, pathPresent bool, want reportLiveCloneStrategySelection) bool {
+	var payload liveHydrateJSON
+	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: "stdout was not JSON: " + err.Error(), ExitCode: -1})
+		return false
+	}
+	got := payload.Payload
+	if payload.Command != "hydrate" || payload.ExitClass != "success" || got.Project != alias || got.Outcome != "hydrated" || got.Path != path || got.PathPresent != pathPresent {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("hydrate JSON payload = %#v", payload), ExitCode: -1})
+		return false
+	}
+	if !liveCloneStrategyEqual(got.CloneStrategy, want) {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("hydrate clone strategy = %#v, want %#v", got.CloneStrategy, want), ExitCode: -1})
+		return false
+	}
+	h.recordLiveCloneStrategyPass("full hydrate", "hydrate", want)
+	h.record(result{Name: name, Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func (h *harness) runLiveAgentPrepareStrategySmoke(cfg liveConfig, label, remote, registeredSourcePath, base string, strategyArgs []string, want reportLiveCloneStrategySelection, presentPaths, absentPaths []string) bool {
+	args := append([]string{"agent", "prepare", "live-github", "--base", base, "--profile", "codex"}, strategyArgs...)
+	args = append(args, "--json")
+	r := h.executeCommand(commandSpec{
+		Label:   "live github " + label + " agent prepare clone strategy",
+		Name:    h.bin,
+		Args:    args,
+		Timeout: longCommandTimeout,
+	})
+	h.recordLiveGitHubDuration("codemesh_agent_prepare_"+strings.ReplaceAll(label, " ", "_"), r)
+	if r.Status != "PASS" {
+		reason := liveGitHubCommandFailureReason(r, remote)
+		if liveCloneStrategyFailureIsSkippable(r, remote) {
+			h.recordLiveCloneStrategySkipOrFail(cfg, label, "agent prepare", want, reason, r.Duration, r.ExitCode)
+			return !cfg.Strict
+		}
+		h.record(r)
+		return false
+	}
+	h.record(r)
+	readyPath, ok := h.expectLiveAgentPrepareStrategyJSON("live github "+label+" agent prepare metadata", r, remote, registeredSourcePath, base, want)
+	if !ok {
+		return false
+	}
+	if !h.expectGitCheckoutAtBase("live github "+label+" agent checkout branch", readyPath, base) {
+		return false
+	}
+	for _, path := range presentPaths {
+		if _, err := os.Stat(filepath.Join(readyPath, path)); err != nil {
+			h.record(result{Name: "live github " + label + " sparse present path", Status: "FAIL", Error: fmt.Sprintf("%s missing: %v", path, err), ExitCode: -1})
+			return false
+		}
+	}
+	for _, path := range absentPaths {
+		if _, err := os.Stat(filepath.Join(readyPath, path)); !errors.Is(err, os.ErrNotExist) {
+			h.record(result{Name: "live github " + label + " sparse absent path", Status: "FAIL", Error: fmt.Sprintf("%s materialized or stat failed: %v", path, err), ExitCode: -1})
+			return false
+		}
+	}
+	return true
+}
+
+func liveCloneStrategyEqual(got, want reportLiveCloneStrategySelection) bool {
+	return got.Name == want.Name &&
+		got.History == want.History &&
+		got.WorkingTree == want.WorkingTree &&
+		got.Filter == want.Filter &&
+		stringSlicesEqual(got.SparsePaths, want.SparsePaths)
+}
+
+func liveCloneStrategyFailureIsSkippable(r result, remote string) bool {
+	reason := liveGitHubCommandFailureReason(r, remote)
+	if r.TimedOut || isSkippableLiveGitHubSmokeError(errors.New(reason)) {
+		return true
+	}
+	detail := strings.ToLower(reason)
+	return strings.Contains(detail, "partial clone") ||
+		strings.Contains(detail, "partialclonefilter") ||
+		strings.Contains(detail, "filter was not") ||
+		strings.Contains(detail, "filter was not honored") ||
+		strings.Contains(detail, "sparse-checkout") ||
+		strings.Contains(detail, "unknown option")
+}
+
+func (h *harness) liveSparseCheckoutPaths(checkoutPath string) (string, string, bool) {
+	output, _, err := h.exec(checkoutPath, "git", "ls-tree", "-r", "--name-only", "HEAD")
+	if err != nil {
+		return "", "", false
+	}
+	return selectLiveSparsePaths(strings.Split(output, "\n"))
+}
+
+func selectLiveSparsePaths(paths []string) (string, string, bool) {
+	preferred := []string{"README.md", "go.mod"}
+	candidates := make([]string, 0, len(paths))
+	seen := make(map[string]bool, len(paths))
+	available := make(map[string]bool, len(paths))
+	for _, raw := range paths {
+		path := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+		path = strings.Trim(path, "/")
+		if path == "" || strings.HasPrefix(path, ".git/") || strings.HasPrefix(path, ".github/") || strings.Contains(path, "/.git/") {
+			continue
+		}
+		available[path] = true
+	}
+	for _, path := range preferred {
+		if !available[path] || seen[path] {
+			continue
+		}
+		seen[path] = true
+		candidates = append(candidates, path)
+	}
+	for _, raw := range paths {
+		path := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+		path = strings.Trim(path, "/")
+		if path == "" || strings.HasPrefix(path, ".git/") || strings.HasPrefix(path, ".github/") || strings.Contains(path, "/.git/") {
+			continue
+		}
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		candidates = append(candidates, path)
+	}
+	if len(candidates) < 2 {
+		return "", "", false
+	}
+	return candidates[0], candidates[1], true
 }
 
 func resultContainsAll(r result, fragments ...string) bool {
@@ -4548,16 +4840,17 @@ type agentMetadata struct {
 		SourcePath        string `json:"source_path"`
 		SourcePathMissing bool   `json:"source_path_missing"`
 	} `json:"project"`
-	Base              string                 `json:"base"`
-	Profile           string                 `json:"profile"`
-	ResolvedCommit    string                 `json:"resolved_commit"`
-	BaseProvenance    agentCommandBase       `json:"base_provenance"`
-	Env               agentEnvMetadata       `json:"env"`
-	Toolchain         []agentToolchainStatus `json:"toolchain"`
-	ReadinessDecision string                 `json:"readiness_decision"`
-	HandoffDocs       []agentHandoffDoc      `json:"handoff_docs"`
-	Diagnostics       agentDiagnostics       `json:"diagnostics"`
-	Commands          []agentCommand         `json:"commands"`
+	Base              string                           `json:"base"`
+	Profile           string                           `json:"profile"`
+	ResolvedCommit    string                           `json:"resolved_commit"`
+	BaseProvenance    agentCommandBase                 `json:"base_provenance"`
+	CloneStrategy     reportLiveCloneStrategySelection `json:"clone_strategy"`
+	Env               agentEnvMetadata                 `json:"env"`
+	Toolchain         []agentToolchainStatus           `json:"toolchain"`
+	ReadinessDecision string                           `json:"readiness_decision"`
+	HandoffDocs       []agentHandoffDoc                `json:"handoff_docs"`
+	Diagnostics       agentDiagnostics                 `json:"diagnostics"`
+	Commands          []agentCommand                   `json:"commands"`
 }
 
 type agentToolchainStatus struct {
