@@ -60,6 +60,17 @@ CODEMESH_E2E_LIVE=1 CODEMESH_E2E_LIVE_STRICT=1 make e2e-live
 
 `CODEMESH_E2E_LIVE_TARGETS` may name comma-separated live target labels for report audit trails. Network unavailable, GitHub rate limiting, or a missing `git` executable records `SKIP` by default and exits 0; strict mode records the same condition as `FAIL`. Live checks must continue to skip unless free, safe prerequisites are present.
 
+Live provider smoke is reserved but inert. After `CODEMESH_E2E_LIVE=1`, it records `SKIP` unless all exact provider contract variables are present:
+
+```sh
+CODEMESH_E2E_LIVE_PROVIDER=provider-name
+CODEMESH_E2E_LIVE_PROVIDER_REQUIREMENT=CODEMESH_SINGLE_TARGET_KEY
+CODEMESH_E2E_LIVE_PROVIDER_SECRET_REF=provider-specific-single-target-ref
+CODEMESH_E2E_LIVE_PROVIDER_SCOPE=codex
+```
+
+The reserved contract is intentionally single-target: one logical requirement, one provider reference, and one scope. Tests must not call password managers, enumerate vaults, dump environment variables, or print the secret reference/value by default. Until a real provider implementation exists, even a fully configured provider smoke records `SKIP` with metadata that says the secret reference was configured but does not include it.
+
 Override the report path:
 
 ```sh
@@ -77,12 +88,12 @@ The report includes:
 - `binary`: executable path plus whether it was an external packaged binary.
 - `host`: OS, architecture, and Go version for the machine that wrote the report.
 - `isolation`: isolated `CODEMESH_HOME`, `HOME`, workspace, run directory, and Git config path.
-- `live`: live opt-in status, strict mode, target labels, skip reasons, GitHub remote URL, discovered default branch, command durations for GitHub status, Agent Prep, Agent Run, runs, cleanup, and hydration smoke steps, per-smoke secret-safety result, and the host-scoped lock path/label when a lock was acquired.
+- `live`: live opt-in status, strict mode, target labels, skip reasons, GitHub remote URL, discovered default branch, command durations for GitHub status, Agent Prep, Agent Run, runs, cleanup, hydration smoke steps, reserved provider smoke skip metadata, per-smoke secret-safety result, and the host-scoped lock path/label when a lock was acquired.
 - `summary`: `pass`, `fail`, `skip`, and `total` counts derived from recorded case results.
 - `secret_safety`: whether report redaction is active and how many known fake fixture values were redacted.
 - `results`: per-case status, duration, exit code, and captured output for failing or diagnostic cases.
 
-Reports may include fake env key names such as `CODEMESH_E2E_REQUIRED_ENV`, but must not include real secret values or fake fixture secret values. The harness checks command output, the JSON report, Agent Prep metadata, and SQLite state store bytes for fake env file/key secret markers.
+Reports may include fake env key names such as `CODEMESH_E2E_REQUIRED_ENV`, but must not include real secret values or fake fixture secret values. The harness checks command output, the JSON report, Agent Prep metadata, and SQLite state store bytes for fake env file/key and fake provider secret markers.
 
 ## Isolation
 
@@ -153,6 +164,7 @@ Offline Git fixtures cover:
 - invalid project policy diagnostics.
 - missing required env in warn and block modes using fake fixture names such as `CODEMESH_E2E_REQUIRED_ENV`.
 - present env requirements using fake env values and fake env file contents that must not appear in public artifacts or state.
+- fake-provider Env Binding for an agent-scoped bundle under managed run storage, including cleanup with the managed agent workspace.
 
 Project Registry e2e coverage runs `codemesh scan` and `codemesh add` against local fixture workspaces, reruns them to prove no duplicate rows, verifies deterministic discovered aliases, verifies known-remote path updates, and checks State store rows for normalized remote, clone URL, alias, desired local path, temp-only isolation, and derived missing/present behavior.
 
@@ -246,5 +258,5 @@ From `steipete/oracle`:
 ## Intentionally Not Run Live
 
 - Poll/wait helpers: no async CodeMesh behavior exists yet.
-- Provider, GUI, and multi-machine checks: those live targets are not implemented yet, so future checks must record audited skips unless explicitly opted in and free prerequisites are available.
+- Real provider, GUI, and multi-machine checks: those live targets are not implemented yet, so future checks must record audited skips unless explicitly opted in and free prerequisites are available. Provider smoke must use the exact single-target env contract above and must not invoke password managers by default.
 - Screenshot proof: not applicable to the current CLI-only harness.
