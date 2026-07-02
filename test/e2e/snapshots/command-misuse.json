@@ -1,0 +1,12 @@
+{
+  "case": "command-misuse",
+  "args": [
+    "hydrate",
+    "--json"
+  ],
+  "process": {
+    "exit_code": 2,
+    "exit_class": "usage-error"
+  },
+  "stderr_present": true
+}

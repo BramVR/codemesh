@@ -1,0 +1,46 @@
+{
+  "case": "status-missing-project",
+  "args": [
+    "status",
+    "contract-missing-project",
+    "--base",
+    "main",
+    "--json"
+  ],
+  "process": {
+    "exit_code": 0,
+    "exit_class": "readiness-blocked"
+  },
+  "stdout_json": {
+    "command": "status",
+    "diagnostics": {
+      "blockers": [],
+      "warnings": []
+    },
+    "exit_class": "readiness-blocked",
+    "payload": {
+      "project": "contract-missing-project",
+      "projects": [
+        {
+          "alias": "contract-missing-project",
+          "base": "main",
+          "diagnostics": {
+            "blockers": [
+              {
+                "code": "missing-path",
+                "message": "local path does not exist: <FIXTURE_SOURCES>/contract-missing-project"
+              }
+            ],
+            "warnings": []
+          },
+          "path": "<FIXTURE_SOURCES>/contract-missing-project",
+          "path_present": false,
+          "remote": "<FIXTURE_REMOTES>/contract-missing-project.git",
+          "state": "missing"
+        }
+      ]
+    }
+  },
+  "stdout_present": true,
+  "stderr_present": false
+}

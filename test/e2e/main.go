@@ -13,7 +13,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,6 +34,13 @@ const (
 )
 
 var errLiveLockHeld = errors.New("live e2e lock already held")
+
+var (
+	contractCommitRE       = regexp.MustCompile(`\b[0-9a-f]{40}\b`)
+	contractRFC3339RE      = regexp.MustCompile(`\b[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z\b`)
+	contractDurationRE     = regexp.MustCompile(`\b[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)\b`)
+	contractAgentRunPathRE = regexp.MustCompile(`(<CODEMESH_HOME>/agents/)[^/]+`)
+)
 
 type result struct {
 	Name     string `json:"name"`
@@ -273,6 +282,7 @@ func (h *harness) run() int {
 	h.caseDoctorPreflightWorkflow()
 	h.caseHydrationFixtureWorkflow()
 	h.caseAgentPrepFixtureWorkflow()
+	h.caseCLIContractSnapshotWorkflow()
 	h.record(result{Name: "offline e2e boundary: live network not required", Status: "PASS", ExitCode: 0})
 
 	if !h.caseSecretSafetyReportAndStateStore() {
@@ -2040,6 +2050,401 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 	}
 }
 
+func (h *harness) caseCLIContractSnapshotWorkflow() {
+	s, err := h.newScenarioWithFixtureRoot("cli contract snapshots", filepath.Join(h.tmp, "contract-git-fixtures"))
+	if err != nil {
+		h.record(result{Name: "cli contract snapshot workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	scan := s.command("cli contract scan fixtures", "scan", s.fixtures.Sources)
+	if scan.Status != "PASS" {
+		return
+	}
+
+	if !s.contractJSON("tree-scanned-workspace", "tree", "--json") {
+		return
+	}
+	if !s.contractJSON("status-ready", "status", "clean-repo", "--base", "main", "--json") {
+		return
+	}
+	if !s.contractJSON("status-warning", "status", "dirty-source", "--base", "main", "--json") {
+		return
+	}
+	missingProject, err := h.createClonedFixture(s.fixtures, "contract-missing-project", nil)
+	if err != nil {
+		h.record(result{Name: "cli contract missing project setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if missingProject.Source, err = filepath.EvalSymlinks(missingProject.Source); err != nil {
+		h.record(result{Name: "cli contract missing project canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if add := s.command("cli contract add missing project", "add", missingProject.Source); add.Status != "PASS" {
+		return
+	}
+	if err := os.RemoveAll(missingProject.Source); err != nil {
+		h.record(result{Name: "cli contract remove missing project", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if !s.contractJSON("status-missing-project", "status", missingProject.Name, "--base", "main", "--json") {
+		return
+	}
+
+	fetchFailure, err := h.createClonedFixture(s.fixtures, "contract-fetch-failure", func(source string) error {
+		return runGitNoOutput(source, "remote", "set-url", "origin", filepath.Join(s.fixtures.Remotes, "missing-contract-fetch-remote.git"))
+	})
+	if err != nil {
+		h.record(result{Name: "cli contract fetch failure setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if add := s.command("cli contract add stale project", "add", fetchFailure.Source); add.Status != "PASS" {
+		return
+	}
+	if !s.contractJSON("status-stale", "status", fetchFailure.Name, "--base", "main", "--json") {
+		return
+	}
+
+	invalidPolicy, err := h.createClonedFixtureWithSeed(s.fixtures, "contract-invalid-policy", func(seed string) error {
+		return os.WriteFile(filepath.Join(seed, ".codemesh.yml"), []byte("agent:\n  env:\n    mode: stop\n"), 0o644)
+	}, nil)
+	if err != nil {
+		h.record(result{Name: "cli contract invalid policy setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if add := s.command("cli contract add invalid policy project", "add", invalidPolicy.Source); add.Status != "PASS" {
+		return
+	}
+	if !s.contractJSON("status-invalid-policy", "status", invalidPolicy.Name, "--base", "main", "--json") {
+		return
+	}
+
+	hydrateTarget, err := h.createClonedFixture(s.fixtures, "contract-hydrate-target", nil)
+	if err != nil {
+		h.record(result{Name: "cli contract hydrate target setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if hydrateTarget.Source, err = filepath.EvalSymlinks(hydrateTarget.Source); err != nil {
+		h.record(result{Name: "cli contract hydrate target canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if add := s.command("cli contract add hydrate target", "add", hydrateTarget.Source); add.Status != "PASS" {
+		return
+	}
+	if err := os.RemoveAll(hydrateTarget.Source); err != nil {
+		h.record(result{Name: "cli contract remove hydrate target", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if !s.contractJSON("hydrate-hydrated", "hydrate", hydrateTarget.Name, "--json") {
+		return
+	}
+	if !s.contractJSON("hydrate-missing-project", "hydrate", "ghost-project", "--json") {
+		return
+	}
+
+	if !s.contractJSON("agent-prepare-ready", "agent", "prepare", "clean-repo", "--base", "main", "--profile", "codex", "--json") {
+		return
+	}
+	if !s.contractJSON("agent-prepare-blocked", "agent", "prepare", "required-env-missing", "--json") {
+		return
+	}
+	if !s.contractNonJSON("command-misuse", "hydrate", "--json") {
+		return
+	}
+}
+
+type cliContractSnapshot struct {
+	Case          string          `json:"case"`
+	Args          []string        `json:"args"`
+	Process       contractProcess `json:"process"`
+	StdoutJSON    any             `json:"stdout_json,omitempty"`
+	StdoutPresent bool            `json:"stdout_present,omitempty"`
+	StderrPresent bool            `json:"stderr_present"`
+}
+
+type contractProcess struct {
+	ExitCode  int    `json:"exit_code"`
+	ExitClass string `json:"exit_class"`
+}
+
+type contractReplacement struct {
+	From string
+	To   string
+}
+
+func (s *scenario) contractJSON(caseName string, args ...string) bool {
+	r := s.execute("cli contract "+caseName, nil, args...)
+	return s.expectContractSnapshot(caseName, r, args, true)
+}
+
+func (s *scenario) contractNonJSON(caseName string, args ...string) bool {
+	r := s.execute("cli contract "+caseName, nil, args...)
+	return s.expectContractSnapshot(caseName, r, args, false)
+}
+
+func (s *scenario) expectContractSnapshot(caseName string, r result, args []string, stdoutJSON bool) bool {
+	stdoutPath, stderrPath, err := s.writeContractDebug(caseName, r)
+	if err != nil {
+		r.Status = "FAIL"
+		r.Error = err.Error()
+		s.record(r)
+		return false
+	}
+
+	actual, err := s.normalizedContractSnapshot(caseName, r, args, stdoutJSON)
+	if err != nil {
+		r.Status = "FAIL"
+		r.Error = fmt.Sprintf("%v\nstdout_path: %s\nstderr_path: %s", err, stdoutPath, stderrPath)
+		s.record(r)
+		return false
+	}
+	expectedPath := filepath.Join(s.h.root, "test", "e2e", "snapshots", caseName+".json")
+	expected, err := os.ReadFile(expectedPath)
+	if err != nil {
+		if contractSnapshotsUpdateEnabled() {
+			if writeErr := writeContractSnapshot(expectedPath, actual); writeErr != nil {
+				r.Status = "FAIL"
+				r.Error = fmt.Sprintf("write contract snapshot %s: %v\nstdout_path: %s\nstderr_path: %s", expectedPath, writeErr, stdoutPath, stderrPath)
+				s.record(r)
+				return false
+			}
+			r.Status = "PASS"
+			r.Error = ""
+			r.Stdout = ""
+			r.Stderr = ""
+			s.record(r)
+			return true
+		}
+		r.Status = "FAIL"
+		r.Error = fmt.Sprintf("read contract snapshot %s: %v\nstdout_path: %s\nstderr_path: %s", expectedPath, err, stdoutPath, stderrPath)
+		s.record(r)
+		return false
+	}
+	expectedText := strings.TrimSpace(string(expected))
+	actualText := strings.TrimSpace(string(actual))
+	if expectedText != actualText {
+		if contractSnapshotsUpdateEnabled() {
+			if writeErr := writeContractSnapshot(expectedPath, actual); writeErr != nil {
+				r.Status = "FAIL"
+				r.Error = fmt.Sprintf("write contract snapshot %s: %v\nstdout_path: %s\nstderr_path: %s", expectedPath, writeErr, stdoutPath, stderrPath)
+				s.record(r)
+				return false
+			}
+			r.Status = "PASS"
+			r.Error = ""
+			r.Stdout = ""
+			r.Stderr = ""
+			s.record(r)
+			return true
+		}
+		r.Status = "FAIL"
+		r.Error = fmt.Sprintf("normalized JSON contract mismatch for %s:\n%s\nstdout_path: %s\nstderr_path: %s", caseName, normalizedJSONDiff(expectedText, actualText), stdoutPath, stderrPath)
+		s.record(r)
+		return false
+	}
+	r.Status = "PASS"
+	r.Error = ""
+	r.Stdout = ""
+	r.Stderr = ""
+	s.record(r)
+	return true
+}
+
+func contractSnapshotsUpdateEnabled() bool {
+	return os.Getenv("CODEMESH_E2E_UPDATE_CONTRACTS") == "1"
+}
+
+func writeContractSnapshot(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+func (s *scenario) writeContractDebug(caseName string, r result) (string, string, error) {
+	dir := filepath.Join(s.h.tmp, "contract-debug", slug(caseName))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", err
+	}
+	stdoutPath := filepath.Join(dir, "stdout.txt")
+	stderrPath := filepath.Join(dir, "stderr.txt")
+	if err := os.WriteFile(stdoutPath, []byte(r.Stdout), 0o644); err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(stderrPath, []byte(r.Stderr), 0o644); err != nil {
+		return "", "", err
+	}
+	return stdoutPath, stderrPath, nil
+}
+
+func (s *scenario) normalizedContractSnapshot(caseName string, r result, args []string, stdoutJSON bool) ([]byte, error) {
+	snapshot := cliContractSnapshot{
+		Case: caseName,
+		Args: append([]string(nil), args...),
+		Process: contractProcess{
+			ExitCode:  r.ExitCode,
+			ExitClass: processExitClass(r.ExitCode),
+		},
+		StdoutPresent: strings.TrimSpace(r.Stdout) != "",
+		StderrPresent: strings.TrimSpace(r.Stderr) != "",
+	}
+	if stdoutJSON {
+		var raw any
+		if err := json.Unmarshal([]byte(r.Stdout), &raw); err != nil {
+			return nil, fmt.Errorf("stdout was not JSON: %w", err)
+		}
+		normalized := normalizeContractValue(raw, s.contractReplacements(), "")
+		snapshot.StdoutJSON = normalized
+		if exitClass, ok := contractExitClass(normalized); ok {
+			snapshot.Process.ExitClass = exitClass
+		}
+	}
+	return marshalContractSnapshot(snapshot)
+}
+
+func marshalContractSnapshot(snapshot cliContractSnapshot) ([]byte, error) {
+	var b bytes.Buffer
+	encoder := json.NewEncoder(&b)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(snapshot); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
+
+func processExitClass(exitCode int) string {
+	switch exitCode {
+	case 0:
+		return "success"
+	case 2:
+		return "usage-error"
+	default:
+		return "internal-error"
+	}
+}
+
+func contractExitClass(value any) (string, bool) {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	exitClass, ok := object["exit_class"].(string)
+	return exitClass, ok
+}
+
+func (s *scenario) contractReplacements() []contractReplacement {
+	var replacements []contractReplacement
+	replacements = appendContractReplacement(replacements, s.codemeshHome, "<CODEMESH_HOME>")
+	replacements = appendContractReplacement(replacements, s.fixtures.Root, "<FIXTURE_ROOT>")
+	replacements = appendContractReplacement(replacements, s.fixtures.Sources, "<FIXTURE_SOURCES>")
+	replacements = appendContractReplacement(replacements, s.fixtures.Remotes, "<FIXTURE_REMOTES>")
+	replacements = appendContractReplacement(replacements, s.h.workspace, "<WORKSPACE>")
+	replacements = appendContractReplacement(replacements, s.h.home, "<HOME>")
+	replacements = appendContractReplacement(replacements, s.h.tmp, "<E2E_TMP>")
+	sort.SliceStable(replacements, func(i, j int) bool {
+		return len(replacements[i].From) > len(replacements[j].From)
+	})
+	return replacements
+}
+
+func appendContractReplacement(replacements []contractReplacement, from, to string) []contractReplacement {
+	if from == "" {
+		return replacements
+	}
+	replacements = append(replacements, contractReplacement{From: from, To: to})
+	if evaluated, err := filepath.EvalSymlinks(from); err == nil && evaluated != from {
+		replacements = append(replacements, contractReplacement{From: evaluated, To: to})
+	}
+	return replacements
+}
+
+func normalizeContractValue(value any, replacements []contractReplacement, key string) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		normalized := make(map[string]any, len(typed))
+		for k, v := range typed {
+			normalized[k] = normalizeContractValue(v, replacements, k)
+		}
+		return normalized
+	case []any:
+		normalized := make([]any, len(typed))
+		for i, v := range typed {
+			normalized[i] = normalizeContractValue(v, replacements, key)
+		}
+		return normalized
+	case string:
+		return normalizeContractString(key, typed, replacements)
+	default:
+		return typed
+	}
+}
+
+func normalizeContractString(key, value string, replacements []contractReplacement) string {
+	if key == "run_id" {
+		return "<RUN_ID>"
+	}
+	normalized := filepath.ToSlash(value)
+	for _, replacement := range replacements {
+		from := filepath.ToSlash(replacement.From)
+		if from != "" {
+			normalized = strings.ReplaceAll(normalized, from, replacement.To)
+		}
+	}
+	normalized = contractAgentRunPathRE.ReplaceAllString(normalized, `${1}<RUN_ID>`)
+	normalized = contractCommitRE.ReplaceAllString(normalized, "<COMMIT_SHA>")
+	normalized = contractRFC3339RE.ReplaceAllString(normalized, "<TIMESTAMP>")
+	normalized = contractDurationRE.ReplaceAllString(normalized, "<DURATION>")
+	return normalized
+}
+
+func normalizedJSONDiff(expected, actual string) string {
+	expectedLines := strings.Split(expected, "\n")
+	actualLines := strings.Split(actual, "\n")
+	max := len(expectedLines)
+	if len(actualLines) > max {
+		max = len(actualLines)
+	}
+	for i := 0; i < max; i++ {
+		expectedLine := "<missing>"
+		actualLine := "<missing>"
+		if i < len(expectedLines) {
+			expectedLine = expectedLines[i]
+		}
+		if i < len(actualLines) {
+			actualLine = actualLines[i]
+		}
+		if expectedLine != actualLine {
+			start := i - 3
+			if start < 0 {
+				start = 0
+			}
+			end := i + 4
+			if end > max {
+				end = max
+			}
+			var b strings.Builder
+			fmt.Fprintf(&b, "--- expected\n+++ actual\n@@ line %d @@\n", i+1)
+			for line := start; line < end; line++ {
+				want := "<missing>"
+				got := "<missing>"
+				if line < len(expectedLines) {
+					want = expectedLines[line]
+				}
+				if line < len(actualLines) {
+					got = actualLines[line]
+				}
+				if want == got {
+					fmt.Fprintf(&b, " %s\n", want)
+					continue
+				}
+				fmt.Fprintf(&b, "-%s\n+%s\n", want, got)
+			}
+			return strings.TrimRight(b.String(), "\n")
+		}
+	}
+	return "no diff"
+}
+
 func (h *harness) buildBinary() bool {
 	r := h.runCommand(commandSpec{
 		Label:      "build codemesh",
@@ -2467,10 +2872,14 @@ func firstRunID(output string) string {
 }
 
 func (h *harness) createOfflineGitFixtures() (offlineGitFixtures, error) {
+	return h.createOfflineGitFixturesAt(filepath.Join(h.tmp, "git-fixtures"))
+}
+
+func (h *harness) createOfflineGitFixturesAt(root string) (offlineGitFixtures, error) {
 	fixtures := offlineGitFixtures{
-		Root:    filepath.Join(h.tmp, "git-fixtures"),
-		Remotes: filepath.Join(h.tmp, "git-fixtures", "remotes"),
-		Sources: filepath.Join(h.tmp, "git-fixtures", "sources"),
+		Root:    root,
+		Remotes: filepath.Join(root, "remotes"),
+		Sources: filepath.Join(root, "sources"),
 	}
 	if err := os.MkdirAll(fixtures.Remotes, 0o755); err != nil {
 		return fixtures, err
@@ -2761,11 +3170,15 @@ func (h *harness) record(r result) {
 }
 
 func (h *harness) newScenario(name string) (*scenario, error) {
+	return h.newScenarioWithFixtureRoot(name, filepath.Join(h.tmp, "git-fixtures"))
+}
+
+func (h *harness) newScenarioWithFixtureRoot(name, fixtureRoot string) (*scenario, error) {
 	codemeshHome := filepath.Join(h.tmp, "codemesh-"+slug(name)+"-home")
 	if err := os.MkdirAll(codemeshHome, 0o755); err != nil {
 		return nil, err
 	}
-	fixtures, err := h.createOfflineGitFixtures()
+	fixtures, err := h.createOfflineGitFixturesAt(fixtureRoot)
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,51 @@
+{
+  "case": "agent-prepare-ready",
+  "args": [
+    "agent",
+    "prepare",
+    "clean-repo",
+    "--base",
+    "main",
+    "--profile",
+    "codex",
+    "--json"
+  ],
+  "process": {
+    "exit_code": 0,
+    "exit_class": "success"
+  },
+  "stdout_json": {
+    "command": "agent prepare",
+    "diagnostics": {
+      "blockers": [],
+      "warnings": []
+    },
+    "exit_class": "success",
+    "payload": {
+      "base": "main",
+      "diagnostics": {
+        "blockers": [],
+        "warnings": []
+      },
+      "env": {
+        "allowed_scopes": [],
+        "bundle": {
+          "present": false,
+          "values": "not-recorded"
+        },
+        "materialization_status": "not_requested",
+        "requirements": []
+      },
+      "handoff_docs_count": 4,
+      "profile": "codex",
+      "project": "clean-repo",
+      "ready": true,
+      "ready_path": "<CODEMESH_HOME>/agents/<RUN_ID>/workspace",
+      "resolved_commit": "<COMMIT_SHA>",
+      "run_contract_path": "<CODEMESH_HOME>/agents/<RUN_ID>/workspace/codemesh-run.json",
+      "run_id": "<RUN_ID>"
+    }
+  },
+  "stdout_present": true,
+  "stderr_present": false
+}

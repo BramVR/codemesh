@@ -1,0 +1,70 @@
+{
+  "case": "agent-prepare-blocked",
+  "args": [
+    "agent",
+    "prepare",
+    "required-env-missing",
+    "--json"
+  ],
+  "process": {
+    "exit_code": 1,
+    "exit_class": "readiness-blocked"
+  },
+  "stdout_json": {
+    "command": "agent prepare",
+    "diagnostics": {
+      "blockers": [
+        {
+          "code": "missing-env-file",
+          "message": "required env file is missing: .env.local"
+        },
+        {
+          "code": "missing-env-key",
+          "message": "required env key is missing: CODEMESH_E2E_REQUIRED_ENV"
+        }
+      ],
+      "warnings": []
+    },
+    "exit_class": "readiness-blocked",
+    "payload": {
+      "base": "main",
+      "diagnostics": {
+        "blockers": [
+          {
+            "code": "missing-env-file",
+            "message": "required env file is missing: .env.local"
+          },
+          {
+            "code": "missing-env-key",
+            "message": "required env key is missing: CODEMESH_E2E_REQUIRED_ENV"
+          }
+        ],
+        "warnings": []
+      },
+      "env": {
+        "allowed_scopes": null,
+        "bundle": {
+          "present": false,
+          "values": "not-recorded"
+        },
+        "materialization_status": "not_requested",
+        "requirements": [
+          {
+            "kind": "env_file",
+            "name": ".env.local"
+          },
+          {
+            "kind": "env_key",
+            "name": "CODEMESH_E2E_REQUIRED_ENV"
+          }
+        ]
+      },
+      "handoff_docs_count": 0,
+      "profile": "",
+      "project": "required-env-missing",
+      "ready": false
+    }
+  },
+  "stdout_present": true,
+  "stderr_present": false
+}

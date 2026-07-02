@@ -1,0 +1,46 @@
+{
+  "case": "status-stale",
+  "args": [
+    "status",
+    "contract-fetch-failure",
+    "--base",
+    "main",
+    "--json"
+  ],
+  "process": {
+    "exit_code": 0,
+    "exit_class": "readiness-blocked"
+  },
+  "stdout_json": {
+    "command": "status",
+    "diagnostics": {
+      "blockers": [],
+      "warnings": []
+    },
+    "exit_class": "readiness-blocked",
+    "payload": {
+      "project": "contract-fetch-failure",
+      "projects": [
+        {
+          "alias": "contract-fetch-failure",
+          "base": "main",
+          "diagnostics": {
+            "blockers": [
+              {
+                "code": "fetch-failed",
+                "message": "git fetch --quiet origin refs/heads/main failed: fatal: '<FIXTURE_REMOTES>/missing-contract-fetch-remote.git' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists."
+              }
+            ],
+            "warnings": []
+          },
+          "path": "<FIXTURE_SOURCES>/contract-fetch-failure",
+          "path_present": true,
+          "remote": "<FIXTURE_REMOTES>/missing-contract-fetch-remote.git",
+          "state": "stale"
+        }
+      ]
+    }
+  },
+  "stdout_present": true,
+  "stderr_present": false
+}

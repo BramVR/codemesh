@@ -1,0 +1,29 @@
+{
+  "case": "hydrate-hydrated",
+  "args": [
+    "hydrate",
+    "contract-hydrate-target",
+    "--json"
+  ],
+  "process": {
+    "exit_code": 0,
+    "exit_class": "success"
+  },
+  "stdout_json": {
+    "command": "hydrate",
+    "diagnostics": {
+      "blockers": [],
+      "warnings": []
+    },
+    "exit_class": "success",
+    "payload": {
+      "outcome": "hydrated",
+      "path": "<FIXTURE_SOURCES>/contract-hydrate-target",
+      "path_present": true,
+      "project": "contract-hydrate-target",
+      "remote": "<FIXTURE_REMOTES>/contract-hydrate-target.git"
+    }
+  },
+  "stdout_present": true,
+  "stderr_present": false
+}
