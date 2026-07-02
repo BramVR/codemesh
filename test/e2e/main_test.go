@@ -282,6 +282,92 @@ func TestLiveGitHubCommandFailureSkipClassification(t *testing.T) {
 	}
 }
 
+func TestLiveProviderSmokeConfigRequiresExactEnvVars(t *testing.T) {
+	cfg, ok, reason := liveProviderSmokeConfigFromEnv(mapLookup(nil))
+	if ok || cfg.Provider != "" {
+		t.Fatalf("default live provider config = %#v ok=%t, want disabled", cfg, ok)
+	}
+	for _, name := range []string{
+		"CODEMESH_E2E_LIVE_PROVIDER",
+		"CODEMESH_E2E_LIVE_PROVIDER_REQUIREMENT",
+		"CODEMESH_E2E_LIVE_PROVIDER_SECRET_REF",
+		"CODEMESH_E2E_LIVE_PROVIDER_SCOPE",
+	} {
+		if !strings.Contains(reason, name) {
+			t.Fatalf("missing env reason %q did not mention %s", reason, name)
+		}
+	}
+
+	cfg, ok, reason = liveProviderSmokeConfigFromEnv(mapLookup(map[string]string{
+		"CODEMESH_E2E_LIVE_PROVIDER":             " future-provider ",
+		"CODEMESH_E2E_LIVE_PROVIDER_REQUIREMENT": " CODEMESH_LIVE_TARGET ",
+		"CODEMESH_E2E_LIVE_PROVIDER_SECRET_REF":  " provider://single-target ",
+		"CODEMESH_E2E_LIVE_PROVIDER_SCOPE":       " codex ",
+	}))
+	if !ok || reason != "" {
+		t.Fatalf("enabled live provider config = %#v ok=%t reason=%q", cfg, ok, reason)
+	}
+	if cfg.Provider != "future-provider" || cfg.Requirement != "CODEMESH_LIVE_TARGET" || cfg.SecretRef != "provider://single-target" || cfg.Scope != "codex" {
+		t.Fatalf("provider config = %#v", cfg)
+	}
+}
+
+func TestLiveProviderSmokeRecordsSkipUnlessConfigured(t *testing.T) {
+	clearLiveProviderSmokeEnv(t)
+	h := testHarness(t)
+	h.live = &reportLive{}
+
+	h.caseLiveProviderSmoke(liveConfig{})
+
+	if len(h.results) != 1 || h.results[0].Name != "live provider smoke config" || h.results[0].Status != "SKIP" {
+		t.Fatalf("results = %#v, want provider config skip", h.results)
+	}
+	if h.live.Provider == nil || h.live.Provider.Status != "skipped" || !strings.Contains(h.live.Provider.SkipReason, "CODEMESH_E2E_LIVE_PROVIDER") {
+		t.Fatalf("provider report = %#v", h.live.Provider)
+	}
+}
+
+func TestLiveProviderSmokeConfiguredContractSkipsUntilImplementationExists(t *testing.T) {
+	t.Setenv("CODEMESH_E2E_LIVE_PROVIDER", "future-provider")
+	t.Setenv("CODEMESH_E2E_LIVE_PROVIDER_REQUIREMENT", "CODEMESH_LIVE_TARGET")
+	t.Setenv("CODEMESH_E2E_LIVE_PROVIDER_SECRET_REF", "provider://single-target")
+	t.Setenv("CODEMESH_E2E_LIVE_PROVIDER_SCOPE", "codex")
+	h := testHarness(t)
+	h.live = &reportLive{}
+
+	h.caseLiveProviderSmoke(liveConfig{})
+
+	if len(h.results) != 1 || h.results[0].Name != "live provider smoke" || h.results[0].Status != "SKIP" {
+		t.Fatalf("results = %#v, want implementation skip", h.results)
+	}
+	if h.live.Provider == nil || h.live.Provider.Status != "skipped" || h.live.Provider.Provider != "future-provider" || h.live.Provider.Requirement != "CODEMESH_LIVE_TARGET" || h.live.Provider.Scope != "codex" {
+		t.Fatalf("provider report = %#v", h.live.Provider)
+	}
+	if h.live.Provider.SecretRefConfigured != true || strings.Contains(h.live.Provider.SkipReason, "provider://single-target") {
+		t.Fatalf("provider report leaked or missed secret-ref metadata: %#v", h.live.Provider)
+	}
+	h.mode = modeLive
+	h.reportPath = filepath.Join(h.tmp, "reports", "live-provider.json")
+	if err := h.writeReport(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(h.reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "provider://single-target") {
+		t.Fatalf("live provider report leaked configured secret ref:\n%s", data)
+	}
+}
+
+func clearLiveProviderSmokeEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("CODEMESH_E2E_LIVE_PROVIDER", "")
+	t.Setenv("CODEMESH_E2E_LIVE_PROVIDER_REQUIREMENT", "")
+	t.Setenv("CODEMESH_E2E_LIVE_PROVIDER_SECRET_REF", "")
+	t.Setenv("CODEMESH_E2E_LIVE_PROVIDER_SCOPE", "")
+}
+
 func TestLiveReportPathIsolationIgnoresIntentionalBinaryAndLockMetadata(t *testing.T) {
 	forbidden := []string{filepath.Join("home", "Projects")}
 	r := report{

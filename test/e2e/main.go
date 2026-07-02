@@ -77,13 +77,14 @@ type reportIsolation struct {
 }
 
 type reportLive struct {
-	OptIn       bool              `json:"opt_in"`
-	Strict      bool              `json:"strict"`
-	Targets     []string          `json:"targets"`
-	SkipReasons []string          `json:"skip_reasons,omitempty"`
-	LockPath    string            `json:"lock_path,omitempty"`
-	LockLabel   string            `json:"lock_label,omitempty"`
-	GitHub      *reportLiveGitHub `json:"github,omitempty"`
+	OptIn       bool                `json:"opt_in"`
+	Strict      bool                `json:"strict"`
+	Targets     []string            `json:"targets"`
+	SkipReasons []string            `json:"skip_reasons,omitempty"`
+	LockPath    string              `json:"lock_path,omitempty"`
+	LockLabel   string              `json:"lock_label,omitempty"`
+	GitHub      *reportLiveGitHub   `json:"github,omitempty"`
+	Provider    *reportLiveProvider `json:"provider,omitempty"`
 }
 
 type reportLiveGitHub struct {
@@ -91,6 +92,15 @@ type reportLiveGitHub struct {
 	DefaultBranch    string            `json:"default_branch,omitempty"`
 	CommandDurations map[string]string `json:"command_durations,omitempty"`
 	SecretSafety     string            `json:"secret_safety,omitempty"`
+}
+
+type reportLiveProvider struct {
+	Status              string `json:"status"`
+	Provider            string `json:"provider,omitempty"`
+	Requirement         string `json:"requirement,omitempty"`
+	Scope               string `json:"scope,omitempty"`
+	SecretRefConfigured bool   `json:"secret_ref_configured,omitempty"`
+	SkipReason          string `json:"skip_reason,omitempty"`
 }
 
 type reportSummary struct {
@@ -127,6 +137,13 @@ type liveConfig struct {
 	OptIn   bool
 	Strict  bool
 	Targets []string
+}
+
+type liveProviderSmokeConfig struct {
+	Provider    string
+	Requirement string
+	SecretRef   string
+	Scope       string
 }
 
 type liveLockMetadata struct {
@@ -340,6 +357,7 @@ func (h *harness) runLive() int {
 		return h.finishLive()
 	}
 	h.caseLiveGitHubRemoteSmoke(cfg)
+	h.caseLiveProviderSmoke(cfg)
 	if h.live.GitHub != nil && h.live.GitHub.SecretSafety == "" {
 		h.live.GitHub.SecretSafety = "pending"
 	}
@@ -621,6 +639,30 @@ func (h *harness) caseLiveGitHubRemoteSmoke(cfg liveConfig) {
 		return
 	}
 	h.live.GitHub.SecretSafety = "pass"
+}
+
+func (h *harness) caseLiveProviderSmoke(_ liveConfig) {
+	providerCfg, configured, reason := liveProviderSmokeConfigFromEnv(os.LookupEnv)
+	if h.live == nil {
+		h.live = &reportLive{}
+	}
+	if !configured {
+		h.live.Provider = &reportLiveProvider{
+			Status:     "skipped",
+			SkipReason: reason,
+		}
+		h.skip("live provider smoke config", reason)
+		return
+	}
+	h.live.Provider = &reportLiveProvider{
+		Status:              "skipped",
+		Provider:            providerCfg.Provider,
+		Requirement:         providerCfg.Requirement,
+		Scope:               providerCfg.Scope,
+		SecretRefConfigured: providerCfg.SecretRef != "",
+		SkipReason:          "live provider smoke is reserved until a real provider implementation exists",
+	}
+	h.skip("live provider smoke", h.live.Provider.SkipReason)
 }
 
 func (h *harness) recordLiveGitHubDuration(name string, r result) {
@@ -1973,6 +2015,27 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 		return
 	}
 	if !s.expectAgentRunEnvMaterialization("agent prep env binding metadata", boundPath, "CODEMESH_E2E_BOUND_ENV", fakeBoundValue) {
+		return
+	}
+	boundBundle := valueAfterPrefix(boundEnv.Stdout, "env_bundle_path: ")
+	if boundBundle == "" {
+		s.h.record(result{Name: "agent prep env binding bundle path", Status: "FAIL", Error: "env bundle path missing from output", ExitCode: -1})
+		return
+	}
+	if !s.expectPathExists("agent prep env binding bundle exists", boundBundle) {
+		return
+	}
+	if !s.expectPathMissing("agent prep env binding bundle outside checkout", filepath.Join(boundPath, "env", "env.bundle")) {
+		return
+	}
+	cleanBound := s.command("agent prep env binding cleanup", "clean", "--older-than", "0d")
+	if cleanBound.Status != "PASS" || !s.expectOutput(cleanBound, "deleted: ") {
+		return
+	}
+	if !s.expectPathMissing("agent prep env binding cleanup removes bundle", boundBundle) {
+		return
+	}
+	if !s.expectPathMissing("agent prep env binding cleanup removes workspace", boundPath) {
 		return
 	}
 }
@@ -4006,6 +4069,35 @@ func liveGitHubRemoteFromEnv(lookup func(string) (string, bool)) string {
 		}
 	}
 	return defaultLiveGitHubRemote
+}
+
+func liveProviderSmokeConfigFromEnv(lookup func(string) (string, bool)) (liveProviderSmokeConfig, bool, string) {
+	required := []string{
+		"CODEMESH_E2E_LIVE_PROVIDER",
+		"CODEMESH_E2E_LIVE_PROVIDER_REQUIREMENT",
+		"CODEMESH_E2E_LIVE_PROVIDER_SECRET_REF",
+		"CODEMESH_E2E_LIVE_PROVIDER_SCOPE",
+	}
+	values := make(map[string]string, len(required))
+	var missing []string
+	for _, name := range required {
+		value, ok := lookup(name)
+		value = strings.TrimSpace(value)
+		if !ok || value == "" {
+			missing = append(missing, name)
+			continue
+		}
+		values[name] = value
+	}
+	if len(missing) != 0 {
+		return liveProviderSmokeConfig{}, false, "live provider smoke requires exact env vars: " + strings.Join(missing, ", ")
+	}
+	return liveProviderSmokeConfig{
+		Provider:    values["CODEMESH_E2E_LIVE_PROVIDER"],
+		Requirement: values["CODEMESH_E2E_LIVE_PROVIDER_REQUIREMENT"],
+		SecretRef:   values["CODEMESH_E2E_LIVE_PROVIDER_SECRET_REF"],
+		Scope:       values["CODEMESH_E2E_LIVE_PROVIDER_SCOPE"],
+	}, true, ""
 }
 
 func validateLiveGitHubRemote(remote string) error {
