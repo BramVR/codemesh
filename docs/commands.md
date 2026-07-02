@@ -16,10 +16,10 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 - [`codemesh tree [--json]`](commands/tree.md)
 - [`codemesh status [project] [--base branch] [--json]`](commands/status.md)
 - [`codemesh doctor <project> [--base branch] [--strict] [--json]`](commands/doctor.md)
-- [`codemesh hydrate <project> [--json]`](commands/hydrate.md)
+- [`codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]`](commands/hydrate.md)
 - [`codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope`](commands/env-bind.md)
 - [`codemesh machine register [workspace-root] [--json]`](commands/machine-register.md)
-- [`codemesh agent prepare <project> [--base branch] [--profile name] [--env-provider fake] [--allow-env-scope scope] [--json]`](commands/agent-prepare.md)
+- [`codemesh agent prepare <project> [--base branch] [--profile name] [--partial-clone] [--sparse path] [--env-provider fake] [--allow-env-scope scope] [--json]`](commands/agent-prepare.md)
 - [`codemesh agent run <run-id> --label label [--timeout duration] -- <command...>`](commands/agent-run.md)
 - [`codemesh runs`](commands/runs.md)
 - [`codemesh clean [--older-than age]`](commands/clean.md)
@@ -28,7 +28,7 @@ Each linked reference page documents the current syntax, purpose, safe local exa
 
 `codemesh env bind` stores provider-specific secret references in local CodeMesh state, outside repo-local Project Policy. The first runnable provider is deterministic `fake`, for local tests and agent-scoped bundle proof only.
 
-`codemesh hydrate` and `codemesh agent prepare` currently use the `full-clone` Clone Strategy: full Git history and a complete working tree. Partial clone and sparse checkout are planned later opt-ins, not current default behavior.
+`codemesh hydrate` and `codemesh agent prepare` use the `full-clone` Clone Strategy by default: full Git history and a complete working tree. `--partial-clone` opts into Git partial clone with `blob:none`; repeatable `--sparse path` opts into Git sparse checkout. These are Git-native lazy clone/checkouts, not placeholders, mounts, VFS behavior, daemon hydration, or file-level sync.
 
 `codemesh agent prepare` prints the ready workspace path plus `handoff_docs: N`, where `N` is the count of selected handoff docs. The detailed handoff doc metadata is path-only in the versioned `codemesh-run.json` Agent Run Contract; CodeMesh does not copy docs, embed doc contents, or read doc contents into metadata. With `--env-provider fake` and matching `--allow-env-scope`, Agent Prep can materialize an env bundle under the managed run directory, outside the prepared Git checkout. The contract records clone strategy metadata, requirement names, allowed scopes, bundle presence/path, and `values: not-recorded`.
 

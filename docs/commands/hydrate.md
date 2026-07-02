@@ -12,12 +12,14 @@ permalink: /commands/hydrate
 ## Syntax
 
 ```sh
-codemesh hydrate <project> [--json]
+codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]
 ```
 
 ## Purpose
 
-Clone one registered project into its desired local path when that path is missing. Hydration uses the remote already stored in the local Project Registry and the current `full-clone` Clone Strategy.
+Clone one registered project into its desired local path when that path is missing. Hydration uses the remote already stored in the local Project Registry and the selected Clone Strategy.
+
+By default hydration uses `full-clone`: full Git history and a complete working tree. `--partial-clone` opts into Git partial clone with `blob:none`; repeatable `--sparse path` opts into Git sparse checkout for project-relative paths. If Git reports that the remote ignored or did not record the partial clone filter, hydration fails with a clone diagnostic instead of recording misleading partial metadata. This is Git-native laziness only. It does not create placeholders, mounts, VFS behavior, daemon hydration, or file-level sync.
 
 Use `--json` to emit the stable Command Result shape. The payload reports `outcome` as `hydrated`, `already-present`, `path-conflict`, `unknown-project`, or `failed`, plus the project alias, path, path presence, normalized remote when a registered project was resolved, and selected clone strategy metadata. User-action failures such as path conflicts and unknown projects use exit class `readiness-blocked`; operational clone or tool failures use exit class `internal-error`. Both failure classes return exit code 1 without overwriting local files.
 
@@ -42,14 +44,14 @@ codemesh init "$workspace"
 codemesh add "$workspace/demo-project" --alias demo-project
 rm -rf "$workspace/demo-project"
 codemesh hydrate demo-project
-codemesh hydrate demo-project --json
+codemesh hydrate demo-project --partial-clone --sparse README.md --json
 ```
 
 ## Current Limitations
 
 - Works only for projects already present in the local Project Registry.
 - Refuses existing non-empty path conflicts.
-- Performs an explicit `full-clone` Git clone; it does not create lazy placeholders, mounts, partial clones, sparse checkouts, or file-level hydration.
+- Defaults to an explicit `full-clone` Git clone; partial clone and sparse checkout require explicit command flags. It does not create lazy placeholders, mounts, VFS behavior, or file-level hydration.
 - Does not fetch project definitions from a remote manifest.
 
 Back to [Command Catalog](../commands.md).

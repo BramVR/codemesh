@@ -10,7 +10,11 @@ import (
 )
 
 func TestFullCloneUsesBranchSingleBranchAndReportsSelection(t *testing.T) {
-	fake := &gitops.FakeRunner{}
+	fake := &gitops.FakeRunner{Responses: []gitops.FakeResponse{
+		{},
+		{Output: "true\n"},
+		{Output: "blob:none\n"},
+	}}
 	strategy := FullClone{Git: gitops.New(fake)}
 
 	result, err := strategy.Clone(context.Background(), Request{
@@ -22,7 +26,7 @@ func TestFullCloneUsesBranchSingleBranchAndReportsSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Clone error = %v", err)
 	}
-	if result.Strategy != FullCloneSelection() {
+	if result.Strategy.Name != FullCloneName || result.Strategy.History != "full" || result.Strategy.WorkingTree != "complete" {
 		t.Fatalf("strategy = %#v, want full clone", result.Strategy)
 	}
 	if len(fake.Calls) != 1 {
@@ -53,6 +57,67 @@ func TestFullClonePreservesExactCloneURLAndDestination(t *testing.T) {
 	args := fake.Calls[0].Args
 	if len(args) != 3 || args[0] != "clone" || args[1] != " /tmp/source repo.git " || args[2] != " /tmp/target workspace " {
 		t.Fatalf("git args = %#v, want exact clone URL and destination preserved", args)
+	}
+}
+
+func TestCloneWithPartialAndSparseOptionsRecordsStrategyAndUsesGitNativeLaziness(t *testing.T) {
+	fake := &gitops.FakeRunner{Responses: []gitops.FakeResponse{
+		{},
+		{Output: "true\n"},
+		{Output: "blob:none\n"},
+	}}
+	strategy := FullClone{Git: gitops.New(fake)}
+
+	result, err := strategy.Clone(context.Background(), Request{
+		CloneURL:    "https://example.invalid/org/repo.git",
+		Destination: "/tmp/workspace",
+		Branch:      "main",
+		Options: Options{
+			Partial:     true,
+			SparsePaths: []string{"README.md", "docs/adr"},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("Clone error = %v", err)
+	}
+	if result.Strategy.Name != PartialSparseCloneName || result.Strategy.History != "partial" || result.Strategy.WorkingTree != "sparse" || result.Strategy.Filter != "blob:none" {
+		t.Fatalf("strategy = %#v, want partial sparse clone", result.Strategy)
+	}
+	if strings.Join(result.Strategy.SparsePaths, ",") != "README.md,docs/adr" {
+		t.Fatalf("strategy sparse paths = %#v", result.Strategy.SparsePaths)
+	}
+	if len(fake.Calls) != 5 {
+		t.Fatalf("git calls = %#v, want clone, partial verification, sparse-checkout set, checkout", fake.Calls)
+	}
+	if got, want := strings.Join(fake.Calls[0].Args, " "), "clone --filter=blob:none --no-checkout --branch main --single-branch https://example.invalid/org/repo.git /tmp/workspace"; got != want {
+		t.Fatalf("clone args = %q, want %q", got, want)
+	}
+	if fake.Calls[3].Dir != "/tmp/workspace" || strings.Join(fake.Calls[3].Args, " ") != "sparse-checkout set --no-cone -- /README.md /docs/adr" {
+		t.Fatalf("sparse checkout call = %#v", fake.Calls[3])
+	}
+	if fake.Calls[4].Dir != "/tmp/workspace" || strings.Join(fake.Calls[4].Args, " ") != "checkout main" {
+		t.Fatalf("checkout call = %#v", fake.Calls[4])
+	}
+}
+
+func TestPartialCloneFailsWhenGitReportsFilterIgnored(t *testing.T) {
+	fake := &gitops.FakeRunner{Responses: []gitops.FakeResponse{{
+		Stderr: "warning: filtering not recognized by server, ignoring\n",
+	}}}
+	strategy := FullClone{Git: gitops.New(fake)}
+
+	_, err := strategy.Clone(context.Background(), Request{
+		CloneURL:    "https://example.invalid/org/repo.git",
+		Destination: "/tmp/workspace",
+		Options:     Options{Partial: true},
+	})
+
+	if err == nil {
+		t.Fatal("Clone error = nil, want ignored filter failure")
+	}
+	if !strings.Contains(err.Error(), "partial clone filter was not honored") {
+		t.Fatalf("Clone error = %q, want clear ignored filter diagnostic", err.Error())
 	}
 }
 

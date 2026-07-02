@@ -244,7 +244,7 @@ Rules:
 
 ### `codemesh hydrate <project>`
 
-Clones a missing project into its desired local path through the current `full-clone` Clone Strategy.
+Clones a missing project into its desired local path through the selected Clone Strategy. Full clone remains the default; `--partial-clone` and repeatable `--sparse path` are explicit Git-native lazy checkout opt-ins.
 
 Does not create placeholders.
 
@@ -266,7 +266,7 @@ Creates a temp clone under `~/.codemesh/agents`.
 Rules:
 
 - clone from normalized remote
-- use the current `full-clone` Clone Strategy
+- use `full-clone` by default; allow explicit Git-native `--partial-clone` and repeatable `--sparse path` opt-ins
 - checkout requested, policy, remote-default, or `main` fallback base
 - warn if source checkout is dirty
 - warn or block on env based on policy
@@ -330,7 +330,7 @@ Initial tables:
 
 - multi-machine sync
 - synced manifests or remote project indexes
-- opt-in partial clone or sparse checkout Clone Strategies
+- shared object cache or worktree Clone Strategies
 - live secret providers or env file writing
 - live toolchain provider integrations
 - daemon, mount, UI, placeholders, or file-level lazy hydration

@@ -600,7 +600,7 @@ func runHydrate(args []string, stdout, stderr io.Writer) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), hydrateTimeout)
 	defer cancel()
-	result, err := registry.New(store).Hydrate(ctx, hydrateArgs.Project)
+	result, err := registry.New(store).Hydrate(ctx, hydrateArgs.Project, hydrateArgs.CloneOptions)
 	if err != nil {
 		if hydrateArgs.JSON {
 			commandResult := newHydrateErrorResult(hydrateArgs.Project, result, err)
@@ -629,26 +629,42 @@ func runHydrate(args []string, stdout, stderr io.Writer) int {
 }
 
 type parsedHydrateArgs struct {
-	Project string
-	JSON    bool
+	Project      string
+	CloneOptions clonestrategy.Options
+	JSON         bool
 }
 
 func parseHydrateArgs(args []string, stderr io.Writer) (parsedHydrateArgs, bool) {
 	var projects []string
 	var jsonOutput bool
-	for _, arg := range args {
-		switch arg {
+	var cloneOptions clonestrategy.Options
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "--json":
 			jsonOutput = true
+		case "--partial-clone":
+			cloneOptions.Partial = true
+		case "--sparse":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "hydrate --sparse requires a project-relative path\n\n")
+				return parsedHydrateArgs{}, false
+			}
+			path, ok := parseSparsePath(args[i+1])
+			if !ok {
+				fmt.Fprintf(stderr, "hydrate --sparse path must be project-relative and outside .git: %s\n\n", args[i+1])
+				return parsedHydrateArgs{}, false
+			}
+			cloneOptions.SparsePaths = append(cloneOptions.SparsePaths, path)
+			i++
 		default:
-			projects = append(projects, arg)
+			projects = append(projects, args[i])
 		}
 	}
 	if len(projects) != 1 {
 		fmt.Fprint(stderr, "hydrate requires exactly one project\n\n")
 		return parsedHydrateArgs{}, false
 	}
-	return parsedHydrateArgs{Project: projects[0], JSON: jsonOutput}, true
+	return parsedHydrateArgs{Project: projects[0], CloneOptions: cloneOptions, JSON: jsonOutput}, true
 }
 
 type hydratePayload struct {
@@ -879,6 +895,7 @@ func runAgentPrepare(args []string, stdout, stderr io.Writer) int {
 		Profile:          agentArgs.Profile,
 		EnvProvider:      agentArgs.EnvProvider,
 		AllowedEnvScopes: agentArgs.AllowedEnvScopes,
+		CloneOptions:     agentArgs.CloneOptions,
 	})
 	if err != nil {
 		if _, ok := err.(agentprep.BlockedError); ok {
@@ -925,6 +942,7 @@ type parsedAgentPrepareArgs struct {
 	Profile          string
 	EnvProvider      string
 	AllowedEnvScopes []string
+	CloneOptions     clonestrategy.Options
 	JSON             bool
 }
 
@@ -933,6 +951,7 @@ func parseAgentPrepareArgs(args []string, stderr io.Writer) (parsedAgentPrepareA
 	var profile string
 	var envProvider string
 	var allowedEnvScopes []string
+	var cloneOptions clonestrategy.Options
 	var projects []string
 	var jsonOutput bool
 	for i := 0; i < len(args); i++ {
@@ -965,6 +984,20 @@ func parseAgentPrepareArgs(args []string, stderr io.Writer) (parsedAgentPrepareA
 			}
 			allowedEnvScopes = append(allowedEnvScopes, args[i+1])
 			i++
+		case "--partial-clone":
+			cloneOptions.Partial = true
+		case "--sparse":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "agent prepare --sparse requires a project-relative path\n\n")
+				return parsedAgentPrepareArgs{}, false
+			}
+			path, ok := parseSparsePath(args[i+1])
+			if !ok {
+				fmt.Fprintf(stderr, "agent prepare --sparse path must be project-relative and outside .git: %s\n\n", args[i+1])
+				return parsedAgentPrepareArgs{}, false
+			}
+			cloneOptions.SparsePaths = append(cloneOptions.SparsePaths, path)
+			i++
 		case "--json":
 			jsonOutput = true
 		default:
@@ -975,7 +1008,15 @@ func parseAgentPrepareArgs(args []string, stderr io.Writer) (parsedAgentPrepareA
 		fmt.Fprint(stderr, "agent prepare requires exactly one project\n\n")
 		return parsedAgentPrepareArgs{}, false
 	}
-	return parsedAgentPrepareArgs{Project: projects[0], Base: base, Profile: profile, EnvProvider: envProvider, AllowedEnvScopes: allowedEnvScopes, JSON: jsonOutput}, true
+	return parsedAgentPrepareArgs{Project: projects[0], Base: base, Profile: profile, EnvProvider: envProvider, AllowedEnvScopes: allowedEnvScopes, CloneOptions: cloneOptions, JSON: jsonOutput}, true
+}
+
+func parseSparsePath(raw string) (string, bool) {
+	normalized := clonestrategy.NormalizeSparsePaths([]string{raw})
+	if len(normalized) != 1 {
+		return "", false
+	}
+	return normalized[0], true
 }
 
 type agentPreparePayload struct {
@@ -1630,10 +1671,10 @@ Usage:
   codemesh tree [--json]
   codemesh status [project] [--base branch] [--json]
   codemesh doctor <project> [--base branch] [--strict] [--json]
-  codemesh hydrate <project> [--json]
+  codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]
   codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope
   codemesh machine register [workspace-root] [--json]
-  codemesh agent prepare <project> [--base branch] [--profile name] [--env-provider fake] [--allow-env-scope scope] [--json]
+  codemesh agent prepare <project> [--base branch] [--profile name] [--partial-clone] [--sparse path] [--env-provider fake] [--allow-env-scope scope] [--json]
   codemesh agent run <run-id> --label label [--timeout duration] -- <command...>
   codemesh runs
   codemesh clean [--older-than age]
@@ -1742,10 +1783,11 @@ func printHydrateHelp(w io.Writer) {
 	fmt.Fprint(w, `Hydrate one missing project.
 
 Usage:
-  codemesh hydrate <project> [--json]
+  codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]
 
 Clones the registered remote into the desired local path.
 Refuses existing non-empty non-Git paths.
+Use --partial-clone and repeatable --sparse path for explicit Git-native laziness.
 Use --json for the stable command result shape.
 `)
 }
@@ -1772,7 +1814,7 @@ func printAgentHelp(w io.Writer) {
 	fmt.Fprint(w, `Prepare and run agent workspaces.
 
 Usage:
-  codemesh agent prepare <project> [--base branch] [--profile name] [--env-provider fake] [--allow-env-scope scope] [--json]
+  codemesh agent prepare <project> [--base branch] [--profile name] [--partial-clone] [--sparse path] [--env-provider fake] [--allow-env-scope scope] [--json]
   codemesh agent run <run-id> --label label [--timeout duration] -- <command...>
 `)
 }
@@ -1781,10 +1823,11 @@ func printAgentPrepareHelp(w io.Writer) {
 	fmt.Fprint(w, `Prepare one agent workspace.
 
 Usage:
-  codemesh agent prepare <project> [--base branch] [--profile name] [--env-provider fake] [--allow-env-scope scope] [--json]
+  codemesh agent prepare <project> [--base branch] [--profile name] [--partial-clone] [--sparse path] [--env-provider fake] [--allow-env-scope scope] [--json]
 
 Creates a temporary clone under CodeMesh-managed agents storage.
 Prints ready_path when the workspace is ready.
+Use --partial-clone and repeatable --sparse path for explicit Git-native laziness.
 Use --env-provider fake with --allow-env-scope to materialize a fake-provider env bundle.
 Use --json for the stable command result shape.
 `)

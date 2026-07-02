@@ -184,10 +184,14 @@ func (r *Registry) ScanWorkspace(ctx context.Context, root string) (ScanResult, 
 	return result, nil
 }
 
-func (r *Registry) Hydrate(ctx context.Context, alias string) (HydrateResult, error) {
+func (r *Registry) Hydrate(ctx context.Context, alias string, opts ...clonestrategy.Options) (HydrateResult, error) {
 	alias = strings.TrimSpace(alias)
 	if alias == "" {
 		return HydrateResult{}, errors.New("project name is required")
+	}
+	options := clonestrategy.Options{}
+	if len(opts) != 0 {
+		options = opts[0]
 	}
 	projects, err := r.store.ListProjects(ctx)
 	if err != nil {
@@ -197,7 +201,7 @@ func (r *Registry) Hydrate(ctx context.Context, alias string) (HydrateResult, er
 		if project.Alias != alias {
 			continue
 		}
-		alreadyPresent, strategy, err := hydrateProject(ctx, r.git, project)
+		alreadyPresent, strategy, err := hydrateProject(ctx, r.git, project, options)
 		if err != nil {
 			return HydrateResult{Project: project, CloneStrategy: strategy}, err
 		}
@@ -206,8 +210,9 @@ func (r *Registry) Hydrate(ctx context.Context, alias string) (HydrateResult, er
 	return HydrateResult{}, fmt.Errorf("unknown project: %s", alias)
 }
 
-func hydrateProject(ctx context.Context, git gitops.Client, project state.Project) (bool, clonestrategy.Selection, error) {
+func hydrateProject(ctx context.Context, git gitops.Client, project state.Project, options clonestrategy.Options) (bool, clonestrategy.Selection, error) {
 	strategy := clonestrategy.FullCloneSelection()
+	cleanupOnCloneFailure := false
 	info, err := os.Stat(project.LocalPath)
 	switch {
 	case err == nil:
@@ -224,10 +229,12 @@ func hydrateProject(ctx context.Context, git gitops.Client, project state.Projec
 		if !empty {
 			return false, strategy, PathConflictError{Path: project.LocalPath, Reason: "exists and is not empty"}
 		}
+		cleanupOnCloneFailure = true
 	case errors.Is(err, os.ErrNotExist):
 		if err := os.MkdirAll(filepath.Dir(project.LocalPath), 0o755); err != nil {
 			return false, strategy, fmt.Errorf("create project parent directory: %w", err)
 		}
+		cleanupOnCloneFailure = true
 	default:
 		return false, strategy, fmt.Errorf("check project path %q: %w", project.LocalPath, err)
 	}
@@ -236,12 +243,17 @@ func hydrateProject(ctx context.Context, git gitops.Client, project state.Projec
 	if cloneURL == "" {
 		cloneURL = project.NormalizedRemote
 	}
+	strategy = clonestrategy.SelectionForOptions(options)
 	result, err := (clonestrategy.FullClone{Git: git}).Clone(ctx, clonestrategy.Request{
 		CloneURL:    cloneURL,
 		Destination: project.LocalPath,
+		Options:     options,
 	})
 	strategy = result.Strategy
 	if err != nil {
+		if cleanupOnCloneFailure {
+			_ = os.RemoveAll(project.LocalPath)
+		}
 		return false, strategy, fmt.Errorf("clone %q into %q: %s", redactedCloneURL(cloneURL), project.LocalPath, err.Error())
 	}
 	return false, strategy, nil

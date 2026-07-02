@@ -45,6 +45,7 @@ type Request struct {
 	Profile          string
 	EnvProvider      string
 	AllowedEnvScopes []string
+	CloneOptions     clonestrategy.Options
 }
 
 type Result struct {
@@ -129,7 +130,7 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	if cloneURL == "" {
 		cloneURL = project.NormalizedRemote
 	}
-	cloneResult, err := cloneWorkspace(ctx, cloneURL, base, readyPath)
+	cloneResult, err := cloneWorkspace(ctx, cloneURL, base, readyPath, req.CloneOptions)
 	if err != nil {
 		return Result{
 			Base:          base,
@@ -563,17 +564,18 @@ func handoffDocExists(root, rel string) (bool, error) {
 }
 
 func gitClone(ctx context.Context, cloneURL, base, readyPath string) error {
-	if _, err := cloneWorkspace(ctx, cloneURL, base, readyPath); err != nil {
+	if _, err := cloneWorkspace(ctx, cloneURL, base, readyPath, clonestrategy.Options{}); err != nil {
 		return err
 	}
 	return nil
 }
 
-func cloneWorkspace(ctx context.Context, cloneURL, base, readyPath string) (clonestrategy.Result, error) {
+func cloneWorkspace(ctx context.Context, cloneURL, base, readyPath string, options clonestrategy.Options) (clonestrategy.Result, error) {
 	result, err := (clonestrategy.FullClone{}).Clone(ctx, clonestrategy.Request{
 		CloneURL:    cloneURL,
 		Branch:      base,
 		Destination: readyPath,
+		Options:     options,
 	})
 	if err != nil {
 		return result, fmt.Errorf("clone agent workspace: %s", err.Error())
