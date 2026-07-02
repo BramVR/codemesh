@@ -197,6 +197,25 @@ func TestLiveOptInParsing(t *testing.T) {
 	}
 }
 
+func TestLiveTargetSelection(t *testing.T) {
+	cfg := liveConfigFromEnv(mapLookup(map[string]string{
+		"CODEMESH_E2E_LIVE":         "1",
+		"CODEMESH_E2E_LIVE_TARGETS": "toolchain",
+	}))
+
+	if !liveTargetEnabled(cfg, liveTargetToolchain) {
+		t.Fatalf("toolchain target not enabled: %#v", cfg.Targets)
+	}
+	if liveTargetEnabled(cfg, liveTargetGitHub) || liveTargetEnabled(cfg, liveTargetProvider) {
+		t.Fatalf("non-toolchain targets enabled for explicit toolchain selection: %#v", cfg.Targets)
+	}
+
+	cfg = liveConfigFromEnv(mapLookup(map[string]string{"CODEMESH_E2E_LIVE": "1"}))
+	if !liveTargetEnabled(cfg, liveTargetGitHub) || liveTargetEnabled(cfg, liveTargetToolchain) {
+		t.Fatalf("default target selection = %#v, want GitHub only", cfg.Targets)
+	}
+}
+
 func TestLiveGitHubRemoteDefaultsAndOverride(t *testing.T) {
 	if got := liveGitHubRemoteFromEnv(mapLookup(nil)); got != defaultLiveGitHubRemote {
 		t.Fatalf("default GitHub remote = %q, want %q", got, defaultLiveGitHubRemote)
@@ -357,6 +376,39 @@ func TestLiveProviderSmokeConfiguredContractSkipsUntilImplementationExists(t *te
 	}
 	if strings.Contains(string(data), "provider://single-target") {
 		t.Fatalf("live provider report leaked configured secret ref:\n%s", data)
+	}
+}
+
+func TestLiveToolchainOptionalToolSkipOrFail(t *testing.T) {
+	h := testHarness(t)
+	h.live = &reportLive{Toolchain: &reportLiveToolchain{}}
+	fixture := reportLiveToolchainFixture{
+		Name:    "toolchain-package",
+		Kind:    "package manager fixture",
+		Status:  "skipped",
+		Project: toolchainProjectFacts{Requirement: "npm"},
+	}
+
+	h.recordLiveToolchainSkipOrFail(liveConfig{}, "live toolchain npm prerequisite", "optional host tool \"npm\" not found", fixture)
+
+	if len(h.results) != 1 || h.results[0].Status != "SKIP" {
+		t.Fatalf("non-strict result = %#v, want SKIP", h.results)
+	}
+	if h.live.Toolchain.Fixtures[0].Project.Requirement != "npm" || h.live.Toolchain.Fixtures[0].Status != "skipped" {
+		t.Fatalf("toolchain report fixture = %#v", h.live.Toolchain.Fixtures)
+	}
+
+	h.results = nil
+	h.live.SkipReasons = nil
+	h.live.Toolchain.SkipReasons = nil
+	h.live.Toolchain.Fixtures = nil
+	h.recordLiveToolchainSkipOrFail(liveConfig{Strict: true}, "live toolchain npm prerequisite", "optional host tool \"npm\" not found", fixture)
+
+	if len(h.results) != 1 || h.results[0].Status != "FAIL" {
+		t.Fatalf("strict result = %#v, want FAIL", h.results)
+	}
+	if h.live.Toolchain.Fixtures[0].Status != "failed" {
+		t.Fatalf("strict toolchain report fixture = %#v, want failed", h.live.Toolchain.Fixtures)
 	}
 }
 

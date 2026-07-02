@@ -48,7 +48,7 @@ When warnings exist, stdout prints one `warning: <code> <message>` line per warn
 
 `codemesh-run.json` is an Agent Run Contract. It records the contract version, producer/version metadata, run id, project identity, registered remote, selected base, resolved commit, checkout provenance, readiness decision, source checkout presence, and diagnostics. Checkout provenance includes the fetched base, fetched commit, prepared HEAD, and whether the prepared HEAD matches the fetched commit. Handoff docs are recorded as paths and source metadata only; their file contents are not embedded.
 
-When Project Policy declares toolchain requirements, the contract records each checked toolchain status as `present`, `missing`, or `unknown`. CodeMesh reports and delegates toolchain readiness only; it does not install tools, run package-manager setup, or build environments.
+When Project Policy declares toolchain requirements, the contract records each checked toolchain status as `present`, `missing`, or `unknown`. Project facts record the declared requirement. Host facts record the detected command name and version when available. CodeMesh reports and delegates toolchain readiness only; it does not install tools, run package-manager setup, write tool version files, create dependency directories, or build environments.
 
 When env materialization runs, stdout also includes:
 

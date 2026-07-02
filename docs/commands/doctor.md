@@ -21,7 +21,7 @@ Preflight whether one registered project is ready for agent handoff. Doctor uses
 
 Doctor does not create a temporary agent workspace, write `codemesh-run.json`, or record an Agent Run. Use it before handoff automation when you want a fast green/warning/blocked answer without creating run state.
 
-When Project Policy declares toolchain requirements, Doctor reports each checked toolchain status as `present`, `missing`, or `unknown`. Toolchain readiness is report/delegate only: Doctor does not install tools, run package-manager setup, or build environments.
+When Project Policy declares toolchain requirements, Doctor reports each checked toolchain status as `present`, `missing`, or `unknown`. Present host detections record the detected command name and version in JSON, while the declared policy requirement stays under project facts. Toolchain readiness is report/delegate only: Doctor does not install tools, run package-manager setup, or build environments.
 
 Use `--json` to print the stable Command Result shape. The JSON includes `command`, `exit_class`, command-level `diagnostics`, and a payload with `handoff`, `strict`, project identity, selected base, source path presence, toolchain status, and readiness diagnostics.
 
@@ -47,7 +47,7 @@ blockers: none
 When policy declares toolchain requirements, human output includes one line per checked requirement:
 
 ```txt
-toolchain: go unknown
+toolchain: go present
 ```
 
 When blockers exist, stdout prints `handoff: blocked` plus one `blocker: <code> <message>` line per blocker and exits non-zero.

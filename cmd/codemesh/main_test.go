@@ -731,7 +731,7 @@ func TestDoctorReportsActionableBlockers(t *testing.T) {
 func TestDoctorReportsToolchainReadinessInHumanAndJSON(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "codemesh-home")
 	repo := createCommittedLocalRemoteClone(t, "doctor-toolchain")
-	if err := os.WriteFile(filepath.Join(repo, ".codemesh.yml"), []byte("agent:\n  toolchain:\n    mode: warn\n    requirements:\n      - go\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, ".codemesh.yml"), []byte("agent:\n  toolchain:\n    mode: warn\n    requirements:\n      - git\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runGit(t, repo, "add", ".codemesh.yml")
@@ -747,7 +747,7 @@ func TestDoctorReportsToolchainReadinessInHumanAndJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("doctor exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "toolchain: go unknown") || !strings.Contains(stdout.String(), "warning: unknown-toolchain") {
+	if !strings.Contains(stdout.String(), "toolchain: git present") || strings.Contains(stdout.String(), "warning: unknown-toolchain") {
 		t.Fatalf("doctor human output missing toolchain readiness:\n%s", stdout.String())
 	}
 	if stderr.Len() != 0 {
@@ -765,26 +765,39 @@ func TestDoctorReportsToolchainReadinessInHumanAndJSON(t *testing.T) {
 		ExitClass string `json:"exit_class"`
 		Payload   struct {
 			Toolchain []struct {
-				Name   string `json:"name"`
-				Status string `json:"status"`
+				Name    string `json:"name"`
+				Status  string `json:"status"`
+				Project struct {
+					Requirement string `json:"requirement"`
+				} `json:"project"`
+				Host struct {
+					Command string `json:"command"`
+					Version string `json:"version"`
+				} `json:"host"`
 			} `json:"toolchain"`
 			Diagnostics struct {
 				Warnings []struct {
 					Code string `json:"code"`
 				} `json:"warnings"`
+				Blockers []struct {
+					Code string `json:"code"`
+				} `json:"blockers"`
 			} `json:"diagnostics"`
 		} `json:"payload"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
 		t.Fatalf("doctor --json stdout was not JSON: %v\nstdout:\n%s", err, stdout.String())
 	}
-	if payload.Command != "doctor" || payload.ExitClass != "readiness-warning" {
+	if payload.Command != "doctor" || payload.ExitClass != "success" {
 		t.Fatalf("doctor JSON metadata = %#v", payload)
 	}
-	if len(payload.Payload.Toolchain) != 1 || payload.Payload.Toolchain[0].Name != "go" || payload.Payload.Toolchain[0].Status != "unknown" {
+	if len(payload.Payload.Toolchain) != 1 || payload.Payload.Toolchain[0].Name != "git" || payload.Payload.Toolchain[0].Status != "present" {
 		t.Fatalf("toolchain payload = %#v", payload.Payload.Toolchain)
 	}
-	if len(payload.Payload.Diagnostics.Warnings) != 1 || payload.Payload.Diagnostics.Warnings[0].Code != "unknown-toolchain" {
+	if payload.Payload.Toolchain[0].Project.Requirement != "git" || payload.Payload.Toolchain[0].Host.Command != "git" || payload.Payload.Toolchain[0].Host.Version == "" {
+		t.Fatalf("toolchain facts = %#v", payload.Payload.Toolchain[0])
+	}
+	if len(payload.Payload.Diagnostics.Warnings) != 0 || len(payload.Payload.Diagnostics.Blockers) != 0 {
 		t.Fatalf("doctor diagnostics = %#v", payload.Payload.Diagnostics)
 	}
 	assertNoAgentRuns(t, home)

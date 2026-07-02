@@ -126,9 +126,11 @@ Toolchain readiness is derived from the effective project policy when `agent.too
 
 Each requirement records one status:
 
-- `present`: the active detector reported the named toolchain available.
+- `present`: the active detector reported the named toolchain available, with host command/version facts when observable.
 - `missing`: the active detector reported it absent.
 - `unknown`: the active detector could not prove presence or absence.
+
+Toolchain status separates project facts from host facts. Project facts contain the policy requirement name. Host facts contain the detected command name and version when the host detector can observe them.
 
 Missing and unknown statuses follow policy `agent.toolchain.mode`: warning diagnostics in `warn` mode and blocker diagnostics in `block` mode. CodeMesh does not install tools, run package-manager setup, write toolchain files, create dependency directories, or build environments.
 

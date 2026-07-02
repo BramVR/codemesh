@@ -60,6 +60,14 @@ CODEMESH_E2E_LIVE=1 CODEMESH_E2E_LIVE_STRICT=1 make e2e-live
 
 `CODEMESH_E2E_LIVE_TARGETS` may name comma-separated live target labels for report audit trails. Network unavailable, GitHub rate limiting, or a missing `git` executable records `SKIP` by default and exits 0; strict mode records the same condition as `FAIL`. Live checks must continue to skip unless free, safe prerequisites are present.
 
+Targeted host toolchain smoke is local-host only and does not use GitHub or providers:
+
+```sh
+CODEMESH_E2E_LIVE=1 CODEMESH_E2E_LIVE_TARGETS=toolchain make e2e-live
+```
+
+The toolchain smoke builds the current CLI, creates isolated Go and package-manager-style project fixtures under the harness temp root, and runs `codemesh doctor --json` plus `codemesh agent prepare --json` through the same readiness model. Present tools record detected command names and versions without installing or modifying tools. Optional absent host tools record `SKIP` by default and fail only with `CODEMESH_E2E_LIVE_STRICT=1`; the smoke includes one deliberately absent optional tool so the report proves this behavior. The live report writes `live.toolchain.fixtures[]` with separate project facts and host facts so failures can be traced to project policy or machine setup.
+
 Live provider smoke is reserved but inert. After `CODEMESH_E2E_LIVE=1`, it records `SKIP` unless all exact provider contract variables are present:
 
 ```sh
@@ -88,7 +96,7 @@ The report includes:
 - `binary`: executable path plus whether it was an external packaged binary.
 - `host`: OS, architecture, and Go version for the machine that wrote the report.
 - `isolation`: isolated `CODEMESH_HOME`, `HOME`, workspace, run directory, and Git config path.
-- `live`: live opt-in status, strict mode, target labels, skip reasons, GitHub remote URL, discovered default branch, command durations for GitHub status, Agent Prep, Agent Run, runs, cleanup, hydration smoke steps, reserved provider smoke skip metadata, per-smoke secret-safety result, and the host-scoped lock path/label when a lock was acquired.
+- `live`: live opt-in status, strict mode, target labels, skip reasons, GitHub remote URL, discovered default branch, command durations for GitHub status, Agent Prep, Agent Run, runs, cleanup, hydration smoke steps, targeted toolchain fixture facts, reserved provider smoke skip metadata, per-smoke secret-safety result, and the host-scoped lock path/label when a lock was acquired.
 - `summary`: `pass`, `fail`, `skip`, and `total` counts derived from recorded case results.
 - `secret_safety`: whether report redaction is active and how many known fake fixture values were redacted.
 - `results`: per-case status, duration, exit code, and captured output for failing or diagnostic cases.
@@ -177,7 +185,7 @@ Offline Git fixtures cover:
 - missing required env in warn and block modes using fake fixture names such as `CODEMESH_E2E_REQUIRED_ENV`.
 - present env requirements using fake env values and fake env file contents that must not appear in public artifacts or state.
 - fake-provider Env Binding for an agent-scoped bundle under managed run storage, including cleanup with the managed agent workspace.
-- toolchain policy declarations that report unknown status without creating dependency directories, tool version files, or environment builds.
+- toolchain policy declarations that report host status and, when available, command/version facts without creating dependency directories, tool version files, or environment builds.
 
 Project Registry e2e coverage runs `codemesh scan` and `codemesh add` against local fixture workspaces, reruns them to prove no duplicate rows, verifies deterministic discovered aliases, verifies known-remote path updates, and checks State store rows for normalized remote, clone URL, alias, desired local path, temp-only isolation, and derived missing/present behavior.
 

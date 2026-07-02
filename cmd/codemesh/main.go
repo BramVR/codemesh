@@ -230,7 +230,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), hydrateTimeout)
 		defer cancel()
-		decision, err := readiness.EvaluateHandoff(ctx, project, readiness.Options{BaseBranch: doctorArgs.Base})
+		decision, err := readiness.EvaluateHandoff(ctx, project, readiness.Options{BaseBranch: doctorArgs.Base, Toolchain: toolchain.HostDetector{}})
 		if err != nil {
 			fmt.Fprintf(stderr, "check handoff readiness: %v\n", err)
 			return 1
@@ -868,6 +868,7 @@ func runAgentPrepare(args []string, stdout, stderr io.Writer) int {
 		Store:     store,
 		AgentsDir: paths.AgentsDir,
 		Producer:  agentcontract.DefaultProducer(version),
+		Toolchain: toolchain.HostDetector{},
 	}.Prepare(ctx, agentprep.Request{
 		Project:          agentArgs.Project,
 		Base:             agentArgs.Base,

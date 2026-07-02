@@ -30,6 +30,9 @@ const (
 	modeSource              = "source"
 	modePackaged            = "packaged"
 	modeLive                = "live"
+	liveTargetGitHub        = "github remote smoke"
+	liveTargetProvider      = "provider smoke"
+	liveTargetToolchain     = "toolchain host smoke"
 	defaultLiveGitHubRemote = "https://github.com/BramVR/codemesh.git"
 )
 
@@ -86,14 +89,15 @@ type reportIsolation struct {
 }
 
 type reportLive struct {
-	OptIn       bool                `json:"opt_in"`
-	Strict      bool                `json:"strict"`
-	Targets     []string            `json:"targets"`
-	SkipReasons []string            `json:"skip_reasons,omitempty"`
-	LockPath    string              `json:"lock_path,omitempty"`
-	LockLabel   string              `json:"lock_label,omitempty"`
-	GitHub      *reportLiveGitHub   `json:"github,omitempty"`
-	Provider    *reportLiveProvider `json:"provider,omitempty"`
+	OptIn       bool                 `json:"opt_in"`
+	Strict      bool                 `json:"strict"`
+	Targets     []string             `json:"targets"`
+	SkipReasons []string             `json:"skip_reasons,omitempty"`
+	LockPath    string               `json:"lock_path,omitempty"`
+	LockLabel   string               `json:"lock_label,omitempty"`
+	GitHub      *reportLiveGitHub    `json:"github,omitempty"`
+	Provider    *reportLiveProvider  `json:"provider,omitempty"`
+	Toolchain   *reportLiveToolchain `json:"toolchain,omitempty"`
 }
 
 type reportLiveGitHub struct {
@@ -110,6 +114,33 @@ type reportLiveProvider struct {
 	Scope               string `json:"scope,omitempty"`
 	SecretRefConfigured bool   `json:"secret_ref_configured,omitempty"`
 	SkipReason          string `json:"skip_reason,omitempty"`
+}
+
+type reportLiveToolchain struct {
+	Status       string                       `json:"status"`
+	Fixtures     []reportLiveToolchainFixture `json:"fixtures,omitempty"`
+	SkipReasons  []string                     `json:"skip_reasons,omitempty"`
+	SecretSafety string                       `json:"secret_safety,omitempty"`
+}
+
+type reportLiveToolchainFixture struct {
+	Name          string                `json:"name"`
+	Kind          string                `json:"kind"`
+	Status        string                `json:"status"`
+	Project       toolchainProjectFacts `json:"project"`
+	Host          toolchainHostFacts    `json:"host"`
+	DoctorStatus  string                `json:"doctor_status,omitempty"`
+	PrepareStatus string                `json:"agent_prepare_status,omitempty"`
+	SkipReason    string                `json:"skip_reason,omitempty"`
+}
+
+type toolchainProjectFacts struct {
+	Requirement string `json:"requirement"`
+}
+
+type toolchainHostFacts struct {
+	Command string `json:"command,omitempty"`
+	Version string `json:"version,omitempty"`
 }
 
 type reportSummary struct {
@@ -366,8 +397,15 @@ func (h *harness) runLive() int {
 		}
 		return h.finishLive()
 	}
-	h.caseLiveGitHubRemoteSmoke(cfg)
-	h.caseLiveProviderSmoke(cfg)
+	if liveTargetEnabled(cfg, liveTargetGitHub) {
+		h.caseLiveGitHubRemoteSmoke(cfg)
+	}
+	if liveTargetEnabled(cfg, liveTargetProvider) {
+		h.caseLiveProviderSmoke(cfg)
+	}
+	if liveTargetEnabled(cfg, liveTargetToolchain) {
+		h.caseLiveToolchainHostSmoke(cfg)
+	}
 	if h.live.GitHub != nil && h.live.GitHub.SecretSafety == "" {
 		h.live.GitHub.SecretSafety = "pending"
 	}
@@ -673,6 +711,207 @@ func (h *harness) caseLiveProviderSmoke(_ liveConfig) {
 		SkipReason:          "live provider smoke is reserved until a real provider implementation exists",
 	}
 	h.skip("live provider smoke", h.live.Provider.SkipReason)
+}
+
+func (h *harness) caseLiveToolchainHostSmoke(cfg liveConfig) {
+	if h.live == nil {
+		h.live = &reportLive{}
+	}
+	h.live.Toolchain = &reportLiveToolchain{Status: "running", SecretSafety: "pending"}
+	s, err := h.newScenarioWithFixtureRoot("live toolchain host", filepath.Join(h.tmp, "live-toolchain-git-fixtures"))
+	if err != nil {
+		h.record(result{Name: "live toolchain host setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		h.live.Toolchain.Status = "failed"
+		return
+	}
+	goProject, err := h.createClonedFixtureWithSeed(s.fixtures, "live-toolchain-go", writeLiveGoToolchainPolicy, nil)
+	if err != nil {
+		h.record(result{Name: "live toolchain go fixture setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		h.live.Toolchain.Status = "failed"
+		return
+	}
+	packageProject, err := h.createClonedFixtureWithSeed(s.fixtures, "live-toolchain-package", writeLivePackageToolchainPolicy, nil)
+	if err != nil {
+		h.record(result{Name: "live toolchain package fixture setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		h.live.Toolchain.Status = "failed"
+		return
+	}
+	missingWarn, err := h.createClonedFixtureWithSeed(s.fixtures, "live-toolchain-missing-warn", writeMissingWarnToolchainPolicy, nil)
+	if err != nil {
+		h.record(result{Name: "live toolchain missing warn fixture setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		h.live.Toolchain.Status = "failed"
+		return
+	}
+	missingBlock, err := h.createClonedFixtureWithSeed(s.fixtures, "live-toolchain-missing-block", writeMissingBlockToolchainPolicy, nil)
+	if err != nil {
+		h.record(result{Name: "live toolchain missing block fixture setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		h.live.Toolchain.Status = "failed"
+		return
+	}
+	scan := s.command("live toolchain scan fixtures", "scan", s.fixtures.Sources)
+	if scan.Status != "PASS" {
+		h.live.Toolchain.Status = "failed"
+		return
+	}
+	if !h.liveToolchainPresentFixture(cfg, s, goProject, "go project", "go") {
+		h.live.Toolchain.Status = "failed"
+		return
+	}
+	if !h.liveToolchainPresentFixture(cfg, s, packageProject, "package manager fixture", "npm") {
+		h.live.Toolchain.Status = "failed"
+		return
+	}
+	if !h.liveToolchainOptionalMissingFixture(cfg, "codemesh-definitely-missing-optional-tool") {
+		h.live.Toolchain.Status = "failed"
+		return
+	}
+	controlledPath, err := h.controlledPath("git", "bash", "sh", "dirname")
+	if err != nil {
+		h.record(result{Name: "live toolchain controlled path setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		h.live.Toolchain.Status = "failed"
+		return
+	}
+	if !h.liveToolchainMissingStrictDoctor(s, missingWarn, controlledPath) {
+		h.live.Toolchain.Status = "failed"
+		return
+	}
+	if !h.liveToolchainMissingBlockPrepare(s, missingBlock, controlledPath) {
+		h.live.Toolchain.Status = "failed"
+		return
+	}
+	h.live.Toolchain.Status = "pass"
+	h.live.Toolchain.SecretSafety = "pass"
+}
+
+func (h *harness) liveToolchainPresentFixture(cfg liveConfig, s *scenario, project gitFixtureProject, kind, requirement string) bool {
+	if _, err := exec.LookPath(requirement); err != nil {
+		reason := fmt.Sprintf("optional host tool %q not found", requirement)
+		h.recordLiveToolchainSkipOrFail(cfg, "live toolchain "+kind+" prerequisite", reason, reportLiveToolchainFixture{
+			Name:       project.Name,
+			Kind:       kind,
+			Status:     "skipped",
+			Project:    toolchainProjectFacts{Requirement: requirement},
+			SkipReason: reason,
+		})
+		return !cfg.Strict
+	}
+	doctor := s.command("live toolchain "+kind+" doctor json", "doctor", project.Name, "--base", "main", "--json")
+	if doctor.Status != "PASS" {
+		return false
+	}
+	doctorToolchain, err := singleDoctorToolchain(doctor.Stdout)
+	if err != nil {
+		h.record(result{Name: "live toolchain " + kind + " doctor facts", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if doctorToolchain.Name != requirement || doctorToolchain.Status != "present" || doctorToolchain.Project.Requirement != requirement || doctorToolchain.Host.Command != requirement || doctorToolchain.Host.Version == "" {
+		h.record(result{Name: "live toolchain " + kind + " doctor facts", Status: "FAIL", Error: fmt.Sprintf("toolchain = %#v, want present %s with host version", doctorToolchain, requirement), ExitCode: -1})
+		return false
+	}
+	prepare := s.command("live toolchain "+kind+" agent prepare json", "agent", "prepare", project.Name, "--base", "main", "--json")
+	if prepare.Status != "PASS" {
+		return false
+	}
+	readyPath, err := agentPrepareReadyPath(prepare.Stdout)
+	if err != nil {
+		h.record(result{Name: "live toolchain " + kind + " ready path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	metadata, err := readAgentMetadata(filepath.Join(readyPath, "codemesh-run.json"))
+	if err != nil {
+		h.record(result{Name: "live toolchain " + kind + " metadata", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if len(metadata.Toolchain) != 1 || !agentToolchainEqual(metadata.Toolchain[0], doctorToolchain) {
+		h.record(result{Name: "live toolchain " + kind + " doctor/prepare agreement", Status: "FAIL", Error: fmt.Sprintf("doctor=%#v contract=%#v", doctorToolchain, metadata.Toolchain), ExitCode: -1})
+		return false
+	}
+	if !expectNoToolchainArtifacts(h, "live toolchain "+kind+" no environment build", readyPath) {
+		return false
+	}
+	h.live.Toolchain.Fixtures = append(h.live.Toolchain.Fixtures, reportLiveToolchainFixture{
+		Name:          project.Name,
+		Kind:          kind,
+		Status:        "present",
+		Project:       doctorToolchain.Project,
+		Host:          doctorToolchain.Host,
+		DoctorStatus:  doctorToolchain.Status,
+		PrepareStatus: metadata.Toolchain[0].Status,
+	})
+	h.record(result{Name: "live toolchain " + kind + " agreement", Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func (h *harness) liveToolchainOptionalMissingFixture(cfg liveConfig, requirement string) bool {
+	if _, err := exec.LookPath(requirement); err == nil {
+		h.record(result{Name: "live toolchain optional missing prerequisite", Status: "FAIL", Error: fmt.Sprintf("unexpected optional test tool %q exists on host", requirement), ExitCode: -1})
+		return false
+	}
+	reason := fmt.Sprintf("optional host tool %q not found", requirement)
+	h.recordLiveToolchainSkipOrFail(cfg, "live toolchain optional missing prerequisite", reason, reportLiveToolchainFixture{
+		Name:       "live-toolchain-optional-missing",
+		Kind:       "optional host tool",
+		Status:     "skipped",
+		Project:    toolchainProjectFacts{Requirement: requirement},
+		SkipReason: reason,
+	})
+	return !cfg.Strict
+}
+
+func (h *harness) liveToolchainMissingStrictDoctor(s *scenario, project gitFixtureProject, controlledPath string) bool {
+	strict := s.expectedFailureEnv("live toolchain missing strict doctor", []string{"PATH=" + controlledPath}, "doctor", project.Name, "--base", "main", "--strict", "--json")
+	if strict.Status != "FAIL" {
+		strict.Status = "FAIL"
+		strict.Error = "strict missing-tool doctor unexpectedly passed"
+	} else if strict.ExitCode != 1 {
+		strict.Error = fmt.Sprintf("strict missing-tool exit code = %d, want 1", strict.ExitCode)
+	} else if strict.Stderr != "" {
+		strict.Error = "strict missing-tool doctor wrote stderr: " + strict.Stderr
+	} else if err := doctorJSONMatches(strict.Stdout, project.Name, "readiness-warning", "warning", "present", "main", true, []string{"missing-toolchain"}, nil); err != nil {
+		strict.Error = err.Error()
+	} else {
+		strict.Status = "PASS"
+		strict.Error = ""
+	}
+	s.record(strict)
+	return strict.Status == "PASS"
+}
+
+func (h *harness) liveToolchainMissingBlockPrepare(s *scenario, project gitFixtureProject, controlledPath string) bool {
+	blocked := s.expectedFailureEnv("live toolchain missing block agent prepare", []string{"PATH=" + controlledPath}, "agent", "prepare", project.Name, "--base", "main", "--json")
+	if blocked.Status != "FAIL" {
+		blocked.Status = "FAIL"
+		blocked.Error = "missing-tool block agent prepare unexpectedly passed"
+	} else if blocked.ExitCode != 1 {
+		blocked.Error = fmt.Sprintf("missing-tool block exit code = %d, want 1", blocked.ExitCode)
+	} else if blocked.Stderr != "" {
+		blocked.Error = "missing-tool block agent prepare wrote stderr: " + blocked.Stderr
+	} else if !s.expectAgentPrepareJSON(blocked, "readiness-blocked", project.Name, false, "main", "", 0, nil, []string{"missing-toolchain"}) {
+		return false
+	} else {
+		blocked.Status = "PASS"
+		blocked.Error = ""
+	}
+	s.record(blocked)
+	return blocked.Status == "PASS"
+}
+
+func (h *harness) recordLiveToolchainSkipOrFail(cfg liveConfig, name, reason string, fixture reportLiveToolchainFixture) {
+	status := "SKIP"
+	if cfg.Strict {
+		status = "FAIL"
+		if fixture.Status == "" || fixture.Status == "skipped" {
+			fixture.Status = "failed"
+		}
+	}
+	if h.live != nil {
+		h.live.SkipReasons = append(h.live.SkipReasons, reason)
+		if h.live.Toolchain != nil {
+			h.live.Toolchain.SkipReasons = append(h.live.Toolchain.SkipReasons, reason)
+			h.live.Toolchain.Fixtures = append(h.live.Toolchain.Fixtures, fixture)
+		}
+	}
+	h.record(result{Name: name, Status: status, Error: reason, Duration: formatDuration(0), ExitCode: -1})
 }
 
 func (h *harness) recordLiveGitHubDuration(name string, r result) {
@@ -1379,14 +1618,14 @@ func (h *harness) caseDoctorPreflightWorkflow() {
 	}
 
 	toolchainHuman := s.command("doctor preflight toolchain human", "doctor", "doctor-toolchain", "--base", "main")
-	if toolchainHuman.Status != "PASS" || !s.expectOutput(toolchainHuman, "handoff: warning", "toolchain: go unknown", "warning: unknown-toolchain", "blockers: none") {
+	if toolchainHuman.Status != "PASS" || !s.expectOutput(toolchainHuman, "handoff: green", "toolchain: go present", "warnings: none", "blockers: none") {
 		return
 	}
 	toolchainJSON := s.command("doctor preflight toolchain json", "doctor", "doctor-toolchain", "--base", "main", "--json")
 	if toolchainJSON.Status != "PASS" {
 		return
 	}
-	if err := doctorToolchainJSONMatches(toolchainJSON.Stdout, "doctor-toolchain", "go", "unknown"); err != nil {
+	if err := doctorToolchainJSONMatches(toolchainJSON.Stdout, "doctor-toolchain", "go", "present"); err != nil {
 		toolchainJSON.Status = "FAIL"
 		toolchainJSON.Error = err.Error()
 		s.updateResult(toolchainJSON)
@@ -1832,11 +2071,11 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 	}
 
 	toolchainPrep := s.command("agent prep toolchain contract", "agent", "prepare", "agent-toolchain", "--base", "main")
-	if toolchainPrep.Status != "PASS" || !s.expectOutput(toolchainPrep, "warning: unknown-toolchain", "blockers: none", "ready_path: ") {
+	if toolchainPrep.Status != "PASS" || !s.expectOutput(toolchainPrep, "warnings: none", "blockers: none", "ready_path: ") {
 		return
 	}
 	toolchainPath := s.expectReadyPath("agent prep toolchain ready path", toolchainPrep)
-	if toolchainPath == "" || !s.expectAgentRunToolchain("agent prep toolchain metadata", toolchainPath, "go", "unknown") {
+	if toolchainPath == "" || !s.expectAgentRunToolchain("agent prep toolchain metadata", toolchainPath, "go", "present") {
 		return
 	}
 
@@ -2603,6 +2842,34 @@ func (h *harness) gitRefExists(dir, ref string) (bool, error) {
 	return false, resultError(r)
 }
 
+func (h *harness) controlledPath(commands ...string) (string, error) {
+	dir := filepath.Join(h.tmp, "controlled-path-"+slug(strings.Join(commands, "-")))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	for _, command := range commands {
+		source, err := exec.LookPath(command)
+		if err != nil {
+			return "", fmt.Errorf("find %s for controlled PATH: %w", command, err)
+		}
+		target := filepath.Join(dir, command)
+		if _, err := os.Stat(target); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		wrapper := "#!/bin/sh\nexec " + shellQuote(source) + " \"$@\"\n"
+		if err := os.WriteFile(target, []byte(wrapper), 0o755); err != nil {
+			return "", fmt.Errorf("write %s wrapper into controlled PATH: %w", command, err)
+		}
+	}
+	return dir, nil
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
 func (h *harness) caseOfflineGitFixtureSmoke() {
 	fixtures, err := h.createOfflineGitFixtures()
 	if err != nil {
@@ -3089,6 +3356,31 @@ func writeToolchainPolicy(path string) error {
 	return os.WriteFile(filepath.Join(path, ".codemesh.yml"), policy, 0o644)
 }
 
+func writeLiveGoToolchainPolicy(path string) error {
+	if err := os.WriteFile(filepath.Join(path, "go.mod"), []byte("module example.invalid/live-toolchain-go\n\ngo 1.26\n"), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(path, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(path, ".codemesh.yml"), []byte("agent:\n  toolchain:\n    mode: warn\n    requirements:\n      - go\n"), 0o644)
+}
+
+func writeLivePackageToolchainPolicy(path string) error {
+	if err := os.WriteFile(filepath.Join(path, "package.json"), []byte("{\n  \"scripts\": {\n    \"check\": \"echo ok\"\n  }\n}\n"), 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(path, ".codemesh.yml"), []byte("agent:\n  toolchain:\n    mode: warn\n    requirements:\n      - npm\n"), 0o644)
+}
+
+func writeMissingWarnToolchainPolicy(path string) error {
+	return os.WriteFile(filepath.Join(path, ".codemesh.yml"), []byte("agent:\n  toolchain:\n    mode: warn\n    requirements:\n      - codemesh-missing-tool\n"), 0o644)
+}
+
+func writeMissingBlockToolchainPolicy(path string) error {
+	return os.WriteFile(filepath.Join(path, ".codemesh.yml"), []byte("agent:\n  toolchain:\n    mode: block\n    requirements:\n      - codemesh-missing-tool\n"), 0o644)
+}
+
 func (h *harness) createClonedFixture(fixtures offlineGitFixtures, name string, mutate func(string) error) (gitFixtureProject, error) {
 	return h.createClonedFixtureWithSeed(fixtures, name, nil, mutate)
 }
@@ -3252,6 +3544,10 @@ func (s *scenario) commandEnv(label string, env []string, args ...string) result
 
 func (s *scenario) expectedFailure(label string, args ...string) result {
 	return s.execute(label, nil, args...)
+}
+
+func (s *scenario) expectedFailureEnv(label string, env []string, args ...string) result {
+	return s.execute(label, env, args...)
 }
 
 func (s *scenario) record(r result) {
@@ -3605,8 +3901,10 @@ func doctorToolchainJSONMatches(raw, alias, name, status string) error {
 			Project   string `json:"project"`
 			Handoff   string `json:"handoff"`
 			Toolchain []struct {
-				Name   string `json:"name"`
-				Status string `json:"status"`
+				Name    string                `json:"name"`
+				Status  string                `json:"status"`
+				Project toolchainProjectFacts `json:"project"`
+				Host    toolchainHostFacts    `json:"host"`
 			} `json:"toolchain"`
 			Diagnostics struct {
 				Warnings []struct {
@@ -3621,16 +3919,68 @@ func doctorToolchainJSONMatches(raw, alias, name, status string) error {
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		return fmt.Errorf("stdout was not JSON: %w", err)
 	}
-	if payload.Command != "doctor" || payload.ExitClass != "readiness-warning" || payload.Payload.Project != alias || payload.Payload.Handoff != "warning" {
+	wantExitClass := "readiness-warning"
+	wantHandoff := "warning"
+	wantWarnings := []string{"unknown-toolchain"}
+	if status == "present" {
+		wantExitClass = "success"
+		wantHandoff = "green"
+		wantWarnings = nil
+	}
+	if payload.Command != "doctor" || payload.ExitClass != wantExitClass || payload.Payload.Project != alias || payload.Payload.Handoff != wantHandoff {
 		return fmt.Errorf("toolchain doctor metadata = %#v", payload)
 	}
 	if len(payload.Payload.Toolchain) != 1 || payload.Payload.Toolchain[0].Name != name || payload.Payload.Toolchain[0].Status != status {
 		return fmt.Errorf("toolchain payload = %#v, want %s=%s", payload.Payload.Toolchain, name, status)
 	}
-	if len(payload.Payload.Diagnostics.Warnings) != 1 || payload.Payload.Diagnostics.Warnings[0].Code != "unknown-toolchain" || len(payload.Payload.Diagnostics.Blockers) != 0 {
+	if status == "present" && (payload.Payload.Toolchain[0].Project.Requirement != name || payload.Payload.Toolchain[0].Host.Command != name || payload.Payload.Toolchain[0].Host.Version == "") {
+		return fmt.Errorf("toolchain facts = %#v, want separated project requirement and host command/version", payload.Payload.Toolchain[0])
+	}
+	if err := diagnosticCodesMatch("toolchain warnings", doctorWarningCodes(payload.Payload.Diagnostics.Warnings), wantWarnings); err != nil {
+		return err
+	}
+	if len(payload.Payload.Diagnostics.Blockers) != 0 {
 		return fmt.Errorf("toolchain diagnostics = %#v", payload.Payload.Diagnostics)
 	}
 	return nil
+}
+
+func singleDoctorToolchain(raw string) (agentToolchainStatus, error) {
+	var payload struct {
+		Command string `json:"command"`
+		Payload struct {
+			Toolchain []agentToolchainStatus `json:"toolchain"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return agentToolchainStatus{}, fmt.Errorf("stdout was not JSON: %w", err)
+	}
+	if payload.Command != "doctor" {
+		return agentToolchainStatus{}, fmt.Errorf("command = %q, want doctor", payload.Command)
+	}
+	if len(payload.Payload.Toolchain) != 1 {
+		return agentToolchainStatus{}, fmt.Errorf("toolchain count = %d, want 1", len(payload.Payload.Toolchain))
+	}
+	return payload.Payload.Toolchain[0], nil
+}
+
+func agentPrepareReadyPath(raw string) (string, error) {
+	var payload struct {
+		Command string `json:"command"`
+		Payload struct {
+			ReadyPath string `json:"ready_path"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", fmt.Errorf("stdout was not JSON: %w", err)
+	}
+	if payload.Command != "agent prepare" {
+		return "", fmt.Errorf("command = %q, want agent prepare", payload.Command)
+	}
+	if strings.TrimSpace(payload.Payload.ReadyPath) == "" {
+		return "", errors.New("agent prepare JSON did not include ready_path")
+	}
+	return payload.Payload.ReadyPath, nil
 }
 
 func doctorWarningCodes(items []struct {
@@ -4007,18 +4357,17 @@ func (s *scenario) expectAgentRunToolchain(name, readyPath, requirement, status 
 		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("state toolchain = %#v, want %s=%s", dbMetadata.Toolchain, requirement, status), ExitCode: -1})
 		return false
 	}
-	if !hasAgentDiagnostic(fileMetadata.Diagnostics.Warnings, "unknown-toolchain") || len(fileMetadata.Diagnostics.Blockers) != 0 {
+	if status == "present" {
+		if len(fileMetadata.Diagnostics.Warnings) != 0 || len(fileMetadata.Diagnostics.Blockers) != 0 {
+			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("metadata diagnostics = %#v", fileMetadata.Diagnostics), ExitCode: -1})
+			return false
+		}
+	} else if !hasAgentDiagnostic(fileMetadata.Diagnostics.Warnings, "unknown-toolchain") || len(fileMetadata.Diagnostics.Blockers) != 0 {
 		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("metadata diagnostics = %#v", fileMetadata.Diagnostics), ExitCode: -1})
 		return false
 	}
-	for _, path := range []string{"node_modules", ".tool-versions", ".codemesh-toolchain"} {
-		if _, err := os.Stat(filepath.Join(readyPath, path)); err == nil {
-			s.h.record(result{Name: name, Status: "FAIL", Error: "toolchain readiness created " + path, ExitCode: -1})
-			return false
-		} else if !errors.Is(err, os.ErrNotExist) {
-			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("check %s: %v", path, err), ExitCode: -1})
-			return false
-		}
+	if !expectNoToolchainArtifacts(s.h, name, readyPath) {
+		return false
 	}
 	s.h.record(result{Name: name, Status: "PASS", ExitCode: 0})
 	return true
@@ -4026,6 +4375,26 @@ func (s *scenario) expectAgentRunToolchain(name, readyPath, requirement, status 
 
 func agentToolchainMatches(items []agentToolchainStatus, name, status string) bool {
 	return len(items) == 1 && items[0].Name == name && items[0].Status == status
+}
+
+func agentToolchainEqual(left, right agentToolchainStatus) bool {
+	return left.Name == right.Name &&
+		left.Status == right.Status &&
+		left.Project == right.Project &&
+		left.Host == right.Host
+}
+
+func expectNoToolchainArtifacts(h *harness, name, root string) bool {
+	for _, path := range []string{"node_modules", ".tool-versions", ".codemesh-toolchain"} {
+		if _, err := os.Stat(filepath.Join(root, path)); err == nil {
+			h.record(result{Name: name, Status: "FAIL", Error: "toolchain readiness created " + path, ExitCode: -1})
+			return false
+		} else if !errors.Is(err, os.ErrNotExist) {
+			h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("check %s: %v", path, err), ExitCode: -1})
+			return false
+		}
+	}
+	return true
 }
 
 func hasAgentDiagnostic(items []agentDiagnostic, code string) bool {
@@ -4192,8 +4561,10 @@ type agentMetadata struct {
 }
 
 type agentToolchainStatus struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	Name    string                `json:"name"`
+	Status  string                `json:"status"`
+	Project toolchainProjectFacts `json:"project"`
+	Host    toolchainHostFacts    `json:"host"`
 }
 
 type agentEnvMetadata struct {
@@ -4607,6 +4978,33 @@ func liveConfigFromEnv(lookup func(string) (string, bool)) liveConfig {
 		OptIn:   optInSet && truthyEnv(optInValue),
 		Strict:  strictSet && truthyEnv(strictValue),
 		Targets: targets,
+	}
+}
+
+func liveTargetEnabled(cfg liveConfig, target string) bool {
+	for _, selected := range cfg.Targets {
+		if liveTargetMatches(selected, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func liveTargetMatches(selected, target string) bool {
+	selected = strings.ToLower(strings.TrimSpace(selected))
+	target = strings.ToLower(strings.TrimSpace(target))
+	if selected == target || selected == "all" {
+		return true
+	}
+	switch target {
+	case liveTargetGitHub:
+		return selected == "github" || selected == "github remote"
+	case liveTargetProvider:
+		return selected == "provider" || selected == "live provider"
+	case liveTargetToolchain:
+		return selected == "toolchain" || selected == "host toolchain" || selected == "toolchain host"
+	default:
+		return false
 	}
 }
 

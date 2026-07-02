@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/BramVR/codemesh/internal/gitops"
+	"github.com/BramVR/codemesh/internal/toolchain"
 	"gopkg.in/yaml.v3"
 )
 
@@ -184,8 +185,8 @@ func validateRequiredKeys(path string, values []string) error {
 
 func validateToolchainRequirements(path string, values []string) error {
 	for i, value := range values {
-		if strings.ContainsAny(value, " \t\r\n") || strings.TrimSpace(value) != value {
-			return fmt.Errorf("invalid %s: agent.toolchain.requirements[%d] must be a toolchain requirement name, not a command", path, i)
+		if !toolchain.ValidRequirementName(value) {
+			return fmt.Errorf("invalid %s: agent.toolchain.requirements[%d] must be a toolchain requirement name, not a command or path", path, i)
 		}
 	}
 	return nil
