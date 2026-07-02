@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/envbinding"
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/readiness"
 	"github.com/BramVR/codemesh/internal/state"
@@ -237,6 +238,124 @@ func TestPrepareMissingSourceCheckoutStillAppliesRemoteEnvPolicy(t *testing.T) {
 	}
 	if !hasDiagnostic(result.Diagnostics.Blockers, "missing-env-file") || !hasDiagnostic(result.Diagnostics.Blockers, "missing-env-key") {
 		t.Fatalf("blockers = %#v, want missing-env-file and missing-env-key", result.Diagnostics.Blockers)
+	}
+	if result.Metadata.Env.MaterializationStatus != "not_requested" {
+		t.Fatalf("env materialization status = %q, want not_requested", result.Metadata.Env.MaterializationStatus)
+	}
+	if got := len(result.Metadata.Env.Requirements); got != 2 {
+		t.Fatalf("env requirements count = %d, want 2: %#v", got, result.Metadata.Env.Requirements)
+	}
+	if result.Metadata.Env.Bundle.Values != "not-recorded" {
+		t.Fatalf("env bundle values = %q, want not-recorded", result.Metadata.Env.Bundle.Values)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, "agents", "run-test")); !os.IsNotExist(statErr) {
+		t.Fatalf("run dir exists or stat failed: %v", statErr)
+	}
+	if len(store.runs) != 0 {
+		t.Fatalf("recorded runs = %d, want 0", len(store.runs))
+	}
+}
+
+func TestPrepareMaterializesFakeProviderEnvBundle(t *testing.T) {
+	project := createFixtureProject(t, "fake-env-bundle")
+	writeFile(t, filepath.Join(project.LocalPath, ".codemesh.yml"), "agent:\n  env:\n    mode: block\n    required_keys:\n      - CODEMESH_TEST_BOUND_TOKEN\n")
+	runGit(t, project.LocalPath, "add", ".codemesh.yml")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Require bound env")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	store := newMemoryStore(project)
+	store.bindings = []state.EnvBinding{{
+		ProjectID:   project.ID,
+		Requirement: "CODEMESH_TEST_BOUND_TOKEN",
+		Provider:    "fake",
+		SecretRef:   "fake://agent-token",
+		Scopes:      []string{"codex"},
+	}}
+	preparer := testPreparer(t.TempDir(), store)
+
+	result, err := preparer.Prepare(context.Background(), Request{
+		Project:          project.Alias,
+		Base:             "main",
+		EnvProvider:      "fake",
+		AllowedEnvScopes: []string{"codex"},
+	})
+
+	if err != nil {
+		t.Fatalf("Prepare error = %v", err)
+	}
+	metadata := readMetadata(t, result.ReadyPath)
+	if metadata.Env.MaterializationStatus != "materialized" {
+		t.Fatalf("env materialization status = %q, want materialized", metadata.Env.MaterializationStatus)
+	}
+	if len(metadata.Env.Requirements) != 1 || metadata.Env.Requirements[0].Name != "CODEMESH_TEST_BOUND_TOKEN" || metadata.Env.Requirements[0].Kind != "env_key" {
+		t.Fatalf("env requirements = %#v", metadata.Env.Requirements)
+	}
+	if strings.Join(metadata.Env.AllowedScopes, ",") != "codex" {
+		t.Fatalf("allowed scopes = %v", metadata.Env.AllowedScopes)
+	}
+	if !metadata.Env.Bundle.Present || metadata.Env.Bundle.Path == "" || !strings.HasPrefix(metadata.Env.Bundle.Path, filepath.Dir(result.ReadyPath)+string(filepath.Separator)) {
+		t.Fatalf("bundle metadata = %#v, ready path %s", metadata.Env.Bundle, result.ReadyPath)
+	}
+	if strings.HasPrefix(metadata.Env.Bundle.Path, result.ReadyPath+string(filepath.Separator)) {
+		t.Fatalf("bundle path is inside prepared checkout: %s", metadata.Env.Bundle.Path)
+	}
+	bundle, err := os.ReadFile(metadata.Env.Bundle.Path)
+	if err != nil {
+		t.Fatalf("read env bundle: %v", err)
+	}
+	fakeValue := envbinding.FakeProviderValue("fake://agent-token")
+	if !strings.Contains(string(bundle), "CODEMESH_TEST_BOUND_TOKEN="+fakeValue) {
+		t.Fatalf("bundle = %q, want materialized fake value", string(bundle))
+	}
+	contractBytes, err := os.ReadFile(filepath.Join(result.ReadyPath, MetadataFileName))
+	if err != nil {
+		t.Fatalf("read contract: %v", err)
+	}
+	if strings.Contains(store.runs[0].MetadataJSON, fakeValue) || strings.Contains(string(contractBytes), fakeValue) {
+		t.Fatalf("metadata leaked fake provider value:\n%s", store.runs[0].MetadataJSON)
+	}
+}
+
+func TestPrepareDeniesEnvBindingOutsideAllowedScopes(t *testing.T) {
+	project := createFixtureProject(t, "fake-env-scope-denied")
+	writeFile(t, filepath.Join(project.LocalPath, ".codemesh.yml"), "agent:\n  env:\n    mode: block\n    required_keys:\n      - CODEMESH_TEST_BOUND_TOKEN\n")
+	runGit(t, project.LocalPath, "add", ".codemesh.yml")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Require bound env")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	store := newMemoryStore(project)
+	store.bindings = []state.EnvBinding{{
+		ProjectID:   project.ID,
+		Requirement: "CODEMESH_TEST_BOUND_TOKEN",
+		Provider:    "fake",
+		SecretRef:   "fake://agent-token",
+		Scopes:      []string{"codex"},
+	}}
+	home := t.TempDir()
+	preparer := testPreparer(home, store)
+
+	result, err := preparer.Prepare(context.Background(), Request{
+		Project:          project.Alias,
+		Base:             "main",
+		EnvProvider:      "fake",
+		AllowedEnvScopes: []string{"readonly"},
+	})
+
+	if err == nil {
+		t.Fatal("Prepare error = nil, want scope denial")
+	}
+	if !hasDiagnostic(result.Diagnostics.Blockers, "env-scope-denied") {
+		t.Fatalf("blockers = %#v, want env-scope-denied", result.Diagnostics.Blockers)
+	}
+	if !strings.Contains(result.Diagnostics.Blockers[0].Message, "CODEMESH_TEST_BOUND_TOKEN") || !strings.Contains(result.Diagnostics.Blockers[0].Message, "readonly") {
+		t.Fatalf("scope denial is not actionable: %q", result.Diagnostics.Blockers[0].Message)
+	}
+	if result.Metadata.Env.MaterializationStatus != "denied" {
+		t.Fatalf("env materialization status = %q, want denied", result.Metadata.Env.MaterializationStatus)
+	}
+	if len(result.Metadata.Env.Requirements) != 1 || result.Metadata.Env.Requirements[0].Name != "CODEMESH_TEST_BOUND_TOKEN" {
+		t.Fatalf("env requirements = %#v", result.Metadata.Env.Requirements)
+	}
+	if strings.Join(result.Metadata.Env.AllowedScopes, ",") != "readonly" {
+		t.Fatalf("allowed scopes = %v, want readonly", result.Metadata.Env.AllowedScopes)
 	}
 	if _, statErr := os.Stat(filepath.Join(home, "agents", "run-test")); !os.IsNotExist(statErr) {
 		t.Fatalf("run dir exists or stat failed: %v", statErr)
@@ -859,6 +978,7 @@ func TestCloneErrorRedactsCredentialBearingURL(t *testing.T) {
 type memoryStore struct {
 	projects []state.Project
 	runs     []state.AgentRun
+	bindings []state.EnvBinding
 }
 
 func newMemoryStore(projects ...state.Project) *memoryStore {
@@ -872,6 +992,16 @@ func (s *memoryStore) ListProjects(context.Context) ([]state.Project, error) {
 func (s *memoryStore) RecordAgentRun(_ context.Context, run state.AgentRun) error {
 	s.runs = append(s.runs, run)
 	return nil
+}
+
+func (s *memoryStore) ListEnvBindings(_ context.Context, projectID int64) ([]state.EnvBinding, error) {
+	var bindings []state.EnvBinding
+	for _, binding := range s.bindings {
+		if binding.ProjectID == projectID {
+			bindings = append(bindings, binding)
+		}
+	}
+	return bindings, nil
 }
 
 func testPreparer(home string, store *memoryStore) Preparer {

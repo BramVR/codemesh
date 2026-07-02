@@ -91,6 +91,29 @@ Used by:
 
 - Readiness
 
+### Env Binding
+
+Owns private logical-requirement bindings and fake-provider bundle materialization.
+
+Responsibilities:
+
+- local private binding metadata
+- logical env key to provider reference mapping
+- allowed-scope intersection
+- fake provider adapter
+- agent-scoped bundle metadata without values
+
+Non-responsibilities:
+
+- live secret providers
+- storing raw secret values
+- writing repo-local env files
+
+Used by:
+
+- `env bind`
+- `agent prepare`
+
 ### Agent Prep
 
 Owns agent workspace prep.
@@ -197,6 +220,17 @@ Clones a missing project into its desired local path.
 
 Does not create placeholders.
 
+### `codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope`
+
+Stores a private binding from a logical env requirement to a provider reference in local state.
+
+Rules:
+
+- provider-specific references stay outside repo-local Project Policy
+- fake provider only in the current slice
+- scopes are explicit and checked during Agent Prep
+- output names requirements and scopes, not values
+
 ### `codemesh agent prepare <project> [--base branch] [--profile name]`
 
 Creates a temp clone under `~/.codemesh/agents`.
@@ -209,6 +243,7 @@ Rules:
 - warn or block on env based on policy
 - resolve default and policy-selected handoff docs from the prepared clone
 - write `codemesh-run.json`
+- optionally materialize fake-provider env bundles when allowed scopes intersect private bindings
 - print ready path and handoff doc count
 
 ### `codemesh runs`
@@ -258,12 +293,13 @@ Initial tables:
 9. `hydrate`.
 10. Machine Registry and `machine register`.
 11. Doctor preflight and strict warning failure.
+12. Fake-provider Env Binding and agent-scoped env bundle metadata.
 
 ## Planned Later
 
 - multi-machine sync
 - synced manifests or remote project indexes
-- secret materialization or env file writing
+- live secret providers or env file writing
 - daemon, mount, UI, placeholders, or file-level lazy hydration
 
 ## Non-Goals
@@ -271,7 +307,7 @@ Initial tables:
 - daemon
 - mount
 - automatic placeholders
-- secret materialization
+- live secret materialization
 - cloud sync
 - UI
 - file-level lazy hydration

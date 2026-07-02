@@ -19,6 +19,7 @@ import (
 	"github.com/BramVR/codemesh/internal/agentruns"
 	"github.com/BramVR/codemesh/internal/commandresult"
 	"github.com/BramVR/codemesh/internal/config"
+	"github.com/BramVR/codemesh/internal/envbinding"
 	"github.com/BramVR/codemesh/internal/machineregistry"
 	"github.com/BramVR/codemesh/internal/presentation"
 	"github.com/BramVR/codemesh/internal/readiness"
@@ -60,6 +61,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runDoctor(args[1:], stdout, stderr)
 	case "hydrate":
 		return runHydrate(args[1:], stdout, stderr)
+	case "env":
+		return runEnv(args[1:], stdout, stderr)
 	case "machine":
 		return runMachine(args[1:], stdout, stderr)
 	case "agent":
@@ -73,6 +76,130 @@ func run(args []string, stdout, stderr io.Writer) int {
 		printHelp(stderr)
 		return 2
 	}
+}
+
+func runEnv(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+		printEnvHelp(stdout)
+		return 0
+	}
+	switch args[0] {
+	case "bind":
+		return runEnvBind(args[1:], stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown env command: %s\n\n", args[0])
+		printEnvHelp(stderr)
+		return 2
+	}
+}
+
+func runEnvBind(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printEnvBindHelp(stdout)
+		return 0
+	}
+	parsed, ok := parseEnvBindArgs(args, stderr)
+	if !ok {
+		printEnvBindHelp(stderr)
+		return 2
+	}
+	if parsed.Provider != envbinding.ProviderFake {
+		fmt.Fprintf(stderr, "env bind --provider supports %q in this slice\n\n", envbinding.ProviderFake)
+		printEnvBindHelp(stderr)
+		return 2
+	}
+	if err := envbinding.ValidateFakeReference(parsed.SecretRef); err != nil {
+		fmt.Fprintf(stderr, "env bind --ref: %v\n\n", err)
+		printEnvBindHelp(stderr)
+		return 2
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+	project, ok, err := lookupProject(context.Background(), store, parsed.Project)
+	if err != nil {
+		fmt.Fprintf(stderr, "read project registry: %v\n", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintf(stderr, "unknown project: %s\n", parsed.Project)
+		return 1
+	}
+	binding, err := store.UpsertEnvBinding(context.Background(), state.EnvBinding{
+		ProjectID:   project.ID,
+		Requirement: parsed.Requirement,
+		Provider:    parsed.Provider,
+		SecretRef:   parsed.SecretRef,
+		Scopes:      parsed.Scopes,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "bind env requirement: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "bound env requirement: %s\nproject: %s\nprovider: %s\nscopes: %s\n", binding.Requirement, project.Alias, binding.Provider, strings.Join(binding.Scopes, ","))
+	return 0
+}
+
+type parsedEnvBindArgs struct {
+	Project     string
+	Requirement string
+	Provider    string
+	SecretRef   string
+	Scopes      []string
+}
+
+func parseEnvBindArgs(args []string, stderr io.Writer) (parsedEnvBindArgs, bool) {
+	var positional []string
+	parsed := parsedEnvBindArgs{}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--provider":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "env bind --provider requires a provider\n\n")
+				return parsedEnvBindArgs{}, false
+			}
+			parsed.Provider = args[i+1]
+			i++
+		case "--ref":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "env bind --ref requires a secret reference\n\n")
+				return parsedEnvBindArgs{}, false
+			}
+			parsed.SecretRef = args[i+1]
+			i++
+		case "--scope":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "env bind --scope requires a scope\n\n")
+				return parsedEnvBindArgs{}, false
+			}
+			parsed.Scopes = append(parsed.Scopes, args[i+1])
+			i++
+		default:
+			positional = append(positional, args[i])
+		}
+	}
+	if len(positional) != 2 {
+		fmt.Fprint(stderr, "env bind requires exactly one project and one requirement\n\n")
+		return parsedEnvBindArgs{}, false
+	}
+	parsed.Project = positional[0]
+	parsed.Requirement = positional[1]
+	if strings.TrimSpace(parsed.Provider) == "" {
+		fmt.Fprint(stderr, "env bind --provider is required\n\n")
+		return parsedEnvBindArgs{}, false
+	}
+	if strings.TrimSpace(parsed.SecretRef) == "" {
+		fmt.Fprint(stderr, "env bind --ref is required\n\n")
+		return parsedEnvBindArgs{}, false
+	}
+	if len(parsed.Scopes) == 0 {
+		fmt.Fprint(stderr, "env bind --scope is required\n\n")
+		return parsedEnvBindArgs{}, false
+	}
+	return parsed, true
 }
 
 func runDoctor(args []string, stdout, stderr io.Writer) int {
@@ -729,9 +856,11 @@ func runAgentPrepare(args []string, stdout, stderr io.Writer) int {
 		AgentsDir: paths.AgentsDir,
 		Producer:  agentcontract.DefaultProducer(version),
 	}.Prepare(ctx, agentprep.Request{
-		Project: agentArgs.Project,
-		Base:    agentArgs.Base,
-		Profile: agentArgs.Profile,
+		Project:          agentArgs.Project,
+		Base:             agentArgs.Base,
+		Profile:          agentArgs.Profile,
+		EnvProvider:      agentArgs.EnvProvider,
+		AllowedEnvScopes: agentArgs.AllowedEnvScopes,
 	})
 	if err != nil {
 		if _, ok := err.(agentprep.BlockedError); ok {
@@ -773,15 +902,19 @@ func runAgentPrepare(args []string, stdout, stderr io.Writer) int {
 }
 
 type parsedAgentPrepareArgs struct {
-	Project string
-	Base    string
-	Profile string
-	JSON    bool
+	Project          string
+	Base             string
+	Profile          string
+	EnvProvider      string
+	AllowedEnvScopes []string
+	JSON             bool
 }
 
 func parseAgentPrepareArgs(args []string, stderr io.Writer) (parsedAgentPrepareArgs, bool) {
 	var base string
 	var profile string
+	var envProvider string
+	var allowedEnvScopes []string
 	var projects []string
 	var jsonOutput bool
 	for i := 0; i < len(args); i++ {
@@ -800,6 +933,20 @@ func parseAgentPrepareArgs(args []string, stderr io.Writer) (parsedAgentPrepareA
 			}
 			profile = args[i+1]
 			i++
+		case "--env-provider":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "agent prepare --env-provider requires a provider\n\n")
+				return parsedAgentPrepareArgs{}, false
+			}
+			envProvider = args[i+1]
+			i++
+		case "--allow-env-scope":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "agent prepare --allow-env-scope requires a scope\n\n")
+				return parsedAgentPrepareArgs{}, false
+			}
+			allowedEnvScopes = append(allowedEnvScopes, args[i+1])
+			i++
 		case "--json":
 			jsonOutput = true
 		default:
@@ -810,7 +957,7 @@ func parseAgentPrepareArgs(args []string, stderr io.Writer) (parsedAgentPrepareA
 		fmt.Fprint(stderr, "agent prepare requires exactly one project\n\n")
 		return parsedAgentPrepareArgs{}, false
 	}
-	return parsedAgentPrepareArgs{Project: projects[0], Base: base, Profile: profile, JSON: jsonOutput}, true
+	return parsedAgentPrepareArgs{Project: projects[0], Base: base, Profile: profile, EnvProvider: envProvider, AllowedEnvScopes: allowedEnvScopes, JSON: jsonOutput}, true
 }
 
 type agentPreparePayload struct {
@@ -823,6 +970,7 @@ type agentPreparePayload struct {
 	RunContractPath  string                    `json:"run_contract_path,omitempty"`
 	ReadyPath        string                    `json:"ready_path,omitempty"`
 	ResolvedCommit   string                    `json:"resolved_commit,omitempty"`
+	Env              agentcontract.EnvInfo     `json:"env"`
 	Diagnostics      commandresult.Diagnostics `json:"diagnostics"`
 }
 
@@ -843,6 +991,7 @@ func newAgentPrepareResult(args parsedAgentPrepareArgs, result agentprep.Result,
 		Base:             base,
 		Profile:          profile,
 		HandoffDocsCount: len(result.Metadata.HandoffDocs),
+		Env:              result.Metadata.Env,
 		Diagnostics:      diagnostics,
 	}
 	if ready {
@@ -876,6 +1025,7 @@ func newAgentPrepareErrorResult(args parsedAgentPrepareArgs, result agentprep.Re
 		Ready:       false,
 		Base:        base,
 		Profile:     profile,
+		Env:         result.Metadata.Env,
 		Diagnostics: diagnostics,
 	})
 }
@@ -909,6 +1059,15 @@ func renderAgentPreparePayloadHuman(w io.Writer, payload agentPreparePayload) er
 	}
 	printCommandDiagnostics(w, payload.Diagnostics)
 	fmt.Fprintf(w, "handoff_docs: %d\n", payload.HandoffDocsCount)
+	if payload.Env.MaterializationStatus != "" && payload.Env.MaterializationStatus != "not_requested" {
+		fmt.Fprintf(w, "env_materialization: %s\n", payload.Env.MaterializationStatus)
+		if payload.Env.Bundle.Present {
+			fmt.Fprintln(w, "env_bundle: present")
+			fmt.Fprintf(w, "env_bundle_path: %s\n", payload.Env.Bundle.Path)
+		} else {
+			fmt.Fprintln(w, "env_bundle: absent")
+		}
+	}
 	fmt.Fprintf(w, "ready_path: %s\n", payload.ReadyPath)
 	return nil
 }
@@ -1382,6 +1541,21 @@ func openMigratedStore() (*state.SQLiteStore, error) {
 	return store, nil
 }
 
+func lookupProject(ctx context.Context, store interface {
+	ListProjects(context.Context) ([]state.Project, error)
+}, alias string) (state.Project, bool, error) {
+	projects, err := store.ListProjects(ctx)
+	if err != nil {
+		return state.Project{}, false, err
+	}
+	for _, project := range projects {
+		if project.Alias == alias {
+			return project, true, nil
+		}
+	}
+	return state.Project{}, false, nil
+}
+
 func runInit(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
 		printInitHelp(stdout)
@@ -1428,8 +1602,9 @@ Usage:
   codemesh status [project] [--base branch] [--json]
   codemesh doctor <project> [--base branch] [--strict] [--json]
   codemesh hydrate <project> [--json]
+  codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope
   codemesh machine register [workspace-root] [--json]
-  codemesh agent prepare <project> [--base branch] [--profile name] [--json]
+  codemesh agent prepare <project> [--base branch] [--profile name] [--env-provider fake] [--allow-env-scope scope] [--json]
   codemesh agent run <run-id> --label label [--timeout duration] -- <command...>
   codemesh runs
   codemesh clean [--older-than age]
@@ -1442,10 +1617,29 @@ Commands:
   status     report project readiness
   doctor     preflight agent handoff readiness without creating a run
   hydrate    clone a missing project into its desired path
+  env        manage private env bindings
   machine    register this machine locally
   agent      prepare and run agent workspaces
   runs       list prepared agent runs
   clean      delete old CodeMesh-managed agent runs
+`)
+}
+
+func printEnvHelp(w io.Writer) {
+	fmt.Fprint(w, `Manage private env bindings.
+
+Usage:
+  codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope
+`)
+}
+
+func printEnvBindHelp(w io.Writer) {
+	fmt.Fprint(w, `Bind one logical env requirement to a private provider reference.
+
+Usage:
+  codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope
+
+Stores provider references in local CodeMesh state, outside repo-local Project Policy.
 `)
 }
 
@@ -1549,7 +1743,7 @@ func printAgentHelp(w io.Writer) {
 	fmt.Fprint(w, `Prepare and run agent workspaces.
 
 Usage:
-  codemesh agent prepare <project> [--base branch] [--profile name] [--json]
+  codemesh agent prepare <project> [--base branch] [--profile name] [--env-provider fake] [--allow-env-scope scope] [--json]
   codemesh agent run <run-id> --label label [--timeout duration] -- <command...>
 `)
 }
@@ -1558,10 +1752,11 @@ func printAgentPrepareHelp(w io.Writer) {
 	fmt.Fprint(w, `Prepare one agent workspace.
 
 Usage:
-  codemesh agent prepare <project> [--base branch] [--profile name] [--json]
+  codemesh agent prepare <project> [--base branch] [--profile name] [--env-provider fake] [--allow-env-scope scope] [--json]
 
 Creates a temporary clone under CodeMesh-managed agents storage.
 Prints ready_path when the workspace is ready.
+Use --env-provider fake with --allow-env-scope to materialize a fake-provider env bundle.
 Use --json for the stable command result shape.
 `)
 }

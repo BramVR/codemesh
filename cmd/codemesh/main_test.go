@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/envbinding"
 	"github.com/BramVR/codemesh/internal/state"
 )
 
@@ -1067,6 +1068,76 @@ func TestAgentPreparePrintsReadyPathAndWritesRunMetadata(t *testing.T) {
 	}
 }
 
+func TestEnvBindAndAgentPrepareMaterializesFakeProviderBundle(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "agent-env-bound")
+	if err := os.WriteFile(filepath.Join(source, ".codemesh.yml"), []byte("agent:\n  env:\n    mode: block\n    required_keys:\n      - CODEMESH_TEST_BOUND_TOKEN\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "add", ".codemesh.yml")
+	runGit(t, source, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Require bound env")
+	runGit(t, source, "push", "origin", "main")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"env", "bind", "agent-env-bound", "CODEMESH_TEST_BOUND_TOKEN", "--provider", "fake", "--ref", "fake://agent-token", "--scope", "codex"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("env bind exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "bound env requirement: CODEMESH_TEST_BOUND_TOKEN") || strings.Contains(stdout.String(), "fake://agent-token") {
+		t.Fatalf("env bind output missing requirement or leaked ref:\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"agent", "prepare", "agent-env-bound", "--base", "main", "--env-provider", "fake", "--allow-env-scope", "codex"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("agent prepare exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "env_materialization: materialized") || !strings.Contains(output, "env_bundle: present") || !strings.Contains(output, "env_bundle_path: ") {
+		t.Fatalf("agent prepare output missing env materialization metadata:\n%s", output)
+	}
+	fakeValue := envbinding.FakeProviderValue("fake://agent-token")
+	if strings.Contains(output, fakeValue) {
+		t.Fatalf("agent prepare output leaked fake provider value:\n%s", output)
+	}
+	readyPath := valueAfterPrefix(t, output, "ready_path: ")
+	metadataBytes, err := os.ReadFile(filepath.Join(readyPath, "codemesh-run.json"))
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	if strings.Contains(string(metadataBytes), fakeValue) {
+		t.Fatalf("contract metadata leaked fake provider value:\n%s", metadataBytes)
+	}
+	var metadata struct {
+		Env struct {
+			MaterializationStatus string `json:"materialization_status"`
+			Bundle                struct {
+				Present bool   `json:"present"`
+				Path    string `json:"path"`
+				Values  string `json:"values"`
+			} `json:"bundle"`
+		} `json:"env"`
+	}
+	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
+		t.Fatalf("decode metadata: %v", err)
+	}
+	if metadata.Env.MaterializationStatus != "materialized" || !metadata.Env.Bundle.Present || metadata.Env.Bundle.Path == "" || metadata.Env.Bundle.Values != "not-recorded" {
+		t.Fatalf("env metadata = %#v", metadata.Env)
+	}
+	bundleBytes, err := os.ReadFile(metadata.Env.Bundle.Path)
+	if err != nil {
+		t.Fatalf("read env bundle: %v", err)
+	}
+	if !strings.Contains(string(bundleBytes), "CODEMESH_TEST_BOUND_TOKEN="+fakeValue) {
+		t.Fatalf("env bundle = %q, want fake provider value", string(bundleBytes))
+	}
+}
+
 func TestAgentHelpIncludesPrepareJSONFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -1075,7 +1146,7 @@ func TestAgentHelpIncludesPrepareJSONFlag(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("agent help exit code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout.String(), "codemesh agent prepare <project> [--base branch] [--profile name] [--json]") {
+	if !strings.Contains(stdout.String(), "codemesh agent prepare <project> [--base branch] [--profile name] [--env-provider fake] [--allow-env-scope scope] [--json]") {
 		t.Fatalf("agent help missing prepare JSON flag:\n%s", stdout.String())
 	}
 	if stderr.Len() != 0 {

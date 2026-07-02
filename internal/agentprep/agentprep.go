@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BramVR/codemesh/internal/agentcontract"
+	"github.com/BramVR/codemesh/internal/envbinding"
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/readiness"
 	"github.com/BramVR/codemesh/internal/state"
@@ -24,6 +25,7 @@ const MetadataFileName = agentcontract.FileName
 type Store interface {
 	ListProjects(context.Context) ([]state.Project, error)
 	RecordAgentRun(context.Context, state.AgentRun) error
+	ListEnvBindings(context.Context, int64) ([]state.EnvBinding, error)
 }
 
 type Preparer struct {
@@ -35,9 +37,11 @@ type Preparer struct {
 }
 
 type Request struct {
-	Project string
-	Base    string
-	Profile string
+	Project          string
+	Base             string
+	Profile          string
+	EnvProvider      string
+	AllowedEnvScopes []string
 }
 
 type Result struct {
@@ -81,17 +85,23 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
-	decision, err := readiness.EvaluateHandoff(ctx, project, readiness.Options{BaseBranch: req.Base})
+	readinessOpts := readiness.Options{BaseBranch: req.Base}
+	if strings.TrimSpace(req.EnvProvider) != "" {
+		readinessOpts.Env = materializedEnvLookup{}
+	}
+	decision, err := readiness.EvaluateHandoff(ctx, project, readinessOpts)
 	if err != nil {
 		return Result{}, err
 	}
 	base := decision.Report.BaseBranch
 	diagnostics := agentDiagnostics(decision.Report.Warnings, decision.Report.Blockers)
+	envSummary := envSummaryFromPolicy(decision.Policy.Env.RequiredFiles, decision.Policy.Env.RequiredKeys, req.AllowedEnvScopes)
 	if len(diagnostics.Blockers) != 0 {
 		return Result{
 			Base:        base,
 			Profile:     strings.TrimSpace(req.Profile),
 			Diagnostics: diagnostics,
+			Metadata:    Metadata{Env: envSummary},
 		}, BlockedError{Diagnostics: diagnostics}
 	}
 
@@ -145,6 +155,30 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 	diagnostics.Warnings = append(diagnostics.Warnings, handoffWarnings...)
+	envSummary = envSummaryFromPolicy(readyPolicy.Env.RequiredFiles, readyPolicy.Env.RequiredKeys, req.AllowedEnvScopes)
+	if strings.TrimSpace(req.EnvProvider) != "" {
+		envResult, envDiagnostics, err := envbinding.Materializer{Store: p.Store}.Materialize(ctx, envbinding.Request{
+			ProjectID:     project.ID,
+			RequiredFiles: readyPolicy.Env.RequiredFiles,
+			RequiredKeys:  readyPolicy.Env.RequiredKeys,
+			Provider:      strings.TrimSpace(req.EnvProvider),
+			AllowedScopes: req.AllowedEnvScopes,
+			BundlePath:    filepath.Join(runDir, "env", "env.bundle"),
+		})
+		if err != nil {
+			return Result{}, err
+		}
+		envSummary = envSummaryFromBinding(envResult)
+		if len(envDiagnostics) != 0 {
+			diagnostics.Blockers = append(diagnostics.Blockers, envDiagnosticList(envDiagnostics)...)
+			return Result{
+				Base:        base,
+				Profile:     strings.TrimSpace(req.Profile),
+				Diagnostics: diagnostics,
+				Metadata:    Metadata{Env: envSummary},
+			}, BlockedError{Diagnostics: diagnostics}
+		}
+	}
 
 	now := p.now().UTC()
 	metadata := agentcontract.New(agentcontract.Input{
@@ -164,6 +198,7 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		Profile:           strings.TrimSpace(req.Profile),
 		ResolvedCommit:    resolvedCommit,
 		BaseProvenance:    baseProvenance,
+		Env:               envSummary,
 		ReadinessDecision: "ready",
 		HandoffDocs:       handoffDocs,
 		Diagnostics:       diagnostics,
@@ -196,10 +231,49 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	}, nil
 }
 
+type materializedEnvLookup struct{}
+
+func (materializedEnvLookup) HasEnvKey(string) bool {
+	return true
+}
+
 func agentDiagnostics(warnings, blockers []readiness.Diagnostic) Diagnostics {
 	return Diagnostics{
 		Warnings: agentDiagnosticList(warnings),
 		Blockers: agentDiagnosticList(blockers),
+	}
+}
+
+func envDiagnosticList(items []envbinding.Diagnostic) []Diagnostic {
+	diagnostics := make([]Diagnostic, 0, len(items))
+	for _, item := range items {
+		diagnostics = append(diagnostics, Diagnostic{Code: item.Code, Message: item.Message})
+	}
+	return diagnostics
+}
+
+func envSummaryFromPolicy(requiredFiles, requiredKeys, allowedScopes []string) agentcontract.EnvInfo {
+	return envSummaryFromBinding(envbinding.SummaryForRequirements(requiredFiles, requiredKeys, allowedScopes))
+}
+
+func envSummaryFromBinding(summary envbinding.Summary) agentcontract.EnvInfo {
+	requirements := make([]agentcontract.EnvRequirement, 0, len(summary.Requirements))
+	for _, requirement := range summary.Requirements {
+		requirements = append(requirements, agentcontract.EnvRequirement{
+			Name: requirement.Name,
+			Kind: requirement.Kind,
+		})
+	}
+	return agentcontract.EnvInfo{
+		Requirements:          requirements,
+		AllowedScopes:         append([]string(nil), summary.AllowedScopes...),
+		MaterializationStatus: summary.MaterializationStatus,
+		Bundle: agentcontract.EnvBundle{
+			Present: summary.Bundle.Present,
+			Path:    summary.Bundle.Path,
+			Format:  summary.Bundle.Format,
+			Values:  summary.Bundle.Values,
+		},
 	}
 }
 

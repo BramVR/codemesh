@@ -67,4 +67,4 @@ rm -rf "$demo"
 - No GitHub remote, provider token, env file content, or secret value is needed.
 - Cleanup removes only the temp demo directory you created.
 
-For the full command list, continue to [Command Catalog](commands.md). Direct references: [init](commands/init.md), [add](commands/add.md), [scan](commands/scan.md), [tree](commands/tree.md), [status](commands/status.md), [doctor](commands/doctor.md), [hydrate](commands/hydrate.md), [agent prepare](commands/agent-prepare.md), [runs](commands/runs.md), and [clean](commands/clean.md).
+For the full command list, continue to [Command Catalog](commands.md). Direct references: [init](commands/init.md), [add](commands/add.md), [scan](commands/scan.md), [tree](commands/tree.md), [status](commands/status.md), [doctor](commands/doctor.md), [hydrate](commands/hydrate.md), [env bind](commands/env-bind.md), [agent prepare](commands/agent-prepare.md), [runs](commands/runs.md), and [clean](commands/clean.md).

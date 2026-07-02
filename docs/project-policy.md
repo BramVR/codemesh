@@ -64,6 +64,8 @@ Env requirements are checked without secret access:
 - diagnostics name missing file paths or key names only
 - missing requirements are warnings in `warn` mode and blockers in `block` mode
 
+Provider-specific binding references do not belong in `.codemesh.yml`. Use local private Env Bindings to map logical env key requirements to provider references.
+
 Agent Prep uses the requested base when passed. Without `--base`, it resolves `agent.base` from policy, then the discoverable remote default branch, then `main`. Missing or invalid selected bases block readiness. Agent Prep checks the policy from the fetched base for handoff env requirements, while env file presence is checked against the local source checkout because those files are usually untracked local setup.
 
 Agent Prep resolves handoff docs from the prepared clone, not the source checkout, so metadata points at files available to the agent on the selected base. It records project-relative paths only; it does not copy docs, embed doc contents, or read doc contents into metadata. The default handoff docs are `AGENTS.md`, `CONTEXT.md`, `README.md`, and Markdown files directly under `docs/adr/`; `agent.include_docs` adds project-specific paths or patterns. Valid policy patterns that select no available docs produce `handoff-doc-missing` warnings, not blockers. Command stdout reports only `handoff_docs: N`; the selected paths and `default` or `policy` source metadata live in `codemesh-run.json`.

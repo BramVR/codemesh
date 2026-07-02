@@ -24,6 +24,8 @@ Layout:
   codemesh.db
   agents/
     <run-id>/
+      env/
+        env.bundle
       workspace/
         codemesh-run.json
 ```
@@ -42,6 +44,7 @@ Initial tables:
 - `machines`: local machine identity and mutable machine facts.
 - `scans`: future local discovery runs.
 - `agent_runs`: prepared agent workspace audit rows.
+- `env_bindings`: local private mappings from logical env requirements to provider references.
 
 Migrations are idempotent. Re-running `init` must not duplicate migrations or remove existing settings.
 
@@ -117,6 +120,20 @@ Env readiness is derived from the effective project policy.
 
 Checks and warn/block handling follow [Project Policy Reference](project-policy.md). Env readiness never reads, writes, stores, or prints secret values.
 
+## Env Binding
+
+`codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope` stores private env binding metadata in local SQLite. Bindings map repo-declared logical env key requirements to provider-specific secret references outside repo-local Project Policy.
+
+Stored fields:
+
+- project id
+- logical requirement name
+- provider name
+- provider-specific secret reference
+- allowed binding scopes
+
+The first provider is deterministic `fake`. It exists for tests and offline proof. It is not a live secret provider and does not make CodeMesh a secrets manager.
+
 ## Agent Runs
 
 `codemesh agent prepare <project>` creates one run directory under `agents/`.
@@ -124,6 +141,7 @@ Checks and warn/block handling follow [Project Policy Reference](project-policy.
 Run layout:
 
 - `workspace/`: temporary Git clone from the registered clone URL.
+- `env/env.bundle`: optional agent-scoped env bundle materialized from allowed private bindings.
 - `codemesh-run.json`: handoff metadata written inside the ready workspace.
 
 Agent Prep resolves the project by alias, chooses the requested base, repo policy base, discoverable remote default branch, or `main` fallback in that order, fetches that base when a source checkout is present, and gates the handoff on the policy from the fetched base before cloning. If the registered desired source path is missing, Agent Prep requires a registered `clone_url`, reads policy from the remote default branch through a temporary Git clone to honor `agent.base`, validates the selected base against the registered clone URL, and prepares from that remote instead of treating the missing path as a blocker. Env readiness still follows the selected-base policy: required keys are checked from the process environment, and required local env files are treated as missing when the source checkout is absent. Env file contents are never read. Readiness blockers stop prep before a run is recorded, and any temporary clone made to read selected-base policy is removed before returning the blocker. Warnings, including dirty source checkout and env warnings, are recorded and printed but do not block.
@@ -146,6 +164,7 @@ The contract records metadata only:
 - resolved commit and readiness decision
 - base provenance with fetched base, fetched commit, prepared HEAD, and whether the prepared HEAD matches the fetched commit
 - handoff docs as project-relative paths available in the prepared clone, with source metadata such as `default` or `policy` and the original policy pattern when applicable
+- env requirements, allowed scopes, materialization status, and bundle presence/path/format with values marked not recorded
 - warnings and blockers from readiness
 - created timestamp
 
@@ -175,7 +194,7 @@ Command output is stored in local managed files, not embedded in metadata. Env v
 
 `codemesh runs` derives lifecycle state from local metadata: `prepared` before any command is recorded and `executed` after one or more command records exist.
 
-`codemesh agent prepare` prints only `handoff_docs: N`, where `N` is the selected-doc count. The detailed selected paths and source metadata live in `codemesh-run.json`.
+`codemesh agent prepare` prints `handoff_docs: N`, where `N` is the selected-doc count. The detailed selected paths and source metadata live in `codemesh-run.json`. When fake-provider env materialization runs, stdout prints materialization status and bundle path only, not values.
 
 `codemesh clean --older-than <age>` removes only matching Agent Run directories created under `<codemesh-home>/agents`. Age is evaluated from the stored `created_at` timestamp. After successful deletion, CodeMesh removes the matching `agent_runs` rows so `runs` no longer reports cleaned workspaces.
 
@@ -190,4 +209,4 @@ Cleanup safety rules:
 
 ## Secrets
 
-No secret values are stored, read, or materialized by `init`, Project Policy, or Env Readiness.
+No secret values are stored, read, or printed by `init`, Project Policy, or Env Readiness. Fake-provider Agent Prep materialization writes deterministic test values only to the agent-scoped env bundle under the managed run directory; contract bytes, SQLite run metadata, command output, and e2e reports record metadata only.
