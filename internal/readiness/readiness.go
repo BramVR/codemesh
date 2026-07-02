@@ -243,7 +243,7 @@ func EvaluateHandoff(ctx context.Context, project state.Project, opts Options) (
 }
 
 func evaluateMissingSourceHandoff(ctx context.Context, report ProjectReport, requestedBase string, opts Options) (HandoffDecision, error) {
-	clone := cloneURL(report.Project)
+	clone := strings.TrimSpace(report.Project.CloneURL)
 	if clone == "" {
 		report.State = StateBlocked
 		report.Blockers = append(report.Blockers, Diagnostic{Code: "origin-missing", Message: "registered project has no clone URL"})
@@ -482,13 +482,6 @@ func remoteRefCommit(output, base string) string {
 		}
 	}
 	return ""
-}
-
-func cloneURL(project state.Project) string {
-	if project.CloneURL != "" {
-		return project.CloneURL
-	}
-	return project.NormalizedRemote
 }
 
 func checkEnvReadiness(report *ProjectReport, projectPolicy policy.Policy, env EnvLookup) {

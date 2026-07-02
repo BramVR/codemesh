@@ -318,6 +318,29 @@ func TestEvaluateProjectMissingPathPreservesRequestedBase(t *testing.T) {
 	}
 }
 
+func TestEvaluateHandoffBlocksMissingSourceWithoutRegisteredCloneURL(t *testing.T) {
+	project := createReadinessFixture(t, "missing-no-clone-url")
+	project.CloneURL = ""
+	if err := os.RemoveAll(project.LocalPath); err != nil {
+		t.Fatal(err)
+	}
+
+	decision, err := EvaluateHandoff(context.Background(), project, Options{BaseBranch: "main"})
+	if err != nil {
+		t.Fatalf("EvaluateHandoff error = %v", err)
+	}
+
+	if !decision.SourcePathMissing {
+		t.Fatalf("SourcePathMissing = false, want true")
+	}
+	if decision.Report.State != StateBlocked {
+		t.Fatalf("state = %s, want %s", decision.Report.State, StateBlocked)
+	}
+	if !hasDiagnostic(decision.Report.Blockers, "origin-missing") {
+		t.Fatalf("blockers = %v, want origin-missing", decision.Report.Blockers)
+	}
+}
+
 func TestEvaluateProjectReportsDirtyCheckoutAsWarning(t *testing.T) {
 	project := createReadinessFixture(t, "dirty")
 	if err := os.WriteFile(filepath.Join(project.LocalPath, "dirty.txt"), []byte("local change\n"), 0o644); err != nil {

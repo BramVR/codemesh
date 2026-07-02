@@ -40,12 +40,13 @@ type Input struct {
 }
 
 type ProjectInput struct {
-	Alias      string
-	Remote     string
-	CloneURL   string
-	SourcePath string
-	LocalPath  string
-	ProjectID  int64
+	Alias             string
+	Remote            string
+	CloneURL          string
+	SourcePath        string
+	LocalPath         string
+	SourcePathMissing bool
+	ProjectID         int64
 }
 
 type Contract struct {
@@ -66,12 +67,13 @@ type Contract struct {
 }
 
 type ProjectInfo struct {
-	Alias      string `json:"alias"`
-	Remote     string `json:"remote"`
-	CloneURL   string `json:"clone_url"`
-	SourcePath string `json:"source_path"`
-	LocalPath  string `json:"local_path"`
-	ProjectID  int64  `json:"project_id,omitempty"`
+	Alias             string `json:"alias"`
+	Remote            string `json:"remote"`
+	CloneURL          string `json:"clone_url"`
+	SourcePath        string `json:"source_path"`
+	LocalPath         string `json:"local_path"`
+	SourcePathMissing bool   `json:"source_path_missing"`
+	ProjectID         int64  `json:"project_id,omitempty"`
 }
 
 type HandoffDoc struct {
@@ -146,12 +148,13 @@ func New(input Input) Contract {
 		RunID:           strings.TrimSpace(input.RunID),
 		ReadyPath:       input.ReadyPath,
 		Project: ProjectInfo{
-			Alias:      input.Project.Alias,
-			Remote:     input.Project.Remote,
-			CloneURL:   RedactCloneURL(input.Project.CloneURL),
-			SourcePath: input.Project.SourcePath,
-			LocalPath:  input.Project.LocalPath,
-			ProjectID:  input.Project.ProjectID,
+			Alias:             input.Project.Alias,
+			Remote:            input.Project.Remote,
+			CloneURL:          RedactCloneURL(input.Project.CloneURL),
+			SourcePath:        input.Project.SourcePath,
+			LocalPath:         input.Project.LocalPath,
+			SourcePathMissing: input.Project.SourcePathMissing,
+			ProjectID:         input.Project.ProjectID,
 		},
 		Base:              base,
 		Profile:           strings.TrimSpace(input.Profile),
