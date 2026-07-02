@@ -58,7 +58,7 @@ agent:
 
 `agent.toolchain.mode`: action for missing or unknown toolchain requirements. Allowed values: `warn` or `block`. Default: `warn`.
 
-`agent.toolchain.requirements`: logical toolchain names that CodeMesh should report on before handoff, such as `go`, `node`, or `mise`. Entries are names only, not install commands or build scripts.
+`agent.toolchain.requirements`: logical toolchain names that CodeMesh should report on before handoff, such as `go`, `node`, or `mise`. Entries are command names only, not paths, install commands, or build scripts.
 
 `agent.include_docs`: project-relative docs or glob-like path patterns that express which project context should travel with an agent handoff. Absolute paths and paths escaping the checkout are invalid. The Policy Module parses and preserves the list; it does not read doc contents during readiness checks. Agent Prep treats these as additive handoff docs on top of the default docs it discovers for ordinary repos and records only matched project-relative paths plus source metadata.
 
@@ -75,7 +75,9 @@ Env requirements are checked without secret access:
 
 Provider-specific binding references do not belong in `.codemesh.yml`. Use local private Env Bindings to map logical env key requirements to provider references.
 
-Toolchain requirements are reporting/delegation only. CodeMesh records `present`, `missing`, or `unknown` status from the active detection adapter; it does not install tools, run package-manager setup, or build development environments. Unknown status means CodeMesh could not prove the toolchain is present with the current adapter. Missing and unknown requirements follow `agent.toolchain.mode`: warnings in `warn` mode, blockers in `block` mode.
+Toolchain requirements are reporting/delegation only. CodeMesh records `present`, `missing`, or `unknown` status from the active detection adapter; it does not install tools, run package-manager setup, write tool version files, create dependency directories, or build development environments. Unknown status means CodeMesh could not prove the toolchain is present with the current adapter. Missing and unknown requirements follow `agent.toolchain.mode`: warnings in `warn` mode, blockers in `block` mode.
+
+Toolchain results separate project facts from host facts. Project facts identify the declared requirement from policy. Host facts identify the detected command name and version when a host detector can observe them. Host version probes reject project-local command matches; those remain `unknown` instead of executing checkout-controlled binaries. This lets agents distinguish a project policy problem from machine setup without asking CodeMesh to mutate the machine.
 
 Agent Prep uses the requested base when passed. Without `--base`, it resolves `agent.base` from policy, then the discoverable remote default branch, then `main`. Missing or invalid selected bases block readiness. Agent Prep checks the policy from the fetched base for handoff env requirements, while env file presence is checked against the local source checkout because those files are usually untracked local setup.
 

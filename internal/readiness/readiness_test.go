@@ -271,6 +271,39 @@ func TestEvaluateProjectReportsToolchainReadinessWithoutBuildingEnvironments(t *
 	}
 }
 
+func TestEvaluateProjectDoesNotVersionProjectLocalToolchainBinaries(t *testing.T) {
+	project := createReadinessFixture(t, "toolchain-project-local")
+	writeFixturePolicy(t, project, `agent:
+  toolchain:
+    mode: warn
+    requirements:
+      - go
+`)
+	commitFixturePolicy(t, project)
+	projectTool := filepath.Join(project.LocalPath, "bin", "go")
+	detector := &toolchain.HostDetector{
+		Lookup: func(command string) (string, error) {
+			if command != "go" {
+				t.Fatalf("lookup command = %q, want go", command)
+			}
+			return projectTool, nil
+		},
+		Version: func(context.Context, string) (string, error) {
+			t.Fatal("version should not run for project-local toolchain binaries")
+			return "", nil
+		},
+	}
+
+	report := evaluateFixture(t, project, Options{BaseBranch: "main", CheckRemote: false, Toolchain: detector})
+
+	if len(report.Toolchain) != 1 || report.Toolchain[0].Status != toolchain.StatusUnknown || report.Toolchain[0].Host.Version != "" {
+		t.Fatalf("toolchain report = %#v, want unknown without version", report.Toolchain)
+	}
+	if !hasDiagnostic(report.Warnings, "unknown-toolchain") {
+		t.Fatalf("warnings = %#v, want unknown-toolchain", report.Warnings)
+	}
+}
+
 func TestEvaluateProjectBlocksWhenRequiredEnvFileIsDirectory(t *testing.T) {
 	project := createReadinessFixture(t, "env-file-directory")
 	writeFixturePolicy(t, project, `agent:

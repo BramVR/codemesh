@@ -107,6 +107,33 @@ func TestResolveInvalidIncludeDocsPathReturnsActionableError(t *testing.T) {
 	}
 }
 
+func TestResolveInvalidToolchainRequirementReturnsActionableError(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry string
+	}{
+		{name: "path", entry: "./scripts/probe"},
+		{name: "nested path", entry: "tools/probe"},
+		{name: "command", entry: "go version"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writePolicy(t, root, "agent:\n  toolchain:\n    requirements:\n      - "+tt.entry+"\n")
+
+			_, err := Resolve(root)
+			if err == nil {
+				t.Fatal("Resolve error = nil, want validation error")
+			}
+			if !strings.Contains(err.Error(), ".codemesh.yml") ||
+				!strings.Contains(err.Error(), "agent.toolchain.requirements") ||
+				!strings.Contains(err.Error(), "command or path") {
+				t.Fatalf("error is not actionable: %v", err)
+			}
+		})
+	}
+}
+
 func TestDocumentedPolicyExampleParses(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), "docs", "project-policy.md"))
 	if err != nil {

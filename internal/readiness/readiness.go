@@ -549,6 +549,7 @@ func checkEnvReadiness(report *ProjectReport, projectPolicy policy.Policy, env E
 }
 
 func checkToolchainReadiness(ctx context.Context, report *ProjectReport, projectPolicy policy.Policy, detector toolchain.Detector) error {
+	detector = detectorWithProjectRoot(detector, report.Project.LocalPath)
 	results, err := toolchain.Check(ctx, projectPolicy.Toolchain.Requirements, detector)
 	if err != nil {
 		return err
@@ -581,6 +582,26 @@ func checkToolchainReadiness(ctx context.Context, report *ProjectReport, project
 	}
 	report.Warnings = append(report.Warnings, diagnostics...)
 	return nil
+}
+
+func detectorWithProjectRoot(detector toolchain.Detector, projectRoot string) toolchain.Detector {
+	if strings.TrimSpace(projectRoot) == "" {
+		return detector
+	}
+	switch d := detector.(type) {
+	case toolchain.HostDetector:
+		d.DenyDirs = append(append([]string(nil), d.DenyDirs...), projectRoot)
+		return d
+	case *toolchain.HostDetector:
+		if d == nil {
+			return detector
+		}
+		copy := *d
+		copy.DenyDirs = append(append([]string(nil), copy.DenyDirs...), projectRoot)
+		return copy
+	default:
+		return detector
+	}
 }
 
 func envLookup(env EnvLookup) EnvLookup {

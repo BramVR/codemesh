@@ -18,6 +18,7 @@ import (
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/readiness"
 	"github.com/BramVR/codemesh/internal/state"
+	"github.com/BramVR/codemesh/internal/toolchain"
 )
 
 const MetadataFileName = agentcontract.FileName
@@ -34,6 +35,7 @@ type Preparer struct {
 	NewID     func() string
 	Now       func() time.Time
 	Producer  agentcontract.Producer
+	Toolchain toolchain.Detector
 }
 
 type Request struct {
@@ -85,7 +87,7 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
-	readinessOpts := readiness.Options{BaseBranch: req.Base}
+	readinessOpts := readiness.Options{BaseBranch: req.Base, Toolchain: p.Toolchain}
 	if strings.TrimSpace(req.EnvProvider) != "" {
 		readinessOpts.Env = materializedEnvLookup{}
 	}

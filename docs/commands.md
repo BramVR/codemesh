@@ -32,7 +32,7 @@ Each linked reference page documents the current syntax, purpose, safe local exa
 
 `codemesh doctor` runs the same handoff readiness preflight as Agent Prep but does not create an agent workspace, write `codemesh-run.json`, or record an Agent Run. `--strict` makes warning-only readiness exit non-zero for automation while preserving normal Agent Prep warning behavior.
 
-Repo-local Project Policy may declare toolchain readiness requirements. `doctor` reports checked toolchain status in human and JSON output, and `agent prepare` records status in the Agent Run Contract. Toolchain readiness is report/delegate only; CodeMesh does not install tools or build environments.
+Repo-local Project Policy may declare toolchain readiness requirements. `doctor` reports checked toolchain status in human and JSON output, and `agent prepare` records status in the Agent Run Contract. Present host detections record command names and versions while project facts keep the declared requirement separate. Toolchain readiness is report/delegate only; CodeMesh does not install tools or build environments.
 
 `codemesh agent run` is separate from prepare. Prepare creates and records the workspace; run executes one explicitly supplied local command inside that prepared workspace, captures stdout/stderr to managed files, and records command metadata without env values.
 
