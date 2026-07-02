@@ -44,7 +44,7 @@ When warnings exist, stdout prints one `warning: <code> <message>` line per warn
 
 `handoff_docs` is a count only. The selected doc paths and their source metadata live in `<ready_path>/codemesh-run.json`.
 
-`codemesh-run.json` is an Agent Run Contract. It records the contract version, producer/version metadata, run id, project identity, registered remote, selected base, resolved commit, checkout provenance, readiness decision, and diagnostics. Checkout provenance includes the fetched base, fetched commit, prepared HEAD, and whether the prepared HEAD matches the fetched commit. Handoff docs are recorded as paths and source metadata only; their file contents are not embedded.
+`codemesh-run.json` is an Agent Run Contract. It records the contract version, producer/version metadata, run id, project identity, registered remote, selected base, resolved commit, checkout provenance, readiness decision, source checkout presence, and diagnostics. Checkout provenance includes the fetched base, fetched commit, prepared HEAD, and whether the prepared HEAD matches the fetched commit. Handoff docs are recorded as paths and source metadata only; their file contents are not embedded.
 
 ## Handoff Docs
 
@@ -83,7 +83,7 @@ codemesh agent prepare demo-project --base main --profile codex --json
 
 - Prepares temporary clones only; it does not create shared worktrees from the source checkout.
 - Uses local policy and readiness checks; it does not provision credentials or materialize secret values.
-- Can prepare from the registered clone URL when the desired source checkout path is missing; selected-base env key policy still applies, and required local env files are reported missing when no source checkout exists.
+- Can prepare from the registered clone URL when the desired source checkout path is missing; the Agent Run Contract records `project.source_path_missing: true`, selected-base env key policy still applies, and required local env files are reported missing when no source checkout exists.
 - Does not start or supervise a paid provider, remote agent, daemon, or long-lived process.
 - Records handoff doc paths only; it does not include doc text in stdout, `codemesh-run.json`, or local state.
 - Does not sync prepared workspaces between machines.

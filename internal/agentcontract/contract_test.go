@@ -16,12 +16,13 @@ func TestEncodeWritesVersionProducerAndRedactsMetadataBytes(t *testing.T) {
 		RunID:     "run-test",
 		ReadyPath: workspace,
 		Project: ProjectInput{
-			Alias:      "codemesh",
-			Remote:     "https://example.invalid/org/repo",
-			CloneURL:   "https://user:" + secret + "@example.invalid/org/repo.git?token=" + secret + "#frag",
-			SourcePath: "/tmp/source",
-			LocalPath:  "/tmp/source",
-			ProjectID:  42,
+			Alias:             "codemesh",
+			Remote:            "https://example.invalid/org/repo",
+			CloneURL:          "https://user:" + secret + "@example.invalid/org/repo.git?token=" + secret + "#frag",
+			SourcePath:        "/tmp/source",
+			LocalPath:         "/tmp/source",
+			SourcePathMissing: true,
+			ProjectID:         42,
 		},
 		Base:           "main",
 		Profile:        "codex",
@@ -87,6 +88,9 @@ func TestEncodeWritesVersionProducerAndRedactsMetadataBytes(t *testing.T) {
 		}
 		if !strings.Contains(raw, `"clone_url": "https://redacted@example.invalid/org/repo.git"`) {
 			t.Fatalf("%s metadata missing redacted clone URL:\n%s", label, raw)
+		}
+		if !strings.Contains(raw, `"source_path_missing": true`) {
+			t.Fatalf("%s metadata missing source checkout absence flag:\n%s", label, raw)
 		}
 		if !strings.Contains(raw, `"base_provenance": {`) || !strings.Contains(raw, `"fetched_commit": "abc123"`) || !strings.Contains(raw, `"matches_fetched": true`) {
 			t.Fatalf("%s metadata missing checkout provenance:\n%s", label, raw)

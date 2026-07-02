@@ -796,6 +796,10 @@ func (h *harness) expectLiveAgentWorkspace(remote, registeredSourcePath, readyPa
 		h.record(result{Name: "live github agent metadata project identity", Status: "FAIL", Error: "codemesh-run.json project identity did not match live registered remote", ExitCode: -1})
 		return false
 	}
+	if !metadata.Project.SourcePathMissing {
+		h.record(result{Name: "live github agent metadata source absence", Status: "FAIL", Error: "codemesh-run.json did not record missing source checkout", ExitCode: -1})
+		return false
+	}
 	if metadata.ContractVersion != 1 || metadata.Producer.Name != "codemesh" || metadata.Producer.Version == "" {
 		h.record(result{Name: "live github agent metadata contract version", Status: "FAIL", Error: "codemesh-run.json missing contract version or producer", ExitCode: -1})
 		return false
@@ -815,6 +819,10 @@ func (h *harness) expectLiveAgentWorkspace(remote, registeredSourcePath, readyPa
 	}
 	if dbMetadata.ReadyPath != metadata.ReadyPath || dbMetadata.ResolvedCommit != metadata.ResolvedCommit || dbMetadata.ReadinessDecision != metadata.ReadinessDecision {
 		h.record(result{Name: "live github agent state metadata parity", Status: "FAIL", Error: "state-store metadata did not match codemesh-run.json", ExitCode: -1})
+		return false
+	}
+	if dbMetadata.Project.SourcePathMissing != metadata.Project.SourcePathMissing {
+		h.record(result{Name: "live github agent state source absence parity", Status: "FAIL", Error: "state-store source_path_missing did not match codemesh-run.json", ExitCode: -1})
 		return false
 	}
 	if dbMetadata.ContractVersion != metadata.ContractVersion || dbMetadata.Producer != metadata.Producer {
@@ -1776,6 +1784,43 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 		return
 	}
 	if !s.expectAgentRunMetadata("agent prep remote default metadata", remoteDefaultPath, "remote-default-dev", "develop", "codex") {
+		return
+	}
+
+	missingSource, err := h.createClonedFixtureWithSeed(s.fixtures, "agent-prep-missing-source", func(seed string) error {
+		policy := []byte("agent:\n  env:\n    mode: warn\n    required_files:\n      - .env.agent\n")
+		return os.WriteFile(filepath.Join(seed, ".codemesh.yml"), policy, 0o644)
+	}, nil)
+	if err != nil {
+		h.record(result{Name: "agent prep missing source setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if missingSource.Source, err = filepath.EvalSymlinks(missingSource.Source); err != nil {
+		h.record(result{Name: "agent prep missing source canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if add := s.command("agent prep add missing source project", "add", missingSource.Source); add.Status != "PASS" {
+		return
+	}
+	if err := os.RemoveAll(missingSource.Source); err != nil {
+		h.record(result{Name: "agent prep remove source checkout", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	missingSourcePrep := s.command("agent prep missing source checkout", "agent", "prepare", missingSource.Name, "--base", "main", "--profile", "codex")
+	if missingSourcePrep.Status != "PASS" || !s.expectOutput(missingSourcePrep, "warning: missing-env-file", "blockers: none", "ready_path: ") {
+		return
+	}
+	missingSourcePath := s.expectReadyPath("agent prep missing source ready path", missingSourcePrep)
+	if missingSourcePath == "" {
+		return
+	}
+	if !s.expectGitCheckoutAtBase("agent prep missing source checkout base", missingSourcePath, "main") {
+		return
+	}
+	if !s.expectPathMissing("agent prep missing source did not create placeholder", missingSource.Source) {
+		return
+	}
+	if !s.expectAgentRunSourcePathMissing("agent prep missing source contract", missingSourcePath, missingSource.Source, true) {
 		return
 	}
 
@@ -3122,6 +3167,28 @@ func (s *scenario) expectAgentRunMetadata(name, readyPath, projectAlias, base, p
 	return true
 }
 
+func (s *scenario) expectAgentRunSourcePathMissing(name, readyPath, sourcePath string, want bool) bool {
+	fileMetadata, err := readAgentMetadata(filepath.Join(readyPath, "codemesh-run.json"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	dbMetadata, err := readAgentRunMetadataFromStore(filepath.Join(s.codemeshHome, "codemesh.db"), fileMetadata.RunID)
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if fileMetadata.Project.SourcePath != sourcePath || dbMetadata.Project.SourcePath != sourcePath {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("source path file=%q db=%q want %q", fileMetadata.Project.SourcePath, dbMetadata.Project.SourcePath, sourcePath), ExitCode: -1})
+		return false
+	}
+	if fileMetadata.Project.SourcePathMissing != want || dbMetadata.Project.SourcePathMissing != want {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("source_path_missing file=%t db=%t want %t", fileMetadata.Project.SourcePathMissing, dbMetadata.Project.SourcePathMissing, want), ExitCode: -1})
+		return false
+	}
+	return true
+}
+
 func (s *scenario) expectCommandStdoutEqualsCanonicalPath(name, stdoutPath, wantPath string) bool {
 	return s.h.expectCommandStdoutEqualsCanonicalPath(name, stdoutPath, wantPath)
 }
@@ -3396,10 +3463,11 @@ type agentMetadata struct {
 	RunID     string `json:"run_id"`
 	ReadyPath string `json:"ready_path"`
 	Project   struct {
-		Alias      string `json:"alias"`
-		Remote     string `json:"remote"`
-		CloneURL   string `json:"clone_url"`
-		SourcePath string `json:"source_path"`
+		Alias             string `json:"alias"`
+		Remote            string `json:"remote"`
+		CloneURL          string `json:"clone_url"`
+		SourcePath        string `json:"source_path"`
+		SourcePathMissing bool   `json:"source_path_missing"`
 	} `json:"project"`
 	Base              string            `json:"base"`
 	Profile           string            `json:"profile"`
