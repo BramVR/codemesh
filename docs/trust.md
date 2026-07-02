@@ -16,7 +16,7 @@ CodeMesh state is local machine metadata. The MVP uses a local SQLite database u
 
 ## Git Remains The Source Of Code Truth
 
-CodeMesh records normalized remotes and clone URLs, then uses Git for clone, fetch, checkout, and hydration. It does not own Git history, source merges, conflict resolution, or uncommitted local work.
+CodeMesh records normalized remotes and clone URLs, then uses Git for clone, fetch, checkout, and hydration. The current Clone Strategy is `full-clone`, meaning full Git history and a complete working tree; partial clone and sparse checkout are later explicit opt-ins. CodeMesh does not own Git history, source merges, conflict resolution, or uncommitted local work.
 
 ## Secret-Free Readiness
 
@@ -44,6 +44,6 @@ Toolchain readiness reports declared tool names and statuses only. CodeMesh does
 
 ## Agent Handoff Safety
 
-Agent Prep creates a temporary clone from the registered remote and requested base. It records handoff metadata so the run can be audited and cleaned, but it does not copy uncommitted source files or secret values into the prepared workspace.
+Agent Prep creates a temporary `full-clone` workspace from the registered remote and requested base. It records handoff metadata, including the selected clone strategy, so the run can be audited and cleaned, but it does not copy uncommitted source files or secret values into the prepared workspace.
 
 For implementation details, see [Local State Model](state.md) and [Project Policy Reference](project-policy.md).

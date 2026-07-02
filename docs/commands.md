@@ -28,7 +28,9 @@ Each linked reference page documents the current syntax, purpose, safe local exa
 
 `codemesh env bind` stores provider-specific secret references in local CodeMesh state, outside repo-local Project Policy. The first runnable provider is deterministic `fake`, for local tests and agent-scoped bundle proof only.
 
-`codemesh agent prepare` prints the ready workspace path plus `handoff_docs: N`, where `N` is the count of selected handoff docs. The detailed handoff doc metadata is path-only in the versioned `codemesh-run.json` Agent Run Contract; CodeMesh does not copy docs, embed doc contents, or read doc contents into metadata. With `--env-provider fake` and matching `--allow-env-scope`, Agent Prep can materialize an env bundle under the managed run directory, outside the prepared Git checkout. The contract records requirement names, allowed scopes, bundle presence/path, and `values: not-recorded`.
+`codemesh hydrate` and `codemesh agent prepare` currently use the `full-clone` Clone Strategy: full Git history and a complete working tree. Partial clone and sparse checkout are planned later opt-ins, not current default behavior.
+
+`codemesh agent prepare` prints the ready workspace path plus `handoff_docs: N`, where `N` is the count of selected handoff docs. The detailed handoff doc metadata is path-only in the versioned `codemesh-run.json` Agent Run Contract; CodeMesh does not copy docs, embed doc contents, or read doc contents into metadata. With `--env-provider fake` and matching `--allow-env-scope`, Agent Prep can materialize an env bundle under the managed run directory, outside the prepared Git checkout. The contract records clone strategy metadata, requirement names, allowed scopes, bundle presence/path, and `values: not-recorded`.
 
 `codemesh doctor` runs the same handoff readiness preflight as Agent Prep but does not create an agent workspace, write `codemesh-run.json`, or record an Agent Run. `--strict` makes warning-only readiness exit non-zero for automation while preserving normal Agent Prep warning behavior.
 

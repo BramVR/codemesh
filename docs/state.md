@@ -81,7 +81,7 @@ Re-running registration updates mutable facts without changing `machine_id` or `
 
 Machine rows are local observed state. They are not exported to shared topology by default.
 
-`codemesh hydrate <project>` resolves an existing registry row by alias and clones `clone_url` into `local_path` when that path is absent. Hydration may create the parent directory needed for the desired path, but it must not create placeholder project directories for other missing rows. If `local_path` already contains files, CodeMesh refuses to overwrite it with an actionable path-conflict error. If `local_path` is already a present checkout matching the registered project identity, hydration reports that no clone was needed.
+`codemesh hydrate <project>` resolves an existing registry row by alias and clones `clone_url` into `local_path` when that path is absent. Hydration uses the current `full-clone` Clone Strategy: full Git history and a complete working tree. Hydration may create the parent directory needed for the desired path, but it must not create placeholder project directories for other missing rows. If `local_path` already contains files, CodeMesh refuses to overwrite it with an actionable path-conflict error. If `local_path` is already a present checkout matching the registered project identity, hydration reports that no clone was needed.
 
 `codemesh scan [workspace-root]` walks a requested workspace root for local Git checkouts and upserts discovered projects by normalized remote. If a known remote appears at a new absolute path, scan updates `local_path` and keeps the existing alias. New projects use the checkout directory name as the alias, with deterministic numeric suffixes when another project already owns that alias.
 
@@ -162,7 +162,7 @@ Agent Prep resolves the project by alias, chooses the requested base, repo polic
 
 `codemesh doctor <project>` runs the same handoff readiness gate before Agent Prep's clone/run-recording step. It does not create an agent run directory, write `codemesh-run.json`, or insert an `agent_runs` row. Warning-only readiness exits zero by default and exits non-zero with `--strict`; blockers exit non-zero in both modes.
 
-The clone checks out the requested `--base` when provided. Otherwise it checks out the repo-local policy base, then the remote default branch, then `main`. CodeMesh uses Git for clone and checkout; it does not copy uncommitted source files, create Git worktrees, or replace Git state.
+The clone checks out the requested `--base` when provided. Otherwise it checks out the repo-local policy base, then the remote default branch, then `main`. CodeMesh uses the `full-clone` Clone Strategy for this baseline: full Git history and a complete working tree for the selected branch. Partial clone and sparse checkout remain later opt-in strategies. CodeMesh uses Git for clone and checkout; it does not copy uncommitted source files, create Git worktrees, or replace Git state.
 
 `codemesh-run.json` is the Agent Run Contract. The current contract is `contract_version: 1` and includes producer metadata with the CodeMesh producer name and binary version.
 
@@ -177,6 +177,7 @@ The contract records metadata only:
 - effective base and profile
 - resolved commit and readiness decision
 - base provenance with fetched base, fetched commit, prepared HEAD, and whether the prepared HEAD matches the fetched commit
+- selected Clone Strategy as `clone_strategy.name`, `clone_strategy.history`, and `clone_strategy.working_tree`
 - handoff docs as project-relative paths available in the prepared clone, with source metadata such as `default` or `policy` and the original policy pattern when applicable
 - env requirements, allowed scopes, materialization status, and bundle presence/path/format with values marked not recorded
 - toolchain status results when checked

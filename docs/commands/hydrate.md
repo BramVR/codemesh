@@ -17,9 +17,9 @@ codemesh hydrate <project> [--json]
 
 ## Purpose
 
-Clone one registered project into its desired local path when that path is missing. Hydration uses the remote already stored in the local Project Registry.
+Clone one registered project into its desired local path when that path is missing. Hydration uses the remote already stored in the local Project Registry and the current `full-clone` Clone Strategy.
 
-Use `--json` to emit the stable Command Result shape. The payload reports `outcome` as `hydrated`, `already-present`, `path-conflict`, `unknown-project`, or `failed`, plus the project alias, path, path presence, and normalized remote when a registered project was resolved. User-action failures such as path conflicts and unknown projects use exit class `readiness-blocked`; operational clone or tool failures use exit class `internal-error`. Both failure classes return exit code 1 without overwriting local files.
+Use `--json` to emit the stable Command Result shape. The payload reports `outcome` as `hydrated`, `already-present`, `path-conflict`, `unknown-project`, or `failed`, plus the project alias, path, path presence, normalized remote when a registered project was resolved, and selected clone strategy metadata. User-action failures such as path conflicts and unknown projects use exit class `readiness-blocked`; operational clone or tool failures use exit class `internal-error`. Both failure classes return exit code 1 without overwriting local files.
 
 ## Safe Example
 
@@ -49,7 +49,7 @@ codemesh hydrate demo-project --json
 
 - Works only for projects already present in the local Project Registry.
 - Refuses existing non-empty path conflicts.
-- Performs an explicit Git clone; it does not create lazy placeholders, mounts, or file-level hydration.
+- Performs an explicit `full-clone` Git clone; it does not create lazy placeholders, mounts, partial clones, sparse checkouts, or file-level hydration.
 - Does not fetch project definitions from a remote manifest.
 
 Back to [Command Catalog](../commands.md).

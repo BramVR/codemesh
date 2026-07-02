@@ -221,6 +221,9 @@ func TestHydrateClonesUsingPreservedCloneURL(t *testing.T) {
 	if result.AlreadyPresent {
 		t.Fatalf("AlreadyPresent = true, want cloned checkout")
 	}
+	if result.CloneStrategy.Name != "full-clone" || result.CloneStrategy.History != "full" || result.CloneStrategy.WorkingTree != "complete" {
+		t.Fatalf("CloneStrategy = %#v, want full clone", result.CloneStrategy)
+	}
 	if _, err := os.Stat(filepath.Join(target, "README.md")); err != nil {
 		t.Fatalf("hydrated README missing: %v", err)
 	}

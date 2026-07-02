@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/BramVR/codemesh/internal/clonestrategy"
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/state"
 )
@@ -32,6 +33,7 @@ type Entry struct {
 type HydrateResult struct {
 	Project        state.Project
 	AlreadyPresent bool
+	CloneStrategy  clonestrategy.Selection
 }
 
 type PathConflictError struct {
@@ -195,48 +197,54 @@ func (r *Registry) Hydrate(ctx context.Context, alias string) (HydrateResult, er
 		if project.Alias != alias {
 			continue
 		}
-		alreadyPresent, err := hydrateProject(ctx, r.git, project)
+		alreadyPresent, strategy, err := hydrateProject(ctx, r.git, project)
 		if err != nil {
-			return HydrateResult{Project: project}, err
+			return HydrateResult{Project: project, CloneStrategy: strategy}, err
 		}
-		return HydrateResult{Project: project, AlreadyPresent: alreadyPresent}, nil
+		return HydrateResult{Project: project, AlreadyPresent: alreadyPresent, CloneStrategy: strategy}, nil
 	}
 	return HydrateResult{}, fmt.Errorf("unknown project: %s", alias)
 }
 
-func hydrateProject(ctx context.Context, git gitops.Client, project state.Project) (bool, error) {
+func hydrateProject(ctx context.Context, git gitops.Client, project state.Project) (bool, clonestrategy.Selection, error) {
+	strategy := clonestrategy.FullCloneSelection()
 	info, err := os.Stat(project.LocalPath)
 	switch {
 	case err == nil:
 		if gitCheckoutMatches(ctx, git, project) {
-			return true, nil
+			return true, strategy, nil
 		}
 		if !info.IsDir() {
-			return false, PathConflictError{Path: project.LocalPath, Reason: "exists and is not a directory"}
+			return false, strategy, PathConflictError{Path: project.LocalPath, Reason: "exists and is not a directory"}
 		}
 		empty, err := dirIsEmpty(project.LocalPath)
 		if err != nil {
-			return false, err
+			return false, strategy, err
 		}
 		if !empty {
-			return false, PathConflictError{Path: project.LocalPath, Reason: "exists and is not empty"}
+			return false, strategy, PathConflictError{Path: project.LocalPath, Reason: "exists and is not empty"}
 		}
 	case errors.Is(err, os.ErrNotExist):
 		if err := os.MkdirAll(filepath.Dir(project.LocalPath), 0o755); err != nil {
-			return false, fmt.Errorf("create project parent directory: %w", err)
+			return false, strategy, fmt.Errorf("create project parent directory: %w", err)
 		}
 	default:
-		return false, fmt.Errorf("check project path %q: %w", project.LocalPath, err)
+		return false, strategy, fmt.Errorf("check project path %q: %w", project.LocalPath, err)
 	}
 
 	cloneURL := project.CloneURL
 	if cloneURL == "" {
 		cloneURL = project.NormalizedRemote
 	}
-	if _, err := git.Output(ctx, "", "clone", cloneURL, project.LocalPath); err != nil {
-		return false, fmt.Errorf("clone %q into %q: %s", redactedCloneURL(cloneURL), project.LocalPath, redactedCloneOutput(gitops.CommandDetail(err), cloneURL))
+	result, err := (clonestrategy.FullClone{Git: git}).Clone(ctx, clonestrategy.Request{
+		CloneURL:    cloneURL,
+		Destination: project.LocalPath,
+	})
+	strategy = result.Strategy
+	if err != nil {
+		return false, strategy, fmt.Errorf("clone %q into %q: %s", redactedCloneURL(cloneURL), project.LocalPath, err.Error())
 	}
-	return false, nil
+	return false, strategy, nil
 }
 
 func gitCheckoutMatches(ctx context.Context, git gitops.Client, project state.Project) bool {

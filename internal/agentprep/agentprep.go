@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BramVR/codemesh/internal/agentcontract"
+	"github.com/BramVR/codemesh/internal/clonestrategy"
 	"github.com/BramVR/codemesh/internal/envbinding"
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/readiness"
@@ -53,6 +54,7 @@ type Result struct {
 	Profile        string
 	ResolvedCommit string
 	BaseProvenance agentcontract.BaseProvenance
+	CloneStrategy  clonestrategy.Selection
 	Diagnostics    Diagnostics
 	Metadata       Metadata
 }
@@ -127,8 +129,15 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	if cloneURL == "" {
 		cloneURL = project.NormalizedRemote
 	}
-	if err := gitClone(ctx, cloneURL, base, readyPath); err != nil {
-		return Result{}, err
+	cloneResult, err := cloneWorkspace(ctx, cloneURL, base, readyPath)
+	if err != nil {
+		return Result{
+			Base:          base,
+			Profile:       strings.TrimSpace(req.Profile),
+			CloneStrategy: cloneResult.Strategy,
+			Diagnostics:   diagnostics,
+			Metadata:      Metadata{Env: envSummary},
+		}, err
 	}
 	resolvedCommit, err := gitResolvedCommit(ctx, readyPath)
 	if err != nil {
@@ -147,9 +156,10 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{Code: "invalid-policy", Message: err.Error()})
 		return Result{
-			Base:        base,
-			Profile:     strings.TrimSpace(req.Profile),
-			Diagnostics: diagnostics,
+			Base:          base,
+			Profile:       strings.TrimSpace(req.Profile),
+			CloneStrategy: cloneResult.Strategy,
+			Diagnostics:   diagnostics,
 		}, BlockedError{Diagnostics: diagnostics}
 	}
 	handoffDocs, handoffWarnings, err := handoffDocs(readyPath, readyPolicy.IncludeDocs)
@@ -174,10 +184,11 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		if len(envDiagnostics) != 0 {
 			diagnostics.Blockers = append(diagnostics.Blockers, envDiagnosticList(envDiagnostics)...)
 			return Result{
-				Base:        base,
-				Profile:     strings.TrimSpace(req.Profile),
-				Diagnostics: diagnostics,
-				Metadata:    Metadata{Env: envSummary},
+				Base:          base,
+				Profile:       strings.TrimSpace(req.Profile),
+				CloneStrategy: cloneResult.Strategy,
+				Diagnostics:   diagnostics,
+				Metadata:      Metadata{Env: envSummary},
 			}, BlockedError{Diagnostics: diagnostics}
 		}
 	}
@@ -200,6 +211,7 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		Profile:           strings.TrimSpace(req.Profile),
 		ResolvedCommit:    resolvedCommit,
 		BaseProvenance:    baseProvenance,
+		CloneStrategy:     cloneResult.Strategy,
 		Env:               envSummary,
 		Toolchain:         decision.Report.Toolchain,
 		ReadinessDecision: "ready",
@@ -229,6 +241,7 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		Profile:        strings.TrimSpace(req.Profile),
 		ResolvedCommit: resolvedCommit,
 		BaseProvenance: baseProvenance,
+		CloneStrategy:  cloneResult.Strategy,
 		Diagnostics:    diagnostics,
 		Metadata:       metadata,
 	}, nil
@@ -550,10 +563,22 @@ func handoffDocExists(root, rel string) (bool, error) {
 }
 
 func gitClone(ctx context.Context, cloneURL, base, readyPath string) error {
-	if _, err := gitops.Process().Output(ctx, "", "clone", "--branch", base, "--single-branch", cloneURL, readyPath); err != nil {
-		return fmt.Errorf("clone agent workspace: %s", gitops.RedactCloneOutput(gitops.CommandDetail(err), cloneURL))
+	if _, err := cloneWorkspace(ctx, cloneURL, base, readyPath); err != nil {
+		return err
 	}
 	return nil
+}
+
+func cloneWorkspace(ctx context.Context, cloneURL, base, readyPath string) (clonestrategy.Result, error) {
+	result, err := (clonestrategy.FullClone{}).Clone(ctx, clonestrategy.Request{
+		CloneURL:    cloneURL,
+		Branch:      base,
+		Destination: readyPath,
+	})
+	if err != nil {
+		return result, fmt.Errorf("clone agent workspace: %s", err.Error())
+	}
+	return result, nil
 }
 
 func gitResolvedCommit(ctx context.Context, readyPath string) (string, error) {

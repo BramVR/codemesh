@@ -63,6 +63,12 @@ func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
 	if metadata.BaseProvenance.FetchedCommit != metadata.ResolvedCommit {
 		t.Fatalf("fetched commit = %q, prepared HEAD = %q", metadata.BaseProvenance.FetchedCommit, metadata.ResolvedCommit)
 	}
+	if metadata.CloneStrategy.Name != "full-clone" || metadata.CloneStrategy.History != "full" || metadata.CloneStrategy.WorkingTree != "complete" {
+		t.Fatalf("metadata clone strategy = %#v, want full clone", metadata.CloneStrategy)
+	}
+	if result.CloneStrategy != metadata.CloneStrategy {
+		t.Fatalf("result clone strategy = %#v, metadata = %#v", result.CloneStrategy, metadata.CloneStrategy)
+	}
 	if len(metadata.Diagnostics.Warnings) != 0 || len(metadata.Diagnostics.Blockers) != 0 {
 		t.Fatalf("metadata diagnostics = %#v, want none", metadata.Diagnostics)
 	}
@@ -84,6 +90,9 @@ func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
 	}
 	if !strings.Contains(store.runs[0].MetadataJSON, `"fetched_base": "main"`) || !strings.Contains(store.runs[0].MetadataJSON, `"matches_fetched": true`) {
 		t.Fatalf("stored metadata missing base provenance:\n%s", store.runs[0].MetadataJSON)
+	}
+	if !strings.Contains(store.runs[0].MetadataJSON, `"clone_strategy": {`) || !strings.Contains(store.runs[0].MetadataJSON, `"name": "full-clone"`) {
+		t.Fatalf("stored metadata missing clone strategy:\n%s", store.runs[0].MetadataJSON)
 	}
 }
 
@@ -386,6 +395,9 @@ func TestPrepareDeniesEnvBindingOutsideAllowedScopes(t *testing.T) {
 	}
 	if !hasDiagnostic(result.Diagnostics.Blockers, "env-scope-denied") {
 		t.Fatalf("blockers = %#v, want env-scope-denied", result.Diagnostics.Blockers)
+	}
+	if result.CloneStrategy.Name != "full-clone" || result.CloneStrategy.History != "full" || result.CloneStrategy.WorkingTree != "complete" {
+		t.Fatalf("scope denial clone strategy = %#v, want full clone", result.CloneStrategy)
 	}
 	if !strings.Contains(result.Diagnostics.Blockers[0].Message, "CODEMESH_TEST_BOUND_TOKEN") || !strings.Contains(result.Diagnostics.Blockers[0].Message, "readonly") {
 		t.Fatalf("scope denial is not actionable: %q", result.Diagnostics.Blockers[0].Message)
@@ -896,10 +908,13 @@ func TestPrepareRemovesRunDirectoryWhenCloneFails(t *testing.T) {
 	home := t.TempDir()
 	preparer := testPreparer(home, newMemoryStore(project))
 
-	_, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
 
 	if err == nil {
 		t.Fatal("Prepare error = nil, want clone failure")
+	}
+	if result.CloneStrategy.Name != "full-clone" || result.CloneStrategy.History != "full" || result.CloneStrategy.WorkingTree != "complete" {
+		t.Fatalf("clone failure strategy = %#v, want full clone", result.CloneStrategy)
 	}
 	if _, statErr := os.Stat(filepath.Join(home, "agents", "run-test")); !os.IsNotExist(statErr) {
 		t.Fatalf("run dir exists after clone failure or stat failed: %v", statErr)

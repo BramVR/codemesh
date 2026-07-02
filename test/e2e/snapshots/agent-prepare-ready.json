@@ -23,6 +23,11 @@
     "exit_class": "success",
     "payload": {
       "base": "main",
+      "clone_strategy": {
+        "history": "full",
+        "name": "full-clone",
+        "working_tree": "complete"
+      },
       "diagnostics": {
         "blockers": [],
         "warnings": []
