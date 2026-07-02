@@ -12,7 +12,7 @@ permalink: /commands/agent-prepare
 ## Syntax
 
 ```sh
-codemesh agent prepare <project> [--base branch] [--profile name] [--json]
+codemesh agent prepare <project> [--base branch] [--profile name] [--env-provider fake] [--allow-env-scope scope] [--json]
 ```
 
 ## Purpose
@@ -23,7 +23,9 @@ Preparation does not execute an agent command. Use [`codemesh agent run`](agent-
 
 When `--base` is omitted, Agent Prep chooses the repo policy base, discoverable remote default branch, or `main` fallback in that order. `--profile` records the intended agent profile in run metadata.
 
-Use `--json` to emit the stable Command Result shape. The payload reports readiness, readiness diagnostics, handoff doc count, run id, ready path, run contract path, selected base, profile, and resolved commit. Blocked readiness uses exit class `readiness-blocked` and returns exit code 1 without creating an Agent Run. Secret values are not included.
+Use `--env-provider fake` with one or more `--allow-env-scope` flags to materialize fake-provider bindings into an agent-scoped env bundle. The bundle is written under the managed run directory, outside the prepared Git checkout. Binding setup uses [`codemesh env bind`](env-bind.md).
+
+Use `--json` to emit the stable Command Result shape. The payload reports readiness, readiness diagnostics, handoff doc count, run id, ready path, run contract path, selected base, profile, resolved commit, and env materialization metadata. Blocked readiness uses exit class `readiness-blocked` and returns exit code 1 without creating an Agent Run. Secret values are not included.
 
 ## Output Contract
 
@@ -45,6 +47,16 @@ When warnings exist, stdout prints one `warning: <code> <message>` line per warn
 `handoff_docs` is a count only. The selected doc paths and their source metadata live in `<ready_path>/codemesh-run.json`.
 
 `codemesh-run.json` is an Agent Run Contract. It records the contract version, producer/version metadata, run id, project identity, registered remote, selected base, resolved commit, checkout provenance, readiness decision, source checkout presence, and diagnostics. Checkout provenance includes the fetched base, fetched commit, prepared HEAD, and whether the prepared HEAD matches the fetched commit. Handoff docs are recorded as paths and source metadata only; their file contents are not embedded.
+
+When env materialization runs, stdout also includes:
+
+```txt
+env_materialization: materialized
+env_bundle: present
+env_bundle_path: <path>
+```
+
+The Agent Run Contract records env requirement names, allowed scopes, materialization status, bundle presence/path/format, and `values: not-recorded`.
 
 ## Handoff Docs
 
@@ -75,17 +87,20 @@ git clone "$remote" "$workspace/demo-project"
 
 codemesh init "$workspace"
 codemesh add "$workspace/demo-project" --alias demo-project
+codemesh env bind demo-project CODEMESH_DEMO_KEY --provider fake --ref fake://demo-key --scope codex
 codemesh agent prepare demo-project --base main --profile codex
+codemesh agent prepare demo-project --base main --profile codex --env-provider fake --allow-env-scope codex
 codemesh agent prepare demo-project --base main --profile codex --json
 ```
 
 ## Current Limitations
 
 - Prepares temporary clones only; it does not create shared worktrees from the source checkout.
-- Uses local policy and readiness checks; it does not provision credentials or materialize secret values.
+- Uses local policy and readiness checks; fake-provider bundles are deterministic test materialization only, and live secret providers are not implemented.
 - Can prepare from the registered clone URL when the desired source checkout path is missing; the Agent Run Contract records `project.source_path_missing: true`, selected-base env key policy still applies, and required local env files are reported missing when no source checkout exists.
 - Does not start or supervise a paid provider, remote agent, daemon, or long-lived process.
 - Records handoff doc paths only; it does not include doc text in stdout, `codemesh-run.json`, or local state.
+- Records env bundle metadata only; it does not include env values in stdout, `codemesh-run.json`, or local state metadata.
 - Does not sync prepared workspaces between machines.
 
 Back to [Command Catalog](../commands.md).

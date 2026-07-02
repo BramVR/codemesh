@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/envbinding"
 	_ "modernc.org/sqlite"
 )
 
@@ -923,7 +924,7 @@ func (h *harness) caseProjectRegistryScanWorkflow() {
 	if rerun.Status != "PASS" || !s.expectOutput(rerun, "unchanged: clean-repo") {
 		return
 	}
-	if !s.expectProjectRowCount("project registry scan idempotent state rows", 8) {
+	if !s.expectProjectRowCount("project registry scan idempotent state rows", 9) {
 		return
 	}
 
@@ -1466,7 +1467,7 @@ func (h *harness) caseNegativeCLIWorkflow() {
 	}
 
 	scan := s.command("negative cli scan fixtures", "scan", s.fixtures.Sources)
-	if scan.Status != "PASS" || !s.expectProjectRowCount("negative cli baseline state rows", 8) {
+	if scan.Status != "PASS" || !s.expectProjectRowCount("negative cli baseline state rows", 9) {
 		return
 	}
 
@@ -1474,7 +1475,7 @@ func (h *harness) caseNegativeCLIWorkflow() {
 	if !s.expectFailure(unknownProject, 1, "unknown project: ghost-project") {
 		return
 	}
-	if !s.expectProjectRowCount("negative cli unknown project state unchanged", 8) {
+	if !s.expectProjectRowCount("negative cli unknown project state unchanged", 9) {
 		return
 	}
 	if !s.expectPathMissing("negative cli unknown project no filesystem mutation", filepath.Join(s.fixtures.Sources, "ghost-project")) {
@@ -1511,7 +1512,7 @@ func (h *harness) caseNegativeCLIWorkflow() {
 	if !s.expectFailure(hydrateConflict, 1, "hydrate project: path conflict", conflict.Source) {
 		return
 	}
-	if !s.expectProjectRowCount("negative cli hydrate conflict state unchanged", 9) {
+	if !s.expectProjectRowCount("negative cli hydrate conflict state unchanged", 10) {
 		return
 	}
 	if got, err := os.ReadFile(conflictMarker); err != nil || string(got) != "keep me\n" {
@@ -1943,6 +1944,37 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 			return
 		}
 	}
+
+	bindEnv := s.command("agent prep bind fake env", "env", "bind", "required-env-bound", "CODEMESH_E2E_BOUND_ENV", "--provider", "fake", "--ref", "fake://e2e-bound-env", "--scope", "codex")
+	fakeBoundValue := fakeEnvBindingSecret()
+	if bindEnv.Status != "PASS" || !s.expectOutput(bindEnv, "bound env requirement: CODEMESH_E2E_BOUND_ENV", "provider: fake", "scopes: codex") || !s.expectNoOutput(bindEnv, fakeBoundValue) {
+		return
+	}
+	scopeDenied := s.expectedFailure("agent prep env binding scope denied", "agent", "prepare", "required-env-bound", "--base", "main", "--env-provider", "fake", "--allow-env-scope", "readonly")
+	if scopeDenied.Status != "FAIL" {
+		scopeDenied.Status = "FAIL"
+		scopeDenied.Error = "scope-denied prep unexpectedly passed"
+	} else if !strings.Contains(scopeDenied.Stderr, "blocker: env-scope-denied") || !strings.Contains(scopeDenied.Stderr, "CODEMESH_E2E_BOUND_ENV") || !strings.Contains(scopeDenied.Stderr, "readonly") || containsAnySecret(scopeDenied.Stderr, fakeEnvFixtureSecrets()) {
+		scopeDenied.Error = "scope-denied prep did not report actionable diagnostics without values"
+	} else {
+		scopeDenied.Status = "PASS"
+		scopeDenied.Error = ""
+	}
+	s.record(scopeDenied)
+	if scopeDenied.Status != "PASS" {
+		return
+	}
+	boundEnv := s.command("agent prep env binding fake provider", "agent", "prepare", "required-env-bound", "--base", "main", "--env-provider", "fake", "--allow-env-scope", "codex")
+	if boundEnv.Status != "PASS" || !s.expectOutput(boundEnv, "env_materialization: materialized", "env_bundle: present", "env_bundle_path: ", "ready_path: ") || !s.expectNoOutput(boundEnv, fakeBoundValue) {
+		return
+	}
+	boundPath := s.expectReadyPath("agent prep env binding ready path", boundEnv)
+	if boundPath == "" {
+		return
+	}
+	if !s.expectAgentRunEnvMaterialization("agent prep env binding metadata", boundPath, "CODEMESH_E2E_BOUND_ENV", fakeBoundValue) {
+		return
+	}
 }
 
 func (h *harness) buildBinary() bool {
@@ -2317,7 +2349,7 @@ func fakeEnvFixtureSecret() string {
 }
 
 func fakeEnvFixtureSecrets() []string {
-	return []string{fakeEnvFixtureFileSecret(), fakeEnvFixtureKeySecret()}
+	return []string{fakeEnvFixtureFileSecret(), fakeEnvFixtureKeySecret(), fakeEnvBindingSecret()}
 }
 
 func fakeEnvFixtureFileSecret() string {
@@ -2326,6 +2358,10 @@ func fakeEnvFixtureFileSecret() string {
 
 func fakeEnvFixtureKeySecret() string {
 	return strings.Join([]string{"e2e", "fixture", "env", "key", "secret"}, "-")
+}
+
+func fakeEnvBindingSecret() string {
+	return envbinding.FakeProviderValue("fake://e2e-bound-env")
 }
 
 func fakeHandoffDocContentMarker() string {
@@ -2522,6 +2558,16 @@ func (h *harness) createOfflineGitFixtures() (offlineGitFixtures, error) {
 		return fixtures, err
 	} else {
 		project.RequiredEnv = []string{"CODEMESH_E2E_PRESENT_ENV"}
+		fixtures.Projects = append(fixtures.Projects, project)
+	}
+	writeBoundEnvPolicy := func(path string) error {
+		policy := []byte("agent:\n  env:\n    mode: block\n    required_keys:\n      - CODEMESH_E2E_BOUND_ENV\n")
+		return os.WriteFile(filepath.Join(path, ".codemesh.yml"), policy, 0o644)
+	}
+	if project, err := h.createClonedFixtureWithSeed(fixtures, "required-env-bound", writeBoundEnvPolicy, nil); err != nil {
+		return fixtures, err
+	} else {
+		project.RequiredEnv = []string{"CODEMESH_E2E_BOUND_ENV"}
 		fixtures.Projects = append(fixtures.Projects, project)
 	}
 	return fixtures, nil
@@ -3327,6 +3373,65 @@ func (s *scenario) expectAgentRunDiagnostics(name, readyPath string, warningCode
 	return true
 }
 
+func (s *scenario) expectAgentRunEnvMaterialization(name, readyPath, requirement, fakeValue string) bool {
+	fileMetadata, err := readAgentMetadata(filepath.Join(readyPath, "codemesh-run.json"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	dbMetadata, err := readAgentRunMetadataFromStore(filepath.Join(s.codemeshHome, "codemesh.db"), fileMetadata.RunID)
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if containsAnySecret(fileMetadata.Raw, []string{fakeValue}) || containsAnySecret(dbMetadata.Raw, []string{fakeValue}) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: "fake provider value appeared in agent run metadata", ExitCode: -1})
+		return false
+	}
+	if fileMetadata.Env.MaterializationStatus != "materialized" || dbMetadata.Env.MaterializationStatus != "materialized" {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("env materialization status file=%q db=%q", fileMetadata.Env.MaterializationStatus, dbMetadata.Env.MaterializationStatus), ExitCode: -1})
+		return false
+	}
+	if len(fileMetadata.Env.Requirements) != 1 || fileMetadata.Env.Requirements[0].Name != requirement || fileMetadata.Env.Requirements[0].Kind != "env_key" {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("env requirements = %#v", fileMetadata.Env.Requirements), ExitCode: -1})
+		return false
+	}
+	if strings.Join(fileMetadata.Env.AllowedScopes, ",") != "codex" || strings.Join(dbMetadata.Env.AllowedScopes, ",") != "codex" {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("allowed scopes file=%v db=%v", fileMetadata.Env.AllowedScopes, dbMetadata.Env.AllowedScopes), ExitCode: -1})
+		return false
+	}
+	bundlePath := fileMetadata.Env.Bundle.Path
+	if !fileMetadata.Env.Bundle.Present || bundlePath == "" || fileMetadata.Env.Bundle.Values != "not-recorded" {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("env bundle metadata = %#v", fileMetadata.Env.Bundle), ExitCode: -1})
+		return false
+	}
+	if bundlePath != dbMetadata.Env.Bundle.Path {
+		s.h.record(result{Name: name, Status: "FAIL", Error: "file/state env bundle path diverged", ExitCode: -1})
+		return false
+	}
+	insideWorkspace, err := pathInside(readyPath, bundlePath)
+	if err != nil || insideWorkspace {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("env bundle path is inside workspace: %s (%v)", bundlePath, err), ExitCode: -1})
+		return false
+	}
+	insideRun, err := pathInside(filepath.Dir(readyPath), bundlePath)
+	if err != nil || !insideRun {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("env bundle path outside managed run dir: %s (%v)", bundlePath, err), ExitCode: -1})
+		return false
+	}
+	bundle, err := os.ReadFile(bundlePath)
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if !strings.Contains(string(bundle), requirement+"="+fakeValue) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: "env bundle missing deterministic fake provider value", ExitCode: -1})
+		return false
+	}
+	s.h.record(result{Name: name, Status: "PASS", ExitCode: 0})
+	return true
+}
+
 func (s *scenario) expectAgentRunMetadataExcludes(name, readyPath string, fragments ...string) bool {
 	fileMetadata, err := readAgentMetadata(filepath.Join(readyPath, "codemesh-run.json"))
 	if err != nil {
@@ -3473,10 +3578,30 @@ type agentMetadata struct {
 	Profile           string            `json:"profile"`
 	ResolvedCommit    string            `json:"resolved_commit"`
 	BaseProvenance    agentCommandBase  `json:"base_provenance"`
+	Env               agentEnvMetadata  `json:"env"`
 	ReadinessDecision string            `json:"readiness_decision"`
 	HandoffDocs       []agentHandoffDoc `json:"handoff_docs"`
 	Diagnostics       agentDiagnostics  `json:"diagnostics"`
 	Commands          []agentCommand    `json:"commands"`
+}
+
+type agentEnvMetadata struct {
+	Requirements          []agentEnvRequirement `json:"requirements"`
+	AllowedScopes         []string              `json:"allowed_scopes"`
+	MaterializationStatus string                `json:"materialization_status"`
+	Bundle                agentEnvBundle        `json:"bundle"`
+}
+
+type agentEnvRequirement struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+type agentEnvBundle struct {
+	Present bool   `json:"present"`
+	Path    string `json:"path"`
+	Format  string `json:"format"`
+	Values  string `json:"values"`
 }
 
 type agentHandoffDoc struct {

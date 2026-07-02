@@ -17,15 +17,18 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 - [`codemesh status [project] [--base branch] [--json]`](commands/status.md)
 - [`codemesh doctor <project> [--base branch] [--strict] [--json]`](commands/doctor.md)
 - [`codemesh hydrate <project> [--json]`](commands/hydrate.md)
+- [`codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope`](commands/env-bind.md)
 - [`codemesh machine register [workspace-root] [--json]`](commands/machine-register.md)
-- [`codemesh agent prepare <project> [--base branch] [--profile name] [--json]`](commands/agent-prepare.md)
+- [`codemesh agent prepare <project> [--base branch] [--profile name] [--env-provider fake] [--allow-env-scope scope] [--json]`](commands/agent-prepare.md)
 - [`codemesh agent run <run-id> --label label [--timeout duration] -- <command...>`](commands/agent-run.md)
 - [`codemesh runs`](commands/runs.md)
 - [`codemesh clean [--older-than age]`](commands/clean.md)
 
 Each linked reference page documents the current syntax, purpose, safe local examples, and current limitations. If a command does not appear in this list, it is not part of the runnable MVP surface.
 
-`codemesh agent prepare` prints the ready workspace path plus `handoff_docs: N`, where `N` is the count of selected handoff docs. The detailed handoff doc metadata is path-only in the versioned `codemesh-run.json` Agent Run Contract; CodeMesh does not copy docs, embed doc contents, or read doc contents into metadata.
+`codemesh env bind` stores provider-specific secret references in local CodeMesh state, outside repo-local Project Policy. The first runnable provider is deterministic `fake`, for local tests and agent-scoped bundle proof only.
+
+`codemesh agent prepare` prints the ready workspace path plus `handoff_docs: N`, where `N` is the count of selected handoff docs. The detailed handoff doc metadata is path-only in the versioned `codemesh-run.json` Agent Run Contract; CodeMesh does not copy docs, embed doc contents, or read doc contents into metadata. With `--env-provider fake` and matching `--allow-env-scope`, Agent Prep can materialize an env bundle under the managed run directory, outside the prepared Git checkout. The contract records requirement names, allowed scopes, bundle presence/path, and `values: not-recorded`.
 
 `codemesh doctor` runs the same handoff readiness preflight as Agent Prep but does not create an agent workspace, write `codemesh-run.json`, or record an Agent Run. `--strict` makes warning-only readiness exit non-zero for automation while preserving normal Agent Prep warning behavior.
 
@@ -58,7 +61,9 @@ codemesh status demo-project --base main
 codemesh status demo-project --base main --json
 codemesh doctor demo-project --base main
 codemesh doctor demo-project --base main --strict --json
+codemesh env bind demo-project CODEMESH_DEMO_KEY --provider fake --ref fake://demo-key --scope codex
 codemesh agent prepare demo-project --base main --profile codex
+codemesh agent prepare demo-project --base main --profile codex --env-provider fake --allow-env-scope codex
 codemesh agent prepare demo-project --base main --profile codex --json
 run_id="$(codemesh runs | awk '/^- / {print $2; exit}')"
 codemesh agent run "$run_id" --label workspace-root -- git rev-parse --show-toplevel
@@ -76,7 +81,7 @@ These directions remain product direction, not runnable commands today:
 
 - multi-machine sync
 - synced manifests or remote project indexes
-- secret materialization or env file writing
+- live secret providers or env file writing
 - daemon, mount, UI, placeholders, or file-level lazy hydration
 - generic cloud drive behavior
 

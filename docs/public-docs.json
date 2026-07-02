@@ -15,6 +15,7 @@
         "commands/status.md",
         "commands/doctor.md",
         "commands/hydrate.md",
+        "commands/env-bind.md",
         "commands/machine-register.md",
         "commands/agent-prepare.md",
         "commands/agent-run.md",

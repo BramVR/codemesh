@@ -508,6 +508,46 @@ where id = ?
 	}
 }
 
+func TestEnvBindingsPersistPrivateProviderReferencesByProject(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	defer store.Close()
+
+	project, err := store.AddProject(ctx, Project{
+		Alias:            "codemesh",
+		NormalizedRemote: "https://github.com/BramVR/codemesh",
+		LocalPath:        "/tmp/codemesh",
+	})
+	if err != nil {
+		t.Fatalf("AddProject error = %v", err)
+	}
+	binding, err := store.UpsertEnvBinding(ctx, EnvBinding{
+		ProjectID:   project.ID,
+		Requirement: "CODEMESH_TEST_BOUND_TOKEN",
+		Provider:    "fake",
+		SecretRef:   "fake://agent-token",
+		Scopes:      []string{"codex", "codex", "readonly"},
+	})
+	if err != nil {
+		t.Fatalf("UpsertEnvBinding error = %v", err)
+	}
+	if binding.ID == 0 {
+		t.Fatal("env binding id = 0")
+	}
+
+	bindings, err := store.ListEnvBindings(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("ListEnvBindings error = %v", err)
+	}
+	if len(bindings) != 1 {
+		t.Fatalf("env bindings = %d, want 1", len(bindings))
+	}
+	got := bindings[0]
+	if got.ProjectID != project.ID || got.Requirement != "CODEMESH_TEST_BOUND_TOKEN" || got.Provider != "fake" || got.SecretRef != "fake://agent-token" || strings.Join(got.Scopes, ",") != "codex,readonly" {
+		t.Fatalf("env binding = %#v", got)
+	}
+}
+
 func TestAddProjectAliasConflictIsActionable(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)

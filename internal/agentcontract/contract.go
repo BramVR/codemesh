@@ -33,6 +33,7 @@ type Input struct {
 	Profile           string
 	ResolvedCommit    string
 	BaseProvenance    BaseProvenance
+	Env               EnvInfo
 	ReadinessDecision string
 	HandoffDocs       []HandoffDoc
 	Diagnostics       Diagnostics
@@ -59,6 +60,7 @@ type Contract struct {
 	Profile           string          `json:"profile"`
 	ResolvedCommit    string          `json:"resolved_commit"`
 	BaseProvenance    BaseProvenance  `json:"base_provenance"`
+	Env               EnvInfo         `json:"env"`
 	ReadinessDecision string          `json:"readiness_decision"`
 	HandoffDocs       []HandoffDoc    `json:"handoff_docs"`
 	Diagnostics       Diagnostics     `json:"diagnostics"`
@@ -80,6 +82,25 @@ type HandoffDoc struct {
 	Path    string `json:"path"`
 	Source  string `json:"source"`
 	Pattern string `json:"pattern,omitempty"`
+}
+
+type EnvInfo struct {
+	Requirements          []EnvRequirement `json:"requirements"`
+	AllowedScopes         []string         `json:"allowed_scopes"`
+	MaterializationStatus string           `json:"materialization_status"`
+	Bundle                EnvBundle        `json:"bundle"`
+}
+
+type EnvRequirement struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+}
+
+type EnvBundle struct {
+	Present bool   `json:"present"`
+	Path    string `json:"path,omitempty"`
+	Format  string `json:"format,omitempty"`
+	Values  string `json:"values"`
 }
 
 type Diagnostics struct {
@@ -160,6 +181,7 @@ func New(input Input) Contract {
 		Profile:           strings.TrimSpace(input.Profile),
 		ResolvedCommit:    resolvedCommit,
 		BaseProvenance:    baseProvenance,
+		Env:               normalizeEnv(input.Env),
 		ReadinessDecision: strings.TrimSpace(input.ReadinessDecision),
 		HandoffDocs:       append([]HandoffDoc(nil), input.HandoffDocs...),
 		Diagnostics: Diagnostics{
@@ -303,6 +325,7 @@ func normalizeContract(contract Contract) Contract {
 	contract.Producer = normalizeProducer(contract.Producer)
 	contract.Project.CloneURL = RedactCloneURL(contract.Project.CloneURL)
 	contract.BaseProvenance = normalizeBaseProvenance(contract.BaseProvenance, contract.Base, contract.ResolvedCommit, contract.Project.Remote)
+	contract.Env = normalizeEnv(contract.Env)
 	if contract.HandoffDocs == nil {
 		contract.HandoffDocs = []HandoffDoc{}
 	}
@@ -330,6 +353,51 @@ func normalizeBaseProvenance(provenance BaseProvenance, base, resolvedCommit, re
 	}
 	provenance.MatchesFetched = provenance.FetchedCommit != "" && provenance.PreparedHEAD != "" && provenance.FetchedCommit == provenance.PreparedHEAD
 	return provenance
+}
+
+func normalizeEnv(env EnvInfo) EnvInfo {
+	if env.Requirements == nil {
+		env.Requirements = []EnvRequirement{}
+	} else {
+		requirements := make([]EnvRequirement, len(env.Requirements))
+		copy(requirements, env.Requirements)
+		env.Requirements = requirements
+		sort.Slice(env.Requirements, func(i, j int) bool {
+			if env.Requirements[i].Kind == env.Requirements[j].Kind {
+				return env.Requirements[i].Name < env.Requirements[j].Name
+			}
+			return env.Requirements[i].Kind < env.Requirements[j].Kind
+		})
+	}
+	env.AllowedScopes = uniqueSorted(env.AllowedScopes)
+	env.MaterializationStatus = strings.TrimSpace(env.MaterializationStatus)
+	if env.MaterializationStatus == "" {
+		env.MaterializationStatus = "not_requested"
+	}
+	env.Bundle.Values = strings.TrimSpace(env.Bundle.Values)
+	if env.Bundle.Values == "" {
+		env.Bundle.Values = "not-recorded"
+	}
+	if !env.Bundle.Present {
+		env.Bundle.Path = ""
+		env.Bundle.Format = ""
+	}
+	return env
+}
+
+func uniqueSorted(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func firstNonEmpty(values ...string) string {

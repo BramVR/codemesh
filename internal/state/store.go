@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -60,6 +62,15 @@ type AgentRun struct {
 	WorkspacePath string
 	MetadataJSON  string
 	CreatedAt     time.Time
+}
+
+type EnvBinding struct {
+	ID          int64
+	ProjectID   int64
+	Requirement string
+	Provider    string
+	SecretRef   string
+	Scopes      []string
 }
 
 type MachineFacts struct {
@@ -197,6 +208,9 @@ create table if not exists schema_migrations (
 		}
 	}
 	if _, err := applyMigration(ctx, tx, 4, migration4); err != nil {
+		return err
+	}
+	if _, err := applyMigration(ctx, tx, 5, migration5); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -605,6 +619,89 @@ order by created_at desc, id desc
 	return runs, nil
 }
 
+func (s *SQLiteStore) UpsertEnvBinding(ctx context.Context, binding EnvBinding) (EnvBinding, error) {
+	if binding.ProjectID == 0 {
+		return EnvBinding{}, errors.New("env binding project id is required")
+	}
+	binding.Requirement = strings.TrimSpace(binding.Requirement)
+	if binding.Requirement == "" {
+		return EnvBinding{}, errors.New("env binding requirement is required")
+	}
+	binding.Provider = strings.TrimSpace(binding.Provider)
+	if binding.Provider == "" {
+		return EnvBinding{}, errors.New("env binding provider is required")
+	}
+	binding.SecretRef = strings.TrimSpace(binding.SecretRef)
+	if binding.SecretRef == "" {
+		return EnvBinding{}, errors.New("env binding secret reference is required")
+	}
+	binding.Scopes = normalizedScopes(binding.Scopes)
+	if len(binding.Scopes) == 0 {
+		return EnvBinding{}, errors.New("env binding must include at least one scope")
+	}
+	scopesJSON, err := json.Marshal(binding.Scopes)
+	if err != nil {
+		return EnvBinding{}, fmt.Errorf("encode env binding scopes: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err = s.db.ExecContext(ctx, `
+insert into env_bindings(project_id, requirement, provider, secret_ref, scopes_json, created_at, updated_at)
+values(?, ?, ?, ?, ?, ?, ?)
+on conflict(project_id, requirement) do update set
+  provider = excluded.provider,
+  secret_ref = excluded.secret_ref,
+  scopes_json = excluded.scopes_json,
+  updated_at = excluded.updated_at
+`, binding.ProjectID, binding.Requirement, binding.Provider, binding.SecretRef, string(scopesJSON), now, now)
+	if err != nil {
+		return EnvBinding{}, fmt.Errorf("upsert env binding %q: %w", binding.Requirement, err)
+	}
+	var id int64
+	if err := s.db.QueryRowContext(ctx, `
+select id
+from env_bindings
+where project_id = ? and requirement = ?
+`, binding.ProjectID, binding.Requirement).Scan(&id); err != nil {
+		return EnvBinding{}, fmt.Errorf("read env binding %q: %w", binding.Requirement, err)
+	}
+	binding.ID = id
+	return binding, nil
+}
+
+func (s *SQLiteStore) ListEnvBindings(ctx context.Context, projectID int64) ([]EnvBinding, error) {
+	if projectID == 0 {
+		return nil, errors.New("env binding project id is required")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+select id, project_id, requirement, provider, secret_ref, scopes_json
+from env_bindings
+where project_id = ?
+order by requirement
+`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list env bindings: %w", err)
+	}
+	defer rows.Close()
+
+	var bindings []EnvBinding
+	for rows.Next() {
+		var binding EnvBinding
+		var scopesJSON string
+		if err := rows.Scan(&binding.ID, &binding.ProjectID, &binding.Requirement, &binding.Provider, &binding.SecretRef, &scopesJSON); err != nil {
+			return nil, fmt.Errorf("scan env binding: %w", err)
+		}
+		if err := json.Unmarshal([]byte(scopesJSON), &binding.Scopes); err != nil {
+			return nil, fmt.Errorf("decode env binding %q scopes: %w", binding.Requirement, err)
+		}
+		binding.Scopes = normalizedScopes(binding.Scopes)
+		bindings = append(bindings, binding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate env bindings: %w", err)
+	}
+	return bindings, nil
+}
+
 func (s *SQLiteStore) DeleteAgentRuns(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
@@ -688,6 +785,21 @@ func newMachineID() (string, error) {
 		return "", fmt.Errorf("mint machine id: %w", err)
 	}
 	return "machine_" + hex.EncodeToString(raw[:]), nil
+}
+
+func normalizedScopes(scopes []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		scope = strings.TrimSpace(scope)
+		if scope == "" || seen[scope] {
+			continue
+		}
+		seen[scope] = true
+		out = append(out, scope)
+	}
+	sort.Strings(out)
+	return out
 }
 
 var migration1 = []string{
@@ -774,4 +886,19 @@ var migration4 = []string{
 	`alter table machines add column updated_at text not null default ''`,
 	`update machines set updated_at = created_at where updated_at = ''`,
 	`create unique index if not exists machines_machine_id_unique on machines(machine_id) where machine_id is not null and machine_id != ''`,
+}
+
+var migration5 = []string{
+	`create table if not exists env_bindings (
+  id integer primary key,
+  project_id integer not null,
+  requirement text not null,
+  provider text not null,
+  secret_ref text not null,
+  scopes_json text not null,
+  created_at text not null,
+  updated_at text not null,
+  unique(project_id, requirement),
+  foreign key(project_id) references projects(id)
+)`,
 }

@@ -41,7 +41,7 @@ CodeMesh does not replace Git, sync arbitrary files, become a cloud drive, creat
 | Readiness | Warnings and blockers derived from the local filesystem and Git state. |
 | Doctor | Agent handoff preflight without creating run state. |
 | Agent Prep | Temporary clone, selected base, policy check, and run metadata. |
-| Env Readiness | Missing file/key detection without reading values. |
+| Env Readiness and Binding | Missing file/key detection plus fake-provider bundle proof without live secret providers. |
 
 ## Source
 

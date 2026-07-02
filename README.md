@@ -10,7 +10,7 @@ CodeMesh keeps a developer's project tree, repo inventory, machine-local setup, 
 - `codemesh status` showing missing, stale, dirty, and misconfigured projects.
 - Lazy repo setup from known Git remotes.
 - Per-project policy for ignored/local-only paths.
-- Env readiness checks without secret materialization.
+- Env readiness plus fake-provider Env Binding without live secret providers.
 - Agent workspace provisioning with scoped access.
 
 ## Non-goals
