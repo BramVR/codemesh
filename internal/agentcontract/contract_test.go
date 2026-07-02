@@ -103,6 +103,9 @@ func TestEncodeWritesVersionProducerAndRedactsMetadataBytes(t *testing.T) {
 		if !strings.Contains(raw, `"clone_url": "https://redacted@example.invalid/org/repo.git"`) {
 			t.Fatalf("%s metadata missing redacted clone URL:\n%s", label, raw)
 		}
+		if !strings.Contains(raw, `"clone_strategy": {`) || !strings.Contains(raw, `"name": "full-clone"`) || !strings.Contains(raw, `"history": "full"`) || !strings.Contains(raw, `"working_tree": "complete"`) {
+			t.Fatalf("%s metadata missing full clone strategy:\n%s", label, raw)
+		}
 		if !strings.Contains(raw, `"source_path_missing": true`) {
 			t.Fatalf("%s metadata missing source checkout absence flag:\n%s", label, raw)
 		}

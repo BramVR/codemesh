@@ -17,7 +17,7 @@ codemesh agent prepare <project> [--base branch] [--profile name] [--env-provide
 
 ## Purpose
 
-Prepare a temporary agent workspace for one registered project. CodeMesh checks readiness, creates a temp clone under CodeMesh-managed agent storage, records run metadata, and prints `handoff_docs: N` plus `ready_path`.
+Prepare a temporary agent workspace for one registered project. CodeMesh checks readiness, creates a temp clone under CodeMesh-managed agent storage through the current `full-clone` Clone Strategy, records run metadata, and prints `handoff_docs: N` plus `ready_path`.
 
 Preparation does not execute an agent command. Use [`codemesh agent run`](agent-run.md) after prepare when you want CodeMesh to run one explicit local command inside the prepared workspace and append command output paths to the run contract.
 
@@ -25,7 +25,7 @@ When `--base` is omitted, Agent Prep chooses the repo policy base, discoverable 
 
 Use `--env-provider fake` with one or more `--allow-env-scope` flags to materialize fake-provider bindings into an agent-scoped env bundle. The bundle is written under the managed run directory, outside the prepared Git checkout. Binding setup uses [`codemesh env bind`](env-bind.md).
 
-Use `--json` to emit the stable Command Result shape. The payload reports readiness, readiness diagnostics, handoff doc count, run id, ready path, run contract path, selected base, profile, resolved commit, and env materialization metadata. Blocked readiness uses exit class `readiness-blocked` and returns exit code 1 without creating an Agent Run. Secret values are not included.
+Use `--json` to emit the stable Command Result shape. The payload reports readiness, readiness diagnostics, handoff doc count, run id, ready path, run contract path, selected base, profile, resolved commit, selected clone strategy, and env materialization metadata. Blocked readiness uses exit class `readiness-blocked` and returns exit code 1 without creating an Agent Run. Secret values are not included.
 
 ## Output Contract
 
@@ -46,7 +46,7 @@ When warnings exist, stdout prints one `warning: <code> <message>` line per warn
 
 `handoff_docs` is a count only. The selected doc paths and their source metadata live in `<ready_path>/codemesh-run.json`.
 
-`codemesh-run.json` is an Agent Run Contract. It records the contract version, producer/version metadata, run id, project identity, registered remote, selected base, resolved commit, checkout provenance, readiness decision, source checkout presence, and diagnostics. Checkout provenance includes the fetched base, fetched commit, prepared HEAD, and whether the prepared HEAD matches the fetched commit. Handoff docs are recorded as paths and source metadata only; their file contents are not embedded.
+`codemesh-run.json` is an Agent Run Contract. It records the contract version, producer/version metadata, run id, project identity, registered remote, selected base, resolved commit, checkout provenance, selected clone strategy, readiness decision, source checkout presence, and diagnostics. Checkout provenance includes the fetched base, fetched commit, prepared HEAD, and whether the prepared HEAD matches the fetched commit. The current clone strategy is `full-clone`, with full history and a complete working tree. Handoff docs are recorded as paths and source metadata only; their file contents are not embedded.
 
 When Project Policy declares toolchain requirements, the contract records each checked toolchain status as `present`, `missing`, or `unknown`. Project facts record the declared requirement. Host facts record the detected command name and version when available. CodeMesh reports and delegates toolchain readiness only; it does not install tools, run package-manager setup, write tool version files, create dependency directories, or build environments.
 
@@ -97,7 +97,7 @@ codemesh agent prepare demo-project --base main --profile codex --json
 
 ## Current Limitations
 
-- Prepares temporary clones only; it does not create shared worktrees from the source checkout.
+- Prepares temporary `full-clone` workspaces only; partial clone, sparse checkout, shared object cache, and worktree strategies are later opt-ins.
 - Uses local policy and readiness checks; fake-provider bundles are deterministic test materialization only, and live secret providers are not implemented.
 - Can prepare from the registered clone URL when the desired source checkout path is missing; the Agent Run Contract records `project.source_path_missing: true`, selected-base env key policy still applies, and required local env files are reported missing when no source checkout exists.
 - Does not start or supervise a paid provider, remote agent, daemon, or long-lived process.

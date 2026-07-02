@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/clonestrategy"
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/toolchain"
 )
@@ -34,6 +35,7 @@ type Input struct {
 	Profile           string
 	ResolvedCommit    string
 	BaseProvenance    BaseProvenance
+	CloneStrategy     clonestrategy.Selection
 	Env               EnvInfo
 	Toolchain         []toolchain.Result
 	ReadinessDecision string
@@ -53,22 +55,23 @@ type ProjectInput struct {
 }
 
 type Contract struct {
-	ContractVersion   int                `json:"contract_version"`
-	Producer          Producer           `json:"producer"`
-	RunID             string             `json:"run_id"`
-	ReadyPath         string             `json:"ready_path"`
-	Project           ProjectInfo        `json:"project"`
-	Base              string             `json:"base"`
-	Profile           string             `json:"profile"`
-	ResolvedCommit    string             `json:"resolved_commit"`
-	BaseProvenance    BaseProvenance     `json:"base_provenance"`
-	Env               EnvInfo            `json:"env"`
-	Toolchain         []toolchain.Result `json:"toolchain"`
-	ReadinessDecision string             `json:"readiness_decision"`
-	HandoffDocs       []HandoffDoc       `json:"handoff_docs"`
-	Diagnostics       Diagnostics        `json:"diagnostics"`
-	CreatedAt         string             `json:"created_at"`
-	Commands          []CommandRecord    `json:"commands,omitempty"`
+	ContractVersion   int                     `json:"contract_version"`
+	Producer          Producer                `json:"producer"`
+	RunID             string                  `json:"run_id"`
+	ReadyPath         string                  `json:"ready_path"`
+	Project           ProjectInfo             `json:"project"`
+	Base              string                  `json:"base"`
+	Profile           string                  `json:"profile"`
+	ResolvedCommit    string                  `json:"resolved_commit"`
+	BaseProvenance    BaseProvenance          `json:"base_provenance"`
+	CloneStrategy     clonestrategy.Selection `json:"clone_strategy"`
+	Env               EnvInfo                 `json:"env"`
+	Toolchain         []toolchain.Result      `json:"toolchain"`
+	ReadinessDecision string                  `json:"readiness_decision"`
+	HandoffDocs       []HandoffDoc            `json:"handoff_docs"`
+	Diagnostics       Diagnostics             `json:"diagnostics"`
+	CreatedAt         string                  `json:"created_at"`
+	Commands          []CommandRecord         `json:"commands,omitempty"`
 }
 
 type ProjectInfo struct {
@@ -184,6 +187,7 @@ func New(input Input) Contract {
 		Profile:           strings.TrimSpace(input.Profile),
 		ResolvedCommit:    resolvedCommit,
 		BaseProvenance:    baseProvenance,
+		CloneStrategy:     clonestrategy.NormalizeSelection(input.CloneStrategy),
 		Env:               normalizeEnv(input.Env),
 		Toolchain:         normalizeToolchain(input.Toolchain),
 		ReadinessDecision: strings.TrimSpace(input.ReadinessDecision),
@@ -329,6 +333,7 @@ func normalizeContract(contract Contract) Contract {
 	contract.Producer = normalizeProducer(contract.Producer)
 	contract.Project.CloneURL = RedactCloneURL(contract.Project.CloneURL)
 	contract.BaseProvenance = normalizeBaseProvenance(contract.BaseProvenance, contract.Base, contract.ResolvedCommit, contract.Project.Remote)
+	contract.CloneStrategy = clonestrategy.NormalizeSelection(contract.CloneStrategy)
 	contract.Env = normalizeEnv(contract.Env)
 	contract.Toolchain = normalizeToolchain(contract.Toolchain)
 	if contract.HandoffDocs == nil {

@@ -1259,7 +1259,12 @@ func TestAgentPrepareJSONReportsReadyContract(t *testing.T) {
 			RunContractPath  string `json:"run_contract_path"`
 			ReadyPath        string `json:"ready_path"`
 			ResolvedCommit   string `json:"resolved_commit"`
-			Diagnostics      struct {
+			CloneStrategy    struct {
+				Name        string `json:"name"`
+				History     string `json:"history"`
+				WorkingTree string `json:"working_tree"`
+			} `json:"clone_strategy"`
+			Diagnostics struct {
 				Warnings []struct {
 					Code string `json:"code"`
 				} `json:"warnings"`
@@ -1275,6 +1280,9 @@ func TestAgentPrepareJSONReportsReadyContract(t *testing.T) {
 	got := payload.Payload
 	if payload.Command != "agent prepare" || payload.ExitClass != "success" || got.Project != "agent-json-ready" || !got.Ready || got.RunID == "" || got.Base != "main" || got.Profile != "codex" || got.HandoffDocsCount != 1 || got.ReadyPath == "" || got.ResolvedCommit == "" {
 		t.Fatalf("agent prepare JSON payload = %#v", payload)
+	}
+	if got.CloneStrategy.Name != "full-clone" || got.CloneStrategy.History != "full" || got.CloneStrategy.WorkingTree != "complete" {
+		t.Fatalf("clone_strategy = %#v, want full clone", got.CloneStrategy)
 	}
 	if got.RunContractPath != filepath.Join(got.ReadyPath, "codemesh-run.json") {
 		t.Fatalf("run_contract_path = %q, want metadata under ready path %q", got.RunContractPath, got.ReadyPath)
@@ -1675,11 +1683,16 @@ func assertHydrateJSON(data []byte, exitClass, alias, outcome, path string, path
 		Command   string `json:"command"`
 		ExitClass string `json:"exit_class"`
 		Payload   struct {
-			Project     string `json:"project"`
-			Outcome     string `json:"outcome"`
-			Path        string `json:"path"`
-			PathPresent bool   `json:"path_present"`
-			Remote      string `json:"remote"`
+			Project       string `json:"project"`
+			Outcome       string `json:"outcome"`
+			Path          string `json:"path"`
+			PathPresent   bool   `json:"path_present"`
+			Remote        string `json:"remote"`
+			CloneStrategy struct {
+				Name        string `json:"name"`
+				History     string `json:"history"`
+				WorkingTree string `json:"working_tree"`
+			} `json:"clone_strategy"`
 		} `json:"payload"`
 		Diagnostics struct {
 			Blockers []struct {
@@ -1696,6 +1709,9 @@ func assertHydrateJSON(data []byte, exitClass, alias, outcome, path string, path
 	got := payload.Payload
 	if got.Project != alias || got.Outcome != outcome || got.Path != path || got.PathPresent != pathPresent {
 		return fmt.Errorf("hydrate payload = %#v", got)
+	}
+	if outcome != "unknown-project" && (got.CloneStrategy.Name != "full-clone" || got.CloneStrategy.History != "full" || got.CloneStrategy.WorkingTree != "complete") {
+		return fmt.Errorf("hydrate clone_strategy = %#v, want full clone", got.CloneStrategy)
 	}
 	if got.Remote == "" && outcome != "unknown-project" && outcome != "failed" {
 		return fmt.Errorf("hydrate remote empty for outcome %q: %#v", outcome, got)

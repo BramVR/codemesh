@@ -17,6 +17,7 @@ import (
 	"github.com/BramVR/codemesh/internal/agentcontract"
 	"github.com/BramVR/codemesh/internal/agentprep"
 	"github.com/BramVR/codemesh/internal/agentruns"
+	"github.com/BramVR/codemesh/internal/clonestrategy"
 	"github.com/BramVR/codemesh/internal/commandresult"
 	"github.com/BramVR/codemesh/internal/config"
 	"github.com/BramVR/codemesh/internal/envbinding"
@@ -651,11 +652,12 @@ func parseHydrateArgs(args []string, stderr io.Writer) (parsedHydrateArgs, bool)
 }
 
 type hydratePayload struct {
-	Project     string `json:"project"`
-	Outcome     string `json:"outcome"`
-	Path        string `json:"path"`
-	PathPresent bool   `json:"path_present"`
-	Remote      string `json:"remote"`
+	Project       string                   `json:"project"`
+	Outcome       string                   `json:"outcome"`
+	Path          string                   `json:"path"`
+	PathPresent   bool                     `json:"path_present"`
+	Remote        string                   `json:"remote"`
+	CloneStrategy *clonestrategy.Selection `json:"clone_strategy,omitempty"`
 }
 
 func newHydrateResult(result registry.HydrateResult) commandresult.Result[hydratePayload] {
@@ -664,11 +666,12 @@ func newHydrateResult(result registry.HydrateResult) commandresult.Result[hydrat
 		outcome = "already-present"
 	}
 	return commandresult.New("hydrate", commandresult.ExitSuccess, commandresult.Diagnostics{}, hydratePayload{
-		Project:     result.Project.Alias,
-		Outcome:     outcome,
-		Path:        result.Project.LocalPath,
-		PathPresent: true,
-		Remote:      result.Project.NormalizedRemote,
+		Project:       result.Project.Alias,
+		Outcome:       outcome,
+		Path:          result.Project.LocalPath,
+		PathPresent:   true,
+		Remote:        result.Project.NormalizedRemote,
+		CloneStrategy: cloneStrategyPayload(result.CloneStrategy),
 	})
 }
 
@@ -679,10 +682,11 @@ func newHydrateErrorResult(projectName string, result registry.HydrateResult, er
 		alias = projectName
 	}
 	payload := hydratePayload{
-		Project: alias,
-		Outcome: "failed",
-		Path:    project.LocalPath,
-		Remote:  project.NormalizedRemote,
+		Project:       alias,
+		Outcome:       "failed",
+		Path:          project.LocalPath,
+		Remote:        project.NormalizedRemote,
+		CloneStrategy: cloneStrategyPayload(result.CloneStrategy),
 	}
 	if project.LocalPath != "" {
 		if _, statErr := os.Stat(project.LocalPath); statErr == nil {
@@ -984,6 +988,7 @@ type agentPreparePayload struct {
 	RunContractPath  string                    `json:"run_contract_path,omitempty"`
 	ReadyPath        string                    `json:"ready_path,omitempty"`
 	ResolvedCommit   string                    `json:"resolved_commit,omitempty"`
+	CloneStrategy    *clonestrategy.Selection  `json:"clone_strategy,omitempty"`
 	Env              agentcontract.EnvInfo     `json:"env"`
 	Diagnostics      commandresult.Diagnostics `json:"diagnostics"`
 }
@@ -1005,6 +1010,7 @@ func newAgentPrepareResult(args parsedAgentPrepareArgs, result agentprep.Result,
 		Base:             base,
 		Profile:          profile,
 		HandoffDocsCount: len(result.Metadata.HandoffDocs),
+		CloneStrategy:    cloneStrategyPayload(result.CloneStrategy),
 		Env:              result.Metadata.Env,
 		Diagnostics:      diagnostics,
 	}
@@ -1035,13 +1041,22 @@ func newAgentPrepareErrorResult(args parsedAgentPrepareArgs, result agentprep.Re
 		profile = strings.TrimSpace(args.Profile)
 	}
 	return commandresult.New("agent prepare", exitClass, diagnostics, agentPreparePayload{
-		Project:     args.Project,
-		Ready:       false,
-		Base:        base,
-		Profile:     profile,
-		Env:         result.Metadata.Env,
-		Diagnostics: diagnostics,
+		Project:       args.Project,
+		Ready:         false,
+		Base:          base,
+		Profile:       profile,
+		CloneStrategy: cloneStrategyPayload(result.CloneStrategy),
+		Env:           result.Metadata.Env,
+		Diagnostics:   diagnostics,
 	})
+}
+
+func cloneStrategyPayload(selection clonestrategy.Selection) *clonestrategy.Selection {
+	if strings.TrimSpace(selection.Name) == "" {
+		return nil
+	}
+	normalized := clonestrategy.NormalizeSelection(selection)
+	return &normalized
 }
 
 func agentPrepareDiagnostics(diagnostics agentprep.Diagnostics) commandresult.Diagnostics {

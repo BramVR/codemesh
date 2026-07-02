@@ -148,7 +148,7 @@ Responsibilities:
 - resolve project through Project Registry
 - resolve effective project policy
 - run Readiness
-- create temp clone
+- create temp clone through the selected Clone Strategy
 - checkout requested, policy, remote-default, or `main` fallback base
 - discover project docs
 - write run metadata
@@ -166,6 +166,7 @@ Responsibilities:
 
 - contract version and producer metadata
 - project and checkout provenance
+- selected Clone Strategy metadata
 - readiness diagnostics and handoff docs
 - toolchain status when checked
 - command execution records
@@ -243,7 +244,7 @@ Rules:
 
 ### `codemesh hydrate <project>`
 
-Clones a missing project into its desired local path.
+Clones a missing project into its desired local path through the current `full-clone` Clone Strategy.
 
 Does not create placeholders.
 
@@ -265,6 +266,7 @@ Creates a temp clone under `~/.codemesh/agents`.
 Rules:
 
 - clone from normalized remote
+- use the current `full-clone` Clone Strategy
 - checkout requested, policy, remote-default, or `main` fallback base
 - warn if source checkout is dirty
 - warn or block on env based on policy
@@ -328,6 +330,7 @@ Initial tables:
 
 - multi-machine sync
 - synced manifests or remote project indexes
+- opt-in partial clone or sparse checkout Clone Strategies
 - live secret providers or env file writing
 - live toolchain provider integrations
 - daemon, mount, UI, placeholders, or file-level lazy hydration

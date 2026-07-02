@@ -17,6 +17,11 @@
     },
     "exit_class": "success",
     "payload": {
+      "clone_strategy": {
+        "history": "full",
+        "name": "full-clone",
+        "working_tree": "complete"
+      },
       "outcome": "hydrated",
       "path": "<FIXTURE_SOURCES>/contract-hydrate-target",
       "path_present": true,
