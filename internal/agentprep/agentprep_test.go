@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/clonestrategy"
 	"github.com/BramVR/codemesh/internal/envbinding"
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/readiness"
@@ -66,7 +67,7 @@ func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
 	if metadata.CloneStrategy.Name != "full-clone" || metadata.CloneStrategy.History != "full" || metadata.CloneStrategy.WorkingTree != "complete" {
 		t.Fatalf("metadata clone strategy = %#v, want full clone", metadata.CloneStrategy)
 	}
-	if result.CloneStrategy != metadata.CloneStrategy {
+	if result.CloneStrategy.Name != metadata.CloneStrategy.Name || result.CloneStrategy.History != metadata.CloneStrategy.History || result.CloneStrategy.WorkingTree != metadata.CloneStrategy.WorkingTree {
 		t.Fatalf("result clone strategy = %#v, metadata = %#v", result.CloneStrategy, metadata.CloneStrategy)
 	}
 	if len(metadata.Diagnostics.Warnings) != 0 || len(metadata.Diagnostics.Blockers) != 0 {
@@ -93,6 +94,49 @@ func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
 	}
 	if !strings.Contains(store.runs[0].MetadataJSON, `"clone_strategy": {`) || !strings.Contains(store.runs[0].MetadataJSON, `"name": "full-clone"`) {
 		t.Fatalf("stored metadata missing clone strategy:\n%s", store.runs[0].MetadataJSON)
+	}
+}
+
+func TestPrepareRecordsOptInPartialSparseCloneStrategy(t *testing.T) {
+	requireGitPartialSparseSupport(t)
+	project := createFixtureProject(t, "prepare-partial-sparse")
+	writeFile(t, filepath.Join(project.LocalPath, "large.txt"), "not selected\n")
+	runGit(t, project.LocalPath, "add", "large.txt")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Add sparse contrast")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	store := newMemoryStore(project)
+	preparer := testPreparer(t.TempDir(), store)
+
+	result, err := preparer.Prepare(context.Background(), Request{
+		Project: project.Alias,
+		Base:    "main",
+		CloneOptions: clonestrategy.Options{
+			Partial:     true,
+			SparsePaths: []string{"README.md"},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("Prepare error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(result.ReadyPath, "README.md")); err != nil {
+		t.Fatalf("sparse checkout missing selected README: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(result.ReadyPath, "large.txt")); !os.IsNotExist(err) {
+		t.Fatalf("sparse checkout included unselected file or stat failed: %v", err)
+	}
+	metadata := readMetadata(t, result.ReadyPath)
+	if metadata.CloneStrategy.Name != "partial-sparse-clone" || metadata.CloneStrategy.History != "partial" || metadata.CloneStrategy.WorkingTree != "sparse" || metadata.CloneStrategy.Filter != "blob:none" {
+		t.Fatalf("metadata clone strategy = %#v, want partial sparse", metadata.CloneStrategy)
+	}
+	if strings.Join(metadata.CloneStrategy.SparsePaths, ",") != "README.md" {
+		t.Fatalf("metadata sparse paths = %#v", metadata.CloneStrategy.SparsePaths)
+	}
+	if result.CloneStrategy.Name != metadata.CloneStrategy.Name {
+		t.Fatalf("result clone strategy = %#v, metadata = %#v", result.CloneStrategy, metadata.CloneStrategy)
+	}
+	if !strings.Contains(store.runs[0].MetadataJSON, `"filter": "blob:none"`) || !strings.Contains(store.runs[0].MetadataJSON, `"sparse_paths": [`) {
+		t.Fatalf("stored metadata missing partial/sparse details:\n%s", store.runs[0].MetadataJSON)
 	}
 }
 
@@ -1123,6 +1167,38 @@ func hasDiagnostic(diagnostics []Diagnostic, code string) bool {
 		}
 	}
 	return false
+}
+
+func requireGitPartialSparseSupport(t *testing.T) {
+	t.Helper()
+	tmp := t.TempDir()
+	seed := filepath.Join(tmp, "seed")
+	remote := filepath.Join(tmp, "remote.git")
+	clone := filepath.Join(tmp, "clone")
+	if err := os.MkdirAll(seed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, seed, "init", "-b", "main")
+	writeFile(t, filepath.Join(seed, "README.md"), "selected\n")
+	writeFile(t, filepath.Join(seed, "large.txt"), "not selected\n")
+	runGit(t, seed, "add", ".")
+	runGit(t, seed, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Initial sparse probe")
+	largeBlob := strings.TrimSpace(gitOutputTest(t, seed, "rev-parse", "HEAD:large.txt"))
+	runGit(t, tmp, "clone", "--bare", seed, remote)
+	output, err := exec.Command("git", "clone", "--filter=blob:none", "--no-checkout", "--branch", "main", "--single-branch", "file://"+remote, clone).CombinedOutput()
+	if err != nil {
+		t.Skipf("git partial clone probe failed: %v: %s", err, output)
+	}
+	if strings.Contains(strings.ToLower(string(output)), "filtering not recognized") || strings.Contains(strings.ToLower(string(output)), "filter") && strings.Contains(strings.ToLower(string(output)), "ignoring") {
+		t.Skipf("git partial clone filter unsupported by local file transport: %s", output)
+	}
+	runGit(t, clone, "sparse-checkout", "set", "--no-cone", "--", "/README.md")
+	runGit(t, clone, "checkout", "main")
+	cmd := exec.Command("git", "-C", clone, "cat-file", "-e", largeBlob)
+	cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
+	if err := cmd.Run(); err == nil {
+		t.Skipf("git partial clone filter fetched unselected blob %s", largeBlob)
+	}
 }
 
 func diagnosticCodes(diagnostics []Diagnostic) string {

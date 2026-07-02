@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BramVR/codemesh/internal/clonestrategy"
+	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/state"
 )
 
@@ -236,6 +238,92 @@ func TestHydrateClonesUsingPreservedCloneURL(t *testing.T) {
 	}
 }
 
+func TestHydrateCanOptInToPartialSparseClone(t *testing.T) {
+	requireGitPartialSparseSupport(t)
+	ctx := context.Background()
+	remote := createBareRemoteWithFiles(t, "sparse", map[string]string{
+		"README.md": "selected\n",
+		"large.txt": "not selected\n",
+	})
+	target := filepath.Join(t.TempDir(), "sparse")
+	store := &projectListStore{projects: []state.Project{{
+		Alias:            "sparse",
+		NormalizedRemote: remote,
+		CloneURL:         remote,
+		LocalPath:        target,
+	}}}
+
+	result, err := New(store).Hydrate(ctx, "sparse", clonestrategy.Options{
+		Partial:     true,
+		SparsePaths: []string{"README.md"},
+	})
+
+	if err != nil {
+		t.Fatalf("Hydrate error = %v", err)
+	}
+	if result.CloneStrategy.Name != "partial-sparse-clone" || result.CloneStrategy.Filter != "blob:none" || result.CloneStrategy.WorkingTree != "sparse" {
+		t.Fatalf("CloneStrategy = %#v, want partial sparse", result.CloneStrategy)
+	}
+	if _, err := os.Stat(filepath.Join(target, "README.md")); err != nil {
+		t.Fatalf("hydrated sparse README missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "large.txt")); !os.IsNotExist(err) {
+		t.Fatalf("hydrated sparse checkout included unselected file or stat failed: %v", err)
+	}
+}
+
+func TestHydrateAlreadyPresentDoesNotReportRequestedCloneOptions(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRemote(t, "present-options")
+	target := filepath.Join(t.TempDir(), "present-options")
+	runGit(t, filepath.Dir(target), "clone", remote, target)
+	normalized, err := NormalizeRemote(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &projectListStore{projects: []state.Project{{
+		Alias:            "present-options",
+		NormalizedRemote: normalized,
+		CloneURL:         remote,
+		LocalPath:        target,
+	}}}
+
+	result, err := New(store).Hydrate(ctx, "present-options", clonestrategy.Options{Partial: true, SparsePaths: []string{"README.md"}})
+
+	if err != nil {
+		t.Fatalf("Hydrate error = %v", err)
+	}
+	if !result.AlreadyPresent {
+		t.Fatalf("AlreadyPresent = false, want true")
+	}
+	if result.CloneStrategy.Name != "full-clone" || result.CloneStrategy.History != "full" || result.CloneStrategy.WorkingTree != "complete" || result.CloneStrategy.Filter != "" || len(result.CloneStrategy.SparsePaths) != 0 {
+		t.Fatalf("already-present clone strategy = %#v, want existing/default strategy", result.CloneStrategy)
+	}
+}
+
+func TestHydrateCleansDestinationAfterPostCloneStrategyFailure(t *testing.T) {
+	ctx := context.Background()
+	target := filepath.Join(t.TempDir(), "partial-failure")
+	store := &projectListStore{projects: []state.Project{{
+		Alias:            "partial-failure",
+		NormalizedRemote: "https://example.invalid/org/repo",
+		CloneURL:         "https://example.invalid/org/repo.git",
+		LocalPath:        target,
+	}}}
+	runner := &postCloneFailureRunner{}
+	registry := New(store)
+	registry.git = gitops.New(runner)
+
+	_, err := registry.Hydrate(ctx, "partial-failure", clonestrategy.Options{Partial: true})
+
+	if err == nil {
+		t.Fatal("Hydrate error = nil, want partial filter failure")
+	}
+	if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("hydrate target remained after post-clone failure or stat failed: %v", statErr)
+	}
+}
+
 func TestHydrateDoesNotTreatSubdirectoryInsideCheckoutAsPresent(t *testing.T) {
 	ctx := context.Background()
 	remote := createBareRemote(t, "same-origin")
@@ -305,10 +393,61 @@ func hasSkip(skips []ScanSkip, path, reasonPart string) bool {
 	})
 }
 
+func requireGitPartialSparseSupport(t *testing.T) {
+	t.Helper()
+	tmp := t.TempDir()
+	seed := createCommittedGitRepo(t, filepath.Join(tmp, "seed"), "")
+	if err := os.WriteFile(filepath.Join(seed, "large.txt"), []byte("not selected\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, seed, "add", ".")
+	runGit(t, seed, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Add sparse probe")
+	largeBlob, err := gitOutput(seed, "rev-parse", "HEAD:large.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := filepath.Join(tmp, "remote.git")
+	clone := filepath.Join(tmp, "clone")
+	runGit(t, tmp, "clone", "--bare", seed, remote)
+	output, err := exec.Command("git", "clone", "--filter=blob:none", "--no-checkout", "--branch", "main", "--single-branch", "file://"+remote, clone).CombinedOutput()
+	if err != nil {
+		t.Skipf("git partial clone probe failed: %v: %s", err, output)
+	}
+	lower := strings.ToLower(string(output))
+	if strings.Contains(lower, "filtering not recognized") || strings.Contains(lower, "filter") && strings.Contains(lower, "ignoring") {
+		t.Skipf("git partial clone filter unsupported by local file transport: %s", output)
+	}
+	runGit(t, clone, "sparse-checkout", "set", "--no-cone", "--", "/README.md")
+	runGit(t, clone, "checkout", "main")
+	cmd := exec.Command("git", "-C", clone, "cat-file", "-e", strings.TrimSpace(largeBlob))
+	cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
+	if err := cmd.Run(); err == nil {
+		t.Skipf("git partial clone filter fetched unselected blob %s", strings.TrimSpace(largeBlob))
+	}
+}
+
 func createBareRemote(t *testing.T, name string) string {
+	t.Helper()
+	return createBareRemoteWithFiles(t, name, nil)
+}
+
+func createBareRemoteWithFiles(t *testing.T, name string, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
 	seed := createCommittedGitRepo(t, filepath.Join(root, "seed"), "")
+	if len(files) != 0 {
+		for rel, content := range files {
+			path := filepath.Join(seed, rel)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runGit(t, seed, "add", ".")
+		runGit(t, seed, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Update fixture")
+	}
 	remote := filepath.Join(root, name+".git")
 	runGit(t, root, "clone", "--bare", seed, remote)
 	return remote
@@ -316,6 +455,27 @@ func createBareRemote(t *testing.T, name string) string {
 
 type projectListStore struct {
 	projects []state.Project
+}
+
+type postCloneFailureRunner struct{}
+
+func (r *postCloneFailureRunner) Run(ctx context.Context, dir string, args ...string) (string, error) {
+	output, err := r.RunDetail(ctx, dir, args...)
+	return output.Stdout, err
+}
+
+func (r *postCloneFailureRunner) RunDetail(_ context.Context, _ string, args ...string) (gitops.CommandOutput, error) {
+	if len(args) >= 3 && args[0] == "clone" {
+		destination := args[len(args)-1]
+		if err := os.MkdirAll(filepath.Join(destination, ".git"), 0o755); err != nil {
+			return gitops.CommandOutput{}, err
+		}
+		if err := os.WriteFile(filepath.Join(destination, "README.md"), []byte("partial failure\n"), 0o644); err != nil {
+			return gitops.CommandOutput{}, err
+		}
+		return gitops.CommandOutput{Stderr: "warning: filtering not recognized by server, ignoring\n"}, nil
+	}
+	return gitops.CommandOutput{}, nil
 }
 
 func (s *projectListStore) AddProject(context.Context, state.Project) (state.Project, error) {

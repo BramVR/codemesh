@@ -939,6 +939,77 @@ func TestHydrateJSONReportsHydratedAndAlreadyPresentOutcomes(t *testing.T) {
 	}
 }
 
+func TestParseHydrateArgsRecordsCloneOptions(t *testing.T) {
+	var stderr bytes.Buffer
+
+	parsed, ok := parseHydrateArgs([]string{"demo", "--partial-clone", "--sparse", "README.md", "--sparse", "docs/adr", "--json"}, &stderr)
+
+	if !ok {
+		t.Fatalf("parseHydrateArgs failed: %s", stderr.String())
+	}
+	if parsed.Project != "demo" || !parsed.CloneOptions.Partial || strings.Join(parsed.CloneOptions.SparsePaths, ",") != "README.md,docs/adr" || !parsed.JSON {
+		t.Fatalf("parsed hydrate args = %#v", parsed)
+	}
+}
+
+func TestHydrateJSONReportsOptInPartialSparseStrategy(t *testing.T) {
+	requireGitPartialSparseSupport(t)
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "hydrate-partial-sparse")
+	if err := os.WriteFile(filepath.Join(source, "large.txt"), []byte("not selected\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "add", "large.txt")
+	runGit(t, source, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Add sparse contrast")
+	runGit(t, source, "push", "origin", "main")
+	source, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	if err := os.RemoveAll(source); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"hydrate", "hydrate-partial-sparse", "--partial-clone", "--sparse", "README.md", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("hydrate partial sparse --json exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	var payload struct {
+		Command string `json:"command"`
+		Payload struct {
+			CloneStrategy struct {
+				Name        string   `json:"name"`
+				History     string   `json:"history"`
+				WorkingTree string   `json:"working_tree"`
+				Filter      string   `json:"filter"`
+				SparsePaths []string `json:"sparse_paths"`
+			} `json:"clone_strategy"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("hydrate partial sparse --json stdout was not JSON: %v\nstdout:\n%s", err, stdout.String())
+	}
+	got := payload.Payload.CloneStrategy
+	if payload.Command != "hydrate" || got.Name != "partial-sparse-clone" || got.History != "partial" || got.WorkingTree != "sparse" || got.Filter != "blob:none" || strings.Join(got.SparsePaths, ",") != "README.md" {
+		t.Fatalf("partial sparse hydrate JSON = %#v", payload)
+	}
+	if _, err := os.Stat(filepath.Join(source, "README.md")); err != nil {
+		t.Fatalf("hydrated sparse README missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(source, "large.txt")); !os.IsNotExist(err) {
+		t.Fatalf("hydrated sparse checkout included unselected file or stat failed: %v", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("hydrate partial sparse --json stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestHydrateRefusesExistingNonEmptyPath(t *testing.T) {
 	home := filepath.Join(t.TempDir(), "codemesh-home")
 	source := createCommittedLocalRemoteClone(t, "conflict-source")
@@ -1059,8 +1130,11 @@ func TestHydrateJSONReportsCloneFailureAsInternalError(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("hydrate clone failure --json exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
 	}
-	if err := assertHydrateJSON(stdout.Bytes(), "internal-error", "hydrate-clone-failure", "failed", source, true, []string{"hydrate-failed"}); err != nil {
+	if err := assertHydrateJSON(stdout.Bytes(), "internal-error", "hydrate-clone-failure", "failed", source, false, []string{"hydrate-failed"}); err != nil {
 		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(source); !os.IsNotExist(statErr) {
+		t.Fatalf("hydrate clone failure left target path or stat failed: %v", statErr)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("hydrate clone failure --json stderr = %q, want empty", stderr.String())
@@ -1221,7 +1295,7 @@ func TestAgentHelpIncludesPrepareJSONFlag(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("agent help exit code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout.String(), "codemesh agent prepare <project> [--base branch] [--profile name] [--env-provider fake] [--allow-env-scope scope] [--json]") {
+	if !strings.Contains(stdout.String(), "codemesh agent prepare <project> [--base branch] [--profile name] [--partial-clone] [--sparse path] [--env-provider fake] [--allow-env-scope scope] [--json]") {
 		t.Fatalf("agent help missing prepare JSON flag:\n%s", stdout.String())
 	}
 	if stderr.Len() != 0 {
@@ -1295,6 +1369,80 @@ func TestAgentPrepareJSONReportsReadyContract(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "agent workspace ready") {
 		t.Fatalf("json output included human prose:\n%s", stdout.String())
+	}
+}
+
+func TestParseAgentPrepareArgsRecordsCloneOptions(t *testing.T) {
+	var stderr bytes.Buffer
+
+	parsed, ok := parseAgentPrepareArgs([]string{"demo", "--base", "main", "--profile", "codex", "--partial-clone", "--sparse", "README.md", "--json"}, &stderr)
+
+	if !ok {
+		t.Fatalf("parseAgentPrepareArgs failed: %s", stderr.String())
+	}
+	if parsed.Project != "demo" || parsed.Base != "main" || parsed.Profile != "codex" || !parsed.CloneOptions.Partial || strings.Join(parsed.CloneOptions.SparsePaths, ",") != "README.md" || !parsed.JSON {
+		t.Fatalf("parsed agent prepare args = %#v", parsed)
+	}
+}
+
+func TestAgentPrepareJSONReportsOptInPartialSparseStrategy(t *testing.T) {
+	requireGitPartialSparseSupport(t)
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	source := createCommittedLocalRemoteClone(t, "agent-partial-sparse")
+	if err := os.WriteFile(filepath.Join(source, "large.txt"), []byte("not selected\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, source, "add", "large.txt")
+	runGit(t, source, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Add sparse contrast")
+	runGit(t, source, "push", "origin", "main")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"add", source}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"agent", "prepare", "agent-partial-sparse", "--base", "main", "--partial-clone", "--sparse", "README.md", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("agent prepare partial sparse --json exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	var payload struct {
+		Command string `json:"command"`
+		Payload struct {
+			Ready           bool   `json:"ready"`
+			RunContractPath string `json:"run_contract_path"`
+			ReadyPath       string `json:"ready_path"`
+			CloneStrategy   struct {
+				Name        string   `json:"name"`
+				History     string   `json:"history"`
+				WorkingTree string   `json:"working_tree"`
+				Filter      string   `json:"filter"`
+				SparsePaths []string `json:"sparse_paths"`
+			} `json:"clone_strategy"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("agent prepare partial sparse --json stdout was not JSON: %v\nstdout:\n%s", err, stdout.String())
+	}
+	got := payload.Payload.CloneStrategy
+	if payload.Command != "agent prepare" || !payload.Payload.Ready || got.Name != "partial-sparse-clone" || got.History != "partial" || got.WorkingTree != "sparse" || got.Filter != "blob:none" || strings.Join(got.SparsePaths, ",") != "README.md" {
+		t.Fatalf("partial sparse agent prepare JSON = %#v", payload)
+	}
+	if _, err := os.Stat(filepath.Join(payload.Payload.ReadyPath, "README.md")); err != nil {
+		t.Fatalf("ready sparse README missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(payload.Payload.ReadyPath, "large.txt")); !os.IsNotExist(err) {
+		t.Fatalf("ready sparse checkout included unselected file or stat failed: %v", err)
+	}
+	metadataBytes, err := os.ReadFile(payload.Payload.RunContractPath)
+	if err != nil {
+		t.Fatalf("read run contract: %v", err)
+	}
+	if !strings.Contains(string(metadataBytes), `"filter": "blob:none"`) || !strings.Contains(string(metadataBytes), `"sparse_paths": [`) {
+		t.Fatalf("run contract missing partial/sparse details:\n%s", metadataBytes)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("agent prepare partial sparse --json stderr = %q, want empty", stderr.String())
 	}
 }
 
@@ -1736,6 +1884,40 @@ func assertGitStatusClean(t *testing.T, dir string) {
 	}
 	if strings.TrimSpace(string(output)) != "" {
 		t.Fatalf("git status not clean:\n%s", output)
+	}
+}
+
+func requireGitPartialSparseSupport(t *testing.T) {
+	t.Helper()
+	tmp := t.TempDir()
+	seed := createGitRepoAt(t, filepath.Join(tmp, "seed"), "")
+	if err := os.WriteFile(filepath.Join(seed, "large.txt"), []byte("not selected\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, seed, "add", ".")
+	runGit(t, seed, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Add sparse probe")
+	largeBlobBytes, err := exec.Command("git", "-C", seed, "rev-parse", "HEAD:large.txt").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	largeBlob := strings.TrimSpace(string(largeBlobBytes))
+	remote := filepath.Join(tmp, "remote.git")
+	clone := filepath.Join(tmp, "clone")
+	runGit(t, tmp, "clone", "--bare", seed, remote)
+	output, err := exec.Command("git", "clone", "--filter=blob:none", "--no-checkout", "--branch", "main", "--single-branch", "file://"+remote, clone).CombinedOutput()
+	if err != nil {
+		t.Skipf("git partial clone probe failed: %v: %s", err, output)
+	}
+	lower := strings.ToLower(string(output))
+	if strings.Contains(lower, "filtering not recognized") || strings.Contains(lower, "filter") && strings.Contains(lower, "ignoring") {
+		t.Skipf("git partial clone filter unsupported by local file transport: %s", output)
+	}
+	runGit(t, clone, "sparse-checkout", "set", "--no-cone", "--", "/README.md")
+	runGit(t, clone, "checkout", "main")
+	cmd := exec.Command("git", "-C", clone, "cat-file", "-e", largeBlob)
+	cmd.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
+	if err := cmd.Run(); err == nil {
+		t.Skipf("git partial clone filter fetched unselected blob %s", largeBlob)
 	}
 }
 

@@ -15,6 +15,10 @@ type Runner interface {
 	Run(context.Context, string, ...string) (string, error)
 }
 
+type DetailedRunner interface {
+	RunDetail(context.Context, string, ...string) (CommandOutput, error)
+}
+
 type ProcessRunner struct{}
 
 type Client struct {
@@ -33,6 +37,11 @@ type CommandError struct {
 	Err    error
 }
 
+type CommandOutput struct {
+	Stdout string
+	Stderr string
+}
+
 func New(runner Runner) Client {
 	if runner == nil {
 		runner = ProcessRunner{}
@@ -45,6 +54,11 @@ func Process() Client {
 }
 
 func (ProcessRunner) Run(ctx context.Context, dir string, args ...string) (string, error) {
+	output, err := (ProcessRunner{}).RunDetail(ctx, dir, args...)
+	return output.Stdout, err
+}
+
+func (ProcessRunner) RunDetail(ctx context.Context, dir string, args ...string) (CommandOutput, error) {
 	gitArgs := append([]string(nil), args...)
 	if strings.TrimSpace(dir) != "" {
 		gitArgs = append([]string{"-C", dir}, gitArgs...)
@@ -57,13 +71,21 @@ func (ProcessRunner) Run(ctx context.Context, dir string, args ...string) (strin
 	err := cmd.Run()
 	if err != nil {
 		output := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
-		return "", NewCommandError(args, []byte(output), err)
+		return CommandOutput{}, NewCommandError(args, []byte(output), err)
 	}
-	return stdout.String(), nil
+	return CommandOutput{Stdout: stdout.String(), Stderr: stderr.String()}, nil
 }
 
 func (c Client) Output(ctx context.Context, dir string, args ...string) (string, error) {
 	return c.runner.Run(ctx, dir, args...)
+}
+
+func (c Client) OutputDetail(ctx context.Context, dir string, args ...string) (CommandOutput, error) {
+	if runner, ok := c.runner.(DetailedRunner); ok {
+		return runner.RunDetail(ctx, dir, args...)
+	}
+	stdout, err := c.runner.Run(ctx, dir, args...)
+	return CommandOutput{Stdout: stdout}, err
 }
 
 func (c Client) InspectProject(ctx context.Context, path string) (InspectedProject, error) {
@@ -305,6 +327,7 @@ type Call struct {
 
 type FakeResponse struct {
 	Output string
+	Stderr string
 	Err    error
 }
 
@@ -314,11 +337,16 @@ type FakeRunner struct {
 }
 
 func (f *FakeRunner) Run(_ context.Context, dir string, args ...string) (string, error) {
+	output, err := f.RunDetail(context.Background(), dir, args...)
+	return output.Stdout, err
+}
+
+func (f *FakeRunner) RunDetail(_ context.Context, dir string, args ...string) (CommandOutput, error) {
 	f.Calls = append(f.Calls, Call{Dir: dir, Args: append([]string(nil), args...)})
 	if len(f.Responses) == 0 {
-		return "", nil
+		return CommandOutput{}, nil
 	}
 	response := f.Responses[0]
 	f.Responses = f.Responses[1:]
-	return response.Output, response.Err
+	return CommandOutput{Stdout: response.Output, Stderr: response.Stderr}, response.Err
 }
