@@ -50,7 +50,14 @@ Override the public HTTPS GitHub remote with:
 CODEMESH_E2E_LIVE=1 CODEMESH_LIVE_GITHUB_REPO=https://github.com/OWNER/REPO.git make e2e-live
 ```
 
-The GitHub smoke discovers the remote `HEAD` default branch with `git ls-remote --symref`, clones a temporary seed checkout, registers it with `codemesh add`, removes the checkout so the project is missing, runs `codemesh status`, runs `codemesh agent prepare`, verifies the prepared workspace and `codemesh-run.json`, confirms `codemesh runs` can read the prepared run, runs one harmless `codemesh agent run` command inside the workspace, confirms `codemesh runs` reports the executed state, runs guarded cleanup, then runs `codemesh hydrate` and verifies the hydrated checkout origin and branch. All CodeMesh state, `HOME`, Git config, workspace paths, and command cwd remain under the harness temp root.
+The GitHub smoke discovers the remote `HEAD` default branch with `git ls-remote --symref`, clones a temporary seed checkout, registers it with `codemesh add`, removes the checkout so the project is missing, runs `codemesh status`, runs `codemesh agent prepare --json`, verifies the prepared workspace, command JSON, `codemesh-run.json`, and SQLite Agent Run metadata all record the selected `full-clone` strategy, confirms `codemesh runs` can read the prepared run, runs one harmless `codemesh agent run` command inside the workspace, confirms `codemesh runs` reports the executed state, runs guarded cleanup, then runs `codemesh hydrate --json` and verifies the hydrated checkout origin, branch, and `full-clone` command metadata. All CodeMesh state, `HOME`, Git config, workspace paths, and command cwd remain under the harness temp root.
+
+The same GitHub smoke also runs opt-in Clone Strategy checks against the public remote after removing the registered source checkout again:
+
+- `--partial-clone` Agent Prep verifies `partial-clone` with `blob:none` in command JSON, `codemesh-run.json`, SQLite run metadata, and the live report.
+- `--sparse README.md` Agent Prep verifies `sparse-checkout` metadata, confirms `README.md` is present, and confirms an unrelated tracked path such as `go.mod` is not materialized.
+- Unsupported partial or sparse behavior records `SKIP` with a diagnostic in non-strict live mode, and records `FAIL` with the same diagnostic when `CODEMESH_E2E_LIVE_STRICT=1`.
+- The live smoke does not silently fall back from partial or sparse to full clone; any future fallback mode must be explicit in command output and report metadata.
 
 Strict mode turns missing live prerequisites into failures:
 
@@ -96,7 +103,7 @@ The report includes:
 - `binary`: executable path plus whether it was an external packaged binary.
 - `host`: OS, architecture, and Go version for the machine that wrote the report.
 - `isolation`: isolated `CODEMESH_HOME`, `HOME`, workspace, run directory, and Git config path.
-- `live`: live opt-in status, strict mode, target labels, skip reasons, GitHub remote URL, discovered default branch, command durations for GitHub status, Agent Prep, Agent Run, runs, cleanup, hydration smoke steps, targeted toolchain fixture facts, reserved provider smoke skip metadata, per-smoke secret-safety result, and the host-scoped lock path/label when a lock was acquired.
+- `live`: live opt-in status, strict mode, target labels, skip reasons, GitHub remote URL, discovered default branch, command durations for GitHub status, Agent Prep, Agent Run, runs, cleanup, hydration smoke steps, clone strategy records for full, partial, and sparse GitHub smokes, targeted toolchain fixture facts, reserved provider smoke skip metadata, per-smoke secret-safety result, and the host-scoped lock path/label when a lock was acquired.
 - `summary`: `pass`, `fail`, `skip`, and `total` counts derived from recorded case results.
 - `secret_safety`: whether report redaction is active and how many known fake fixture values were redacted.
 - `results`: per-case status, duration, exit code, and captured output for failing or diagnostic cases.
@@ -233,7 +240,7 @@ Agents should run e2e checks with:
 make e2e
 ```
 
-Run `make e2e-packaged` when changing packaging, installed-binary assumptions, source-relative paths, or release-smoke behavior. Run `make e2e-live` when changing the live harness or adding real provider, GUI, network, account, or multi-machine checks. Expect live mode to report `SKIP` unless `CODEMESH_E2E_LIVE=1` is set and free prerequisites are available.
+Run `make e2e-packaged` when changing packaging, installed-binary assumptions, source-relative paths, or release-smoke behavior. Run `make e2e-live` when changing the live harness or adding real provider, GUI, network, account, or multi-machine checks. Expect live mode to report `SKIP` unless `CODEMESH_E2E_LIVE=1` is set and free prerequisites are available. Use `CODEMESH_E2E_LIVE=1 CODEMESH_E2E_LIVE_TARGETS=github make e2e-live` for the full, partial, and sparse Clone Strategy live smoke.
 
 If a command fails, use the printed failure block first. If a machine-readable audit trail is needed, inspect `tmp/e2e-report.json` or set `CODEMESH_E2E_REPORT` to a temp path before running the target.
 
@@ -249,7 +256,7 @@ make e2e-packaged
 
 Run `make docs-site-test` when docs-site inputs change. Run default `make e2e-live` when changing live, provider, GUI, network, or multi-machine harness behavior; the default expected result is an audited `SKIP` unless live checks are explicitly opted in.
 
-GitHub Actions adds CI-only cross-OS proof. Required PR CI runs `make test`, `make e2e`, and `make e2e-packaged` on Ubuntu and macOS with distinct `CODEMESH_E2E_REPORT` paths for source and packaged modes, then uploads the JSON reports as short-retention artifacts even when a test step fails. Windows required PR CI runs a targeted Go unit smoke, builds `dist/codemesh.exe`, and runs the binary help smoke; Windows e2e remains an explicit tracked skip for issue 92 while POSIX-mode e2e coverage runs on Ubuntu and macOS. Live/network and Peekaboo checks are not part of required PR CI unless a future workflow opts into them explicitly.
+GitHub Actions adds CI-only cross-OS proof. Required PR CI runs `make test`, `make e2e`, and `make e2e-packaged` on Ubuntu and macOS with distinct `CODEMESH_E2E_REPORT` paths for source and packaged modes, then uploads the JSON reports as short-retention artifacts even when a test step fails. Windows required PR CI runs a targeted Go unit smoke, builds `dist/codemesh.exe`, and runs the binary help smoke; Windows e2e remains an explicit tracked skip for issue 92 while POSIX-mode e2e coverage runs on Ubuntu and macOS. Live/network, including the Clone Strategy live smoke, and Peekaboo checks are not part of required PR CI unless a future workflow opts into them explicitly.
 
 ## Adopted Patterns
 
