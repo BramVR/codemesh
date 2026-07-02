@@ -1,0 +1,46 @@
+{
+  "case": "status-warning",
+  "args": [
+    "status",
+    "dirty-source",
+    "--base",
+    "main",
+    "--json"
+  ],
+  "process": {
+    "exit_code": 0,
+    "exit_class": "readiness-warning"
+  },
+  "stdout_json": {
+    "command": "status",
+    "diagnostics": {
+      "blockers": [],
+      "warnings": []
+    },
+    "exit_class": "readiness-warning",
+    "payload": {
+      "project": "dirty-source",
+      "projects": [
+        {
+          "alias": "dirty-source",
+          "base": "main",
+          "diagnostics": {
+            "blockers": [],
+            "warnings": [
+              {
+                "code": "dirty-checkout",
+                "message": "source checkout has uncommitted or untracked changes"
+              }
+            ]
+          },
+          "path": "<FIXTURE_SOURCES>/dirty-source",
+          "path_present": true,
+          "remote": "<FIXTURE_REMOTES>/dirty-source.git",
+          "state": "dirty"
+        }
+      ]
+    }
+  },
+  "stdout_present": true,
+  "stderr_present": false
+}

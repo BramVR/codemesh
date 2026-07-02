@@ -1,0 +1,35 @@
+{
+  "case": "hydrate-missing-project",
+  "args": [
+    "hydrate",
+    "ghost-project",
+    "--json"
+  ],
+  "process": {
+    "exit_code": 1,
+    "exit_class": "readiness-blocked"
+  },
+  "stdout_json": {
+    "command": "hydrate",
+    "diagnostics": {
+      "blockers": [
+        {
+          "code": "unknown-project",
+          "message": "unknown project: ghost-project",
+          "target": "ghost-project"
+        }
+      ],
+      "warnings": []
+    },
+    "exit_class": "readiness-blocked",
+    "payload": {
+      "outcome": "unknown-project",
+      "path": "",
+      "path_present": false,
+      "project": "ghost-project",
+      "remote": ""
+    }
+  },
+  "stdout_present": true,
+  "stderr_present": false
+}

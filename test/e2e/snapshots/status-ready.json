@@ -1,0 +1,41 @@
+{
+  "case": "status-ready",
+  "args": [
+    "status",
+    "clean-repo",
+    "--base",
+    "main",
+    "--json"
+  ],
+  "process": {
+    "exit_code": 0,
+    "exit_class": "success"
+  },
+  "stdout_json": {
+    "command": "status",
+    "diagnostics": {
+      "blockers": [],
+      "warnings": []
+    },
+    "exit_class": "success",
+    "payload": {
+      "project": "clean-repo",
+      "projects": [
+        {
+          "alias": "clean-repo",
+          "base": "main",
+          "diagnostics": {
+            "blockers": [],
+            "warnings": []
+          },
+          "path": "<FIXTURE_SOURCES>/clean-repo",
+          "path_present": true,
+          "remote": "<FIXTURE_REMOTES>/clean-repo.git",
+          "state": "present"
+        }
+      ]
+    }
+  },
+  "stdout_present": true,
+  "stderr_present": false
+}

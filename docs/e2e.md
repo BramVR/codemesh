@@ -95,6 +95,18 @@ The report includes:
 
 Reports may include fake env key names such as `CODEMESH_E2E_REQUIRED_ENV`, but must not include real secret values or fake fixture secret values. The harness checks command output, the JSON report, Agent Prep metadata, and SQLite state store bytes for fake env file/key and fake provider secret markers.
 
+## CLI Contract Snapshots
+
+Machine-readable CLI contracts live in `test/e2e/snapshots/*.json`. The e2e harness compares normalized JSON snapshots for `status`, `tree`, `hydrate`, and `agent prepare`, plus a command-misuse process contract.
+
+Snapshots record the command args, process exit code, stable exit class, and normalized stdout JSON. Normalization replaces isolated temp paths, generated agent run ids, commit hashes, timestamps, and durations before comparison, so human output and local machine paths can change without breaking the JSON contract.
+
+On mismatch, the harness prints a normalized JSON diff plus the original stdout/stderr file paths under the e2e temp directory. To intentionally refresh snapshots after a reviewed contract change, run:
+
+```sh
+CODEMESH_E2E_UPDATE_CONTRACTS=1 make e2e
+```
+
 ## Isolation
 
 Each run creates a temp workspace with:

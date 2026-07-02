@@ -1,0 +1,46 @@
+{
+  "case": "status-invalid-policy",
+  "args": [
+    "status",
+    "contract-invalid-policy",
+    "--base",
+    "main",
+    "--json"
+  ],
+  "process": {
+    "exit_code": 0,
+    "exit_class": "readiness-blocked"
+  },
+  "stdout_json": {
+    "command": "status",
+    "diagnostics": {
+      "blockers": [],
+      "warnings": []
+    },
+    "exit_class": "readiness-blocked",
+    "payload": {
+      "project": "contract-invalid-policy",
+      "projects": [
+        {
+          "alias": "contract-invalid-policy",
+          "base": "main",
+          "diagnostics": {
+            "blockers": [
+              {
+                "code": "invalid-policy",
+                "message": "invalid <FIXTURE_SOURCES>/contract-invalid-policy/.codemesh.yml: agent.env.mode must be \"warn\" or \"block\""
+              }
+            ],
+            "warnings": []
+          },
+          "path": "<FIXTURE_SOURCES>/contract-invalid-policy",
+          "path_present": true,
+          "remote": "<FIXTURE_REMOTES>/contract-invalid-policy.git",
+          "state": "blocked"
+        }
+      ]
+    }
+  },
+  "stdout_present": true,
+  "stderr_present": false
+}
