@@ -87,6 +87,12 @@ Machine rows are local observed state. They are not exported to shared topology 
 
 Scan reports added, updated, unchanged, and skipped candidates. Skips are runtime diagnostics only; unsupported Git candidates and nested repositories are not stored in the Project Registry.
 
+## Workspace Manifest
+
+Workspace Manifest entries are desired shared topology, not observed local state. The current slice is an internal module for small per-project JSON entries that can round-trip project identity, alias, relative desired path, clone hints, and grouping. Export derives desired paths from Project Registry rows relative to a workspace root and omits machine-local paths from the entry shape. Import is a dry comparison against local Project Registry rows that reports add, update, unchanged, or alias-conflict changes needed; it does not mutate SQLite or working trees.
+
+Manifest entries must not include readiness results, dirty/stale state, Agent Runs, machine facts, env values, or secret values. Manifest command names and flags remain planned until they appear in CLI help and the Command Catalog.
+
 ## Readiness
 
 Project readiness is derived when `tree`, `status`, `doctor`, `hydrate`, or Agent Prep reads the Project Registry. It is not stored in `projects`.

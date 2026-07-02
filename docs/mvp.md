@@ -329,7 +329,8 @@ Initial tables:
 ## Planned Later
 
 - multi-machine sync
-- synced manifests or remote project indexes
+- workspace manifest commands for Git-backed desired topology; current code only has the internal entry and dry import-plan slice
+- synced remote project indexes
 - shared object cache or worktree Clone Strategies
 - live secret providers or env file writing
 - live toolchain provider integrations

@@ -83,6 +83,7 @@ Use `codemesh hydrate <project>` after a project is already registered and its d
 
 These directions remain product direction, not runnable commands today:
 
+- workspace manifest export/import commands for Git-backed desired topology
 - multi-machine sync
 - synced manifests or remote project indexes
 - live secret providers or env file writing
@@ -90,3 +91,5 @@ These directions remain product direction, not runnable commands today:
 - generic cloud drive behavior
 
 Research docs may sketch future commands for those areas. Treat them as planned until they appear in current CLI help and this catalog.
+
+The planned Workspace Manifest surface will export and import small per-project desired-topology entries: project identity, alias, relative desired path, clone hints, and grouping. It must not export observed readiness, dirty/stale status, Agent Runs, machine facts, env values, or secret values. Until manifest commands appear in CLI help and this catalog, the manifest remains an internal module and planned command surface, not a runnable user command.
