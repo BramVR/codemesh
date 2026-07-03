@@ -2,16 +2,15 @@
 
 One coherent code workspace across machines and agents.
 
-CodeMesh keeps a developer's project tree, repo inventory, machine-local setup, and safe config materialization in sync without replacing Git.
+CodeMesh keeps local Git project inventory, readiness checks, explicit hydration, and temporary agent workspaces understandable without replacing Git or storing secret values.
 
 ## MVP
 
-- Project index for a canonical workspace tree.
+- Project Registry for a canonical workspace tree.
 - `codemesh status` showing missing, stale, dirty, and misconfigured projects.
-- Lazy repo setup from known Git remotes.
-- Per-project policy for agent base, env, toolchain, and handoff docs.
-- Env readiness plus fake-provider Env Binding without live secret providers.
-- Toolchain readiness reporting without installing or building environments.
+- Explicit repo hydration from known Git remotes.
+- Optional repo-local policy for agent base, env readiness, and handoff docs.
+- Env readiness checks without secret materialization.
 - Agent workspace provisioning with scoped access.
 
 ## Non-goals
@@ -26,6 +25,8 @@ CodeMesh keeps a developer's project tree, repo inventory, machine-local setup, 
 These commands use isolated local state and a local Git remote. They do not touch the user's normal `~/.codemesh`, `~/Projects`, GitHub, or secrets.
 
 ```sh
+make build
+
 demo="$(mktemp -d)"
 export CODEMESH_HOME="$demo/codemesh-home"
 workspace="$demo/workspace"
@@ -40,14 +41,13 @@ git -C "$seed" -c user.name='CodeMesh Demo' -c user.email='demo@example.invalid'
 git clone --bare "$seed" "$remote"
 git clone "$remote" "$workspace/demo-project"
 
-codemesh init "$workspace"
-codemesh add "$workspace/demo-project" --alias demo-project
-codemesh tree
-codemesh status demo-project --base main
-codemesh doctor demo-project --base main
-codemesh agent prepare demo-project --base main --profile codex
-codemesh runs
-codemesh clean --older-than 0d
+./dist/codemesh init "$workspace"
+./dist/codemesh add "$workspace/demo-project" --alias demo-project
+./dist/codemesh tree
+./dist/codemesh status demo-project --base main
+./dist/codemesh agent prepare demo-project --base main --profile codex
+./dist/codemesh runs
+./dist/codemesh clean --older-than 0d
 ```
 
 For the full current-vs-planned surface, see the [Command Catalog](docs/commands.md).
@@ -65,7 +65,7 @@ Use `make docs:list` before docs or behavior changes to find relevant `Read when
 
 ## Status
 
-Scaffold plus local state bootstrap, Project Registry tracer bullets, Readiness status reporting, Doctor preflight, toolchain readiness reporting, explicit missing-project hydration, Agent Prep, run listing, and guarded cleanup. The current command surface is documented in the [Command Catalog](docs/commands.md) and checked against CLI help.
+Local state bootstrap, Project Registry, Readiness status reporting, explicit missing-project hydration, Agent Prep, run listing, and guarded cleanup. The current command surface is documented in the [Command Catalog](docs/commands.md) and checked against CLI help.
 
 ## Docs
 
