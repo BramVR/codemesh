@@ -923,7 +923,8 @@ func (h *harness) caseLivePeekabooDesktopSmoke(cfg liveConfig) {
 		return
 	}
 	if err := screenshotHasVisiblePixels(artifacts.screenshot); err != nil {
-		h.recordLiveDesktopSkipOrFail(cfg, "live peekaboo screenshot visibility", err.Error(), screenshot.Duration, screenshot.ExitCode)
+		h.record(result{Name: "live peekaboo screenshot visibility", Status: "FAIL", Error: err.Error(), Duration: screenshot.Duration, ExitCode: -1})
+		h.live.Desktop.Status = "failed"
 		return
 	}
 	h.record(result{Name: "live peekaboo packaged CLI visible output", Status: "PASS", ExitCode: 0})
