@@ -38,6 +38,7 @@ const (
 	liveTargetProvider      = "provider smoke"
 	liveTargetToolchain     = "toolchain host smoke"
 	liveTargetDesktop       = "desktop peekaboo smoke"
+	liveTargetOwnedHost     = "owned-host smoke"
 	defaultLiveGitHubRemote = "https://github.com/BramVR/codemesh.git"
 )
 
@@ -95,16 +96,17 @@ type reportIsolation struct {
 }
 
 type reportLive struct {
-	OptIn       bool                 `json:"opt_in"`
-	Strict      bool                 `json:"strict"`
-	Targets     []string             `json:"targets"`
-	SkipReasons []string             `json:"skip_reasons,omitempty"`
-	LockPath    string               `json:"lock_path,omitempty"`
-	LockLabel   string               `json:"lock_label,omitempty"`
-	GitHub      *reportLiveGitHub    `json:"github,omitempty"`
-	Provider    *reportLiveProvider  `json:"provider,omitempty"`
-	Toolchain   *reportLiveToolchain `json:"toolchain,omitempty"`
-	Desktop     *reportLiveDesktop   `json:"desktop,omitempty"`
+	OptIn       bool                  `json:"opt_in"`
+	Strict      bool                  `json:"strict"`
+	Targets     []string              `json:"targets"`
+	SkipReasons []string              `json:"skip_reasons,omitempty"`
+	LockPath    string                `json:"lock_path,omitempty"`
+	LockLabel   string                `json:"lock_label,omitempty"`
+	GitHub      *reportLiveGitHub     `json:"github,omitempty"`
+	Provider    *reportLiveProvider   `json:"provider,omitempty"`
+	Toolchain   *reportLiveToolchain  `json:"toolchain,omitempty"`
+	Desktop     *reportLiveDesktop    `json:"desktop,omitempty"`
+	OwnedHosts  *reportLiveOwnedHosts `json:"owned_hosts,omitempty"`
 }
 
 type reportTwoMachine struct {
@@ -186,6 +188,70 @@ type reportLiveDesktop struct {
 	Permissions    *reportPeekabooPermissions `json:"permissions,omitempty"`
 }
 
+type reportLiveOwnedHosts struct {
+	Status       string                `json:"status"`
+	Inventory    []reportLiveOwnedHost `json:"inventory,omitempty"`
+	SkipReason   string                `json:"skip_reason,omitempty"`
+	BundlePath   string                `json:"bundle_path,omitempty"`
+	SecretSafety string                `json:"secret_safety,omitempty"`
+}
+
+type reportLiveOwnedHost struct {
+	Name                   string                      `json:"name"`
+	Kind                   string                      `json:"kind"`
+	TargetOS               string                      `json:"target_os"`
+	Address                string                      `json:"address,omitempty"`
+	Status                 string                      `json:"status"`
+	SkipReason             string                      `json:"skip_reason,omitempty"`
+	Facts                  *reportOwnedHostFacts       `json:"facts,omitempty"`
+	Doctor                 []reportOwnedHostDoctor     `json:"doctor,omitempty"`
+	Lock                   *reportOwnedHostLock        `json:"lock,omitempty"`
+	CommandDurations       map[string]string           `json:"command_durations,omitempty"`
+	Artifacts              []reportOwnedHostArtifact   `json:"artifacts,omitempty"`
+	CodeMeshE2EReportPaths []string                    `json:"codemesh_e2e_report_paths,omitempty"`
+	SelectedRunIDs         []string                    `json:"selected_run_ids,omitempty"`
+	MachineIDs             []string                    `json:"machine_ids,omitempty"`
+	ManifestLocation       string                      `json:"manifest_location,omitempty"`
+	HydratedProjectID      string                      `json:"hydrated_project_identity,omitempty"`
+	CleanupStatus          string                      `json:"cleanup_status,omitempty"`
+	Visual                 *reportOwnedHostVisualProof `json:"visual,omitempty"`
+	SecretSafety           string                      `json:"secret_safety,omitempty"`
+}
+
+type reportOwnedHostFacts struct {
+	OS        string `json:"os,omitempty"`
+	Arch      string `json:"arch,omitempty"`
+	GoVersion string `json:"go_version,omitempty"`
+	Shell     string `json:"shell,omitempty"`
+}
+
+type reportOwnedHostDoctor struct {
+	Name     string `json:"name"`
+	Status   string `json:"status"`
+	Detail   string `json:"detail,omitempty"`
+	Duration string `json:"duration,omitempty"`
+}
+
+type reportOwnedHostLock struct {
+	Path      string `json:"path"`
+	Label     string `json:"label"`
+	StartedAt string `json:"started_at"`
+}
+
+type reportOwnedHostArtifact struct {
+	Command    string `json:"command"`
+	StdoutPath string `json:"stdout_path,omitempty"`
+	StderrPath string `json:"stderr_path,omitempty"`
+}
+
+type reportOwnedHostVisualProof struct {
+	Status           string `json:"status"`
+	SkipReason       string `json:"skip_reason,omitempty"`
+	ScreenshotPath   string `json:"screenshot_path,omitempty"`
+	VideoPath        string `json:"video_path,omitempty"`
+	ContactSheetPath string `json:"contact_sheet_path,omitempty"`
+}
+
 type reportPeekabooPermissions struct {
 	Source          string `json:"source,omitempty"`
 	ScreenRecording bool   `json:"screen_recording"`
@@ -243,6 +309,13 @@ type liveProviderSmokeConfig struct {
 	Requirement string
 	SecretRef   string
 	Scope       string
+}
+
+type ownedHostTarget struct {
+	Name     string
+	Kind     string
+	TargetOS string
+	Address  string
 }
 
 type peekabooDesktopArtifacts struct {
@@ -483,6 +556,9 @@ func (h *harness) runLive() int {
 	if liveTargetEnabled(cfg, liveTargetDesktop) {
 		h.caseLivePeekabooDesktopSmoke(cfg)
 	}
+	if liveTargetEnabled(cfg, liveTargetOwnedHost) {
+		h.caseLiveOwnedHostSmoke(cfg)
+	}
 	if h.live.GitHub != nil && h.live.GitHub.SecretSafety == "" {
 		h.live.GitHub.SecretSafety = "pending"
 	}
@@ -490,6 +566,612 @@ func (h *harness) runLive() int {
 		h.record(result{Name: "live e2e lock release", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 	}
 	return h.finishLive()
+}
+
+func (h *harness) caseLiveOwnedHostSmoke(cfg liveConfig) {
+	if h.live == nil {
+		h.live = &reportLive{}
+	}
+	h.live.OwnedHosts = &reportLiveOwnedHosts{Status: "running", SecretSafety: "pending"}
+	inventory, err := ownedHostInventoryFromEnv(os.LookupEnv)
+	if err != nil {
+		h.recordLiveOwnedHostSkipOrFail(cfg, "owned-host inventory config", err.Error())
+		return
+	}
+	if len(inventory) == 0 {
+		h.recordLiveOwnedHostSkipOrFail(cfg, "owned-host inventory config", "CODEMESH_E2E_OWNED_HOSTS must name owned hosts or point to non-secret inventory config")
+		return
+	}
+	bundlePath, err := h.prepareOwnedHostEvidenceBundle()
+	if err != nil {
+		h.record(result{Name: "owned-host evidence bundle setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		h.live.OwnedHosts.Status = "failed"
+		h.live.OwnedHosts.SecretSafety = "not_run"
+		return
+	}
+	h.live.OwnedHosts.BundlePath = h.repoArtifactPath(bundlePath)
+	passCount := 0
+	failCount := 0
+	for _, host := range inventory {
+		h.live.OwnedHosts.Inventory = append(h.live.OwnedHosts.Inventory, reportLiveOwnedHost{
+			Name:             host.Name,
+			Kind:             host.Kind,
+			TargetOS:         host.TargetOS,
+			Address:          host.Address,
+			Status:           "running",
+			CommandDurations: map[string]string{},
+			Visual: &reportOwnedHostVisualProof{
+				Status:     "skipped",
+				SkipReason: "visual proof requires a configured free local desktop capture path",
+			},
+			SecretSafety: "pending",
+		})
+		index := len(h.live.OwnedHosts.Inventory) - 1
+		hostReport := &h.live.OwnedHosts.Inventory[index]
+		h.runOwnedHostTarget(cfg, host, bundlePath, hostReport)
+		switch hostReport.Status {
+		case "pass":
+			passCount++
+		case "failed":
+			failCount++
+		}
+	}
+	if err := h.scanOwnedHostEvidenceBundle(bundlePath); err != nil {
+		h.record(result{Name: "owned-host secret safety evidence bundle", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		h.live.OwnedHosts.Status = "failed"
+		h.live.OwnedHosts.SecretSafety = "failed"
+		return
+	}
+	h.record(result{Name: "owned-host secret safety evidence bundle", Status: "PASS", ExitCode: 0})
+	h.live.OwnedHosts.SecretSafety = "pass"
+	switch {
+	case failCount > 0:
+		h.live.OwnedHosts.Status = "failed"
+	case passCount > 0:
+		h.live.OwnedHosts.Status = "pass"
+	default:
+		h.live.OwnedHosts.Status = "skipped"
+	}
+}
+
+func (h *harness) recordLiveOwnedHostSkipOrFail(cfg liveConfig, name, reason string) {
+	status := "SKIP"
+	reportStatus := "skipped"
+	if cfg.Strict {
+		status = "FAIL"
+		reportStatus = "failed"
+	}
+	if h.live == nil {
+		h.live = &reportLive{}
+	}
+	if h.live.OwnedHosts == nil {
+		h.live.OwnedHosts = &reportLiveOwnedHosts{}
+	}
+	h.live.OwnedHosts.Status = reportStatus
+	h.live.OwnedHosts.SkipReason = reason
+	if h.live.OwnedHosts.SecretSafety == "" || h.live.OwnedHosts.SecretSafety == "pending" {
+		h.live.OwnedHosts.SecretSafety = "not_run"
+	}
+	h.live.SkipReasons = append(h.live.SkipReasons, reason)
+	h.record(result{Name: name, Status: status, Error: reason, Duration: formatDuration(0), ExitCode: -1})
+}
+
+func (h *harness) prepareOwnedHostEvidenceBundle() (string, error) {
+	dir := filepath.Join(h.root, "tmp", "e2e-owned-host")
+	if err := os.RemoveAll(dir); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func (h *harness) runOwnedHostTarget(cfg liveConfig, target ownedHostTarget, bundlePath string, hostReport *reportLiveOwnedHost) bool {
+	lock, err := acquireLiveLockForHost(defaultLiveLockDir(), target.Name, "codemesh owned-host "+target.Name, time.Now().UTC(), os.Getpid(), defaultLiveLockStale)
+	if err != nil {
+		h.recordOwnedHostSkipOrFail(cfg, hostReport, "owned-host "+target.Name+" lock", err.Error())
+		return !cfg.Strict
+	}
+	hostReport.Lock = &reportOwnedHostLock{
+		Path:      lock.path,
+		Label:     "codemesh owned-host " + target.Name,
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	defer func() {
+		if err := lock.release(); err != nil {
+			h.record(result{Name: "owned-host " + target.Name + " lock release", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+			hostReport.Status = "failed"
+		}
+	}()
+	switch target.Kind {
+	case "local":
+		return h.runOwnedHostLocalTarget(cfg, target, bundlePath, hostReport)
+	case "ssh":
+		return h.runOwnedHostSSHDoctor(cfg, target, bundlePath, hostReport)
+	default:
+		h.recordOwnedHostSkipOrFail(cfg, hostReport, "owned-host "+target.Name+" kind", "unsupported owned-host kind "+target.Kind)
+		return !cfg.Strict
+	}
+}
+
+func (h *harness) runOwnedHostLocalTarget(cfg liveConfig, target ownedHostTarget, bundlePath string, hostReport *reportLiveOwnedHost) bool {
+	hostReport.Facts = &reportOwnedHostFacts{OS: runtime.GOOS, Arch: runtime.GOARCH, GoVersion: runtime.Version(), Shell: "sh"}
+	if runtime.GOOS != target.TargetOS {
+		h.recordOwnedHostSkipOrFail(cfg, hostReport, "owned-host "+target.Name+" OS prerequisite", "local host is "+runtime.GOOS+", target requires "+target.TargetOS)
+		return !cfg.Strict
+	}
+	if !h.ownedHostDoctorLocal(cfg, target, hostReport) {
+		return !cfg.Strict
+	}
+	if !h.runOwnedHostLocalWorkspaceFlow(target, bundlePath, hostReport) {
+		hostReport.Status = "failed"
+		hostReport.SecretSafety = "failed"
+		return false
+	}
+	hostReport.Status = "pass"
+	hostReport.SecretSafety = "pass"
+	return true
+}
+
+func (h *harness) ownedHostDoctorLocal(cfg liveConfig, target ownedHostTarget, hostReport *reportLiveOwnedHost) bool {
+	checks := []struct {
+		name string
+		fn   func() error
+	}{
+		{"os-arch", func() error { return nil }},
+		{"shell", func() error {
+			_, err := exec.LookPath("sh")
+			return err
+		}},
+		{"git", func() error {
+			_, err := exec.LookPath("git")
+			return err
+		}},
+		{"go", func() error {
+			_, err := exec.LookPath("go")
+			return err
+		}},
+		{"writable-temp-root", func() error {
+			return os.MkdirAll(filepath.Join(h.tmp, "owned-host", target.Name), 0o755)
+		}},
+		{"packaged-binary", func() error {
+			return ensureExecutable(h.bin)
+		}},
+	}
+	for _, check := range checks {
+		start := time.Now()
+		err := check.fn()
+		outcome := reportOwnedHostDoctor{Name: check.name, Status: "pass", Duration: formatDuration(time.Since(start))}
+		if err != nil {
+			outcome.Status = "failed"
+			outcome.Detail = err.Error()
+			hostReport.Doctor = append(hostReport.Doctor, outcome)
+			h.recordOwnedHostSkipOrFail(cfg, hostReport, "owned-host "+target.Name+" doctor "+check.name, err.Error())
+			return false
+		}
+		hostReport.Doctor = append(hostReport.Doctor, outcome)
+	}
+	h.record(result{Name: "owned-host " + target.Name + " doctor", Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func (h *harness) runOwnedHostLocalWorkspaceFlow(target ownedHostTarget, bundlePath string, hostReport *reportLiveOwnedHost) bool {
+	caseRoot := filepath.Join(h.tmp, "owned-host", target.Name, "work")
+	fixtures := offlineGitFixtures{
+		Root:    filepath.Join(caseRoot, "git-fixtures"),
+		Remotes: filepath.Join(caseRoot, "git-fixtures", "remotes"),
+		Sources: filepath.Join(caseRoot, "git-fixtures", "sources"),
+	}
+	if err := os.MkdirAll(fixtures.Remotes, 0o755); err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " fixture setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	targetProject, err := h.createRemoteOnlyFixture(fixtures, "owned-target", nil)
+	if err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " target remote setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	unrelatedProject, err := h.createRemoteOnlyFixture(fixtures, "owned-unrelated", nil)
+	if err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " unrelated remote setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	remoteBase, stopGitDaemon, err := h.startLocalGitDaemon(fixtures.Remotes, filepath.Base(targetProject.Remote))
+	if err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " local git daemon", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	defer stopGitDaemon()
+	targetRemote := remoteBase + "/" + filepath.Base(targetProject.Remote)
+	unrelatedRemote := remoteBase + "/" + filepath.Base(unrelatedProject.Remote)
+	machineA, err := h.newTwoMachineNode(caseRoot, "machine-a")
+	if err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " machine A setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	machineB, err := h.newTwoMachineNode(caseRoot, "machine-b")
+	if err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " machine B setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	targetSourceA := filepath.Join(machineA.WorkspaceRoot, "projects", "owned-target")
+	unrelatedSourceA := filepath.Join(machineA.WorkspaceRoot, "projects", "owned-unrelated")
+	targetPathB := filepath.Join(machineB.WorkspaceRoot, "projects", "owned-target")
+	unrelatedPathB := filepath.Join(machineB.WorkspaceRoot, "projects", "owned-unrelated")
+	if err := os.MkdirAll(filepath.Dir(targetSourceA), 0o755); err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " source parent setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+
+	if smoke := h.ownedHostCommand(target, hostReport, bundlePath, "packaged help smoke", "packaged_help", twoMachineNode{WorkspaceRoot: caseRoot, CodeMeshHome: filepath.Join(caseRoot, "smoke-home"), Home: filepath.Join(caseRoot, "smoke-home")}, h.bin, "--help"); smoke.Status != "PASS" || !strings.Contains(smoke.Stdout, "CodeMesh") {
+		return false
+	}
+	if clone := h.ownedHostCommand(target, hostReport, bundlePath, "machine A clone selected source", "clone_selected", machineA, "git", "clone", targetRemote, targetSourceA); clone.Status != "PASS" {
+		return false
+	}
+	if clone := h.ownedHostCommand(target, hostReport, bundlePath, "machine A clone unrelated source", "clone_unrelated", machineA, "git", "clone", unrelatedRemote, unrelatedSourceA); clone.Status != "PASS" {
+		return false
+	}
+	if init := h.ownedHostCommand(target, hostReport, bundlePath, "machine A init", "machine_a_init", machineA, h.bin, "init", machineA.WorkspaceRoot); init.Status != "PASS" {
+		return false
+	}
+	registerA := h.ownedHostCommand(target, hostReport, bundlePath, "machine A register", "machine_a_register", machineA, h.bin, "machine", "register", machineA.WorkspaceRoot, "--json")
+	machineAID, ok := h.expectMachineRegisterJSON("owned-host "+target.Name+" machine A id", registerA, machineA.WorkspaceRoot)
+	if !ok {
+		return false
+	}
+	if add := h.ownedHostCommand(target, hostReport, bundlePath, "machine A add selected project", "machine_a_add_selected", machineA, h.bin, "add", targetSourceA, "--alias", "owned-target"); add.Status != "PASS" {
+		return false
+	}
+	if add := h.ownedHostCommand(target, hostReport, bundlePath, "machine A add unrelated project", "machine_a_add_unrelated", machineA, h.bin, "add", unrelatedSourceA, "--alias", "owned-unrelated"); add.Status != "PASS" {
+		return false
+	}
+	rowsA, err := readProjectRowsFromStore(filepath.Join(machineA.CodeMeshHome, "codemesh.db"))
+	if err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " machine A rows", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	targetRowA, ok := projectRowByAlias(rowsA, "owned-target")
+	if !ok {
+		h.record(result{Name: "owned-host " + target.Name + " machine A rows", Status: "FAIL", Error: "owned-target row missing", ExitCode: -1})
+		return false
+	}
+	unrelatedRowA, ok := projectRowByAlias(rowsA, "owned-unrelated")
+	if !ok {
+		h.record(result{Name: "owned-host " + target.Name + " machine A rows", Status: "FAIL", Error: "owned-unrelated row missing", ExitCode: -1})
+		return false
+	}
+	if targetRowA.CloneURL != targetRemote || unrelatedRowA.CloneURL != unrelatedRemote {
+		h.record(result{Name: "owned-host " + target.Name + " machine A rows", Status: "FAIL", Error: fmt.Sprintf("clone URLs = %q %q", targetRowA.CloneURL, unrelatedRowA.CloneURL), ExitCode: -1})
+		return false
+	}
+	manifest := filepath.Join(caseRoot, "manifest")
+	targetDesiredPath := "projects/owned-target"
+	unrelatedDesiredPath := "projects/owned-unrelated"
+	targetIdentity := targetRemote
+	unrelatedIdentity := unrelatedRemote
+	normalizedTargetIdentity := strings.TrimSuffix(targetIdentity, ".git")
+	if err := writeE2EManifestEntryWithCloneURL(manifest, "owned-target.json", targetIdentity, "owned-target", targetDesiredPath, targetRemote); err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " selected manifest", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if err := writeE2EManifestEntryWithCloneURL(manifest, "owned-unrelated.json", unrelatedIdentity, "owned-unrelated", unrelatedDesiredPath, unrelatedRemote); err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " unrelated manifest", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	manifestBundle := filepath.Join(bundlePath, slug(target.Name), "manifest")
+	if err := copyOwnedHostDir(manifest, manifestBundle); err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " manifest bundle", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	hostReport.ManifestLocation = h.repoArtifactPath(manifestBundle)
+	hostReport.HydratedProjectID = normalizedTargetIdentity
+
+	if init := h.ownedHostCommand(target, hostReport, bundlePath, "machine B init", "machine_b_init", machineB, h.bin, "init", machineB.WorkspaceRoot); init.Status != "PASS" {
+		return false
+	}
+	registerB := h.ownedHostCommand(target, hostReport, bundlePath, "machine B register", "machine_b_register", machineB, h.bin, "machine", "register", machineB.WorkspaceRoot, "--json")
+	machineBID, ok := h.expectMachineRegisterJSON("owned-host "+target.Name+" machine B id", registerB, machineB.WorkspaceRoot)
+	if !ok {
+		return false
+	}
+	hostReport.MachineIDs = []string{machineAID, machineBID}
+	if machineAID == machineBID {
+		h.record(result{Name: "owned-host " + target.Name + " distinct machine identities", Status: "FAIL", Error: "machine IDs matched across isolated homes", ExitCode: -1})
+		return false
+	}
+	if plan := h.ownedHostCommand(target, hostReport, bundlePath, "bootstrap dry-run plan", "bootstrap_dry_run", machineB, h.bin, "bootstrap", manifest); plan.Status != "PASS" || !resultContainsAll(plan, "bootstrap plan", "apply: false", "missing: owned-target "+targetPathB, "missing: owned-unrelated "+unrelatedPathB) {
+		return false
+	}
+	if apply := h.ownedHostCommand(target, hostReport, bundlePath, "bootstrap apply topology", "bootstrap_apply", machineB, h.bin, "bootstrap", manifest, "--apply"); apply.Status != "PASS" || !resultContainsAll(apply, "apply: true", "added: owned-target "+targetPathB, "added: owned-unrelated "+unrelatedPathB) {
+		return false
+	}
+	if !h.expectPathMissingResult("owned-host "+target.Name+" bootstrap no default selected checkout", targetPathB) || !h.expectPathMissingResult("owned-host "+target.Name+" bootstrap no default unrelated checkout", unrelatedPathB) {
+		return false
+	}
+	hydrate := h.ownedHostCommand(target, hostReport, bundlePath, "hydrate selected project", "hydrate", machineB, h.bin, "hydrate", "owned-target", "--json")
+	if hydrate.Status != "PASS" || !h.expectTwoMachineHydrateJSON("owned-host "+target.Name+" hydrate metadata", hydrate, "owned-target", normalizedTargetIdentity, targetPathB) {
+		return false
+	}
+	if !h.expectGitCheckoutAtBase("owned-host "+target.Name+" hydrated checkout branch", targetPathB, "main") || !h.expectPathMissingResult("owned-host "+target.Name+" selected hydrate no unrelated checkout", unrelatedPathB) {
+		return false
+	}
+	prepare := h.ownedHostCommand(target, hostReport, bundlePath, "agent prepare selected project", "agent_prepare", machineB, h.bin, "agent", "prepare", "owned-target", "--base", "main", "--profile", "codex", "--json")
+	if prepare.Status != "PASS" {
+		return false
+	}
+	readyPath, err := agentPrepareReadyPath(prepare.Stdout)
+	if err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " ready path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	contractBundle := filepath.Join(bundlePath, slug(target.Name), "codemesh-run.json")
+	if err := copyOwnedHostFile(filepath.Join(readyPath, "codemesh-run.json"), contractBundle); err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " run contract bundle", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	hostReport.Artifacts = append(hostReport.Artifacts, reportOwnedHostArtifact{
+		Command:    "agent_run_contract",
+		StdoutPath: h.repoArtifactPath(contractBundle),
+	})
+	runs := h.ownedHostCommand(target, hostReport, bundlePath, "runs reads prepared agent run", "runs_prepared", machineB, h.bin, "runs")
+	if runs.Status != "PASS" || !resultContainsAll(runs, "project=owned-target", "base=main", "state=prepared", "workspace="+readyPath) {
+		return false
+	}
+	runID := firstRunID(runs.Stdout)
+	if runID == "" {
+		h.record(result{Name: "owned-host " + target.Name + " run id", Status: "FAIL", Error: "runs output did not include a run id", ExitCode: -1})
+		return false
+	}
+	hostReport.SelectedRunIDs = []string{runID}
+	agentRun := h.ownedHostCommand(target, hostReport, bundlePath, "agent run harmless command", "agent_run", machineB, h.bin, "agent", "run", runID, "--label", "workspace root", "--", "git", "rev-parse", "--show-toplevel")
+	if agentRun.Status != "PASS" || !resultContainsAll(agentRun, "agent command complete", "run: "+runID, "exit_code: 0", "stdout_path: ", "stderr_path: ") {
+		return false
+	}
+	if !h.expectCommandStdoutEqualsCanonicalPath("owned-host "+target.Name+" agent command stdout", valueAfterPrefix(agentRun.Stdout, "stdout_path: "), readyPath) {
+		return false
+	}
+	if !h.expectAgentRunCommandContract("owned-host "+target.Name+" agent command metadata", machineB.CodeMeshHome, readyPath, "workspace root") {
+		return false
+	}
+	runsExecuted := h.ownedHostCommand(target, hostReport, bundlePath, "runs reads executed agent run", "runs_executed", machineB, h.bin, "runs")
+	if runsExecuted.Status != "PASS" || !resultContainsAll(runsExecuted, "project=owned-target", "state=executed", "workspace="+readyPath) {
+		return false
+	}
+	clean := h.ownedHostCommand(target, hostReport, bundlePath, "clean prepared agent run", "clean", machineB, h.bin, "clean", "--older-than", "0d")
+	if clean.Status != "PASS" || !resultContainsAll(clean, "deleted: 1", "kept: 0") {
+		return false
+	}
+	hostReport.CleanupStatus = "managed agent run cleaned; harness temp cleanup scheduled"
+	driftManifest := filepath.Join(caseRoot, "manifest-drift")
+	movedPathB := filepath.Join(machineB.WorkspaceRoot, "projects", "owned-target-moved")
+	if err := writeE2EManifestEntryWithCloneURL(driftManifest, "owned-target.json", targetIdentity, "owned-target", "projects/owned-target-moved", targetRemote); err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " drift manifest selected", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if err := writeE2EManifestEntryWithCloneURL(driftManifest, "owned-unrelated.json", unrelatedIdentity, "owned-unrelated", unrelatedDesiredPath, unrelatedRemote); err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " drift manifest unrelated", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	drift := h.ownedHostCommand(target, hostReport, bundlePath, "reconcile dry-run moved drift", "reconcile_dry_run", machineB, h.bin, "bootstrap", driftManifest, "--json")
+	if drift.Status != "PASS" || !resultContainsAll(drift, `"command":"bootstrap"`, `"apply":false`, `"kind":"moved"`, `"alias":"owned-target"`, movedPathB) {
+		return false
+	}
+	if err := scanPathForFakeSecrets(caseRoot, fakeEnvFixtureSecrets()); err != nil {
+		h.record(result{Name: "owned-host " + target.Name + " local state secret safety", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	hostReport.CodeMeshE2EReportPaths = append(hostReport.CodeMeshE2EReportPaths, h.repoArtifactPath(h.reportPath))
+	h.record(result{Name: "owned-host " + target.Name + " workspace flow", Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func (h *harness) ownedHostCommand(target ownedHostTarget, hostReport *reportLiveOwnedHost, bundlePath, label, key string, machine twoMachineNode, name string, args ...string) result {
+	if err := os.MkdirAll(machine.CodeMeshHome, 0o755); err != nil {
+		return h.recordOwnedHostCommandSetupFailure(target, label, err)
+	}
+	if err := os.MkdirAll(machine.Home, 0o755); err != nil {
+		return h.recordOwnedHostCommandSetupFailure(target, label, err)
+	}
+	gitConfig := filepath.Join(machine.Home, ".gitconfig")
+	if _, err := os.Stat(gitConfig); errors.Is(err, os.ErrNotExist) {
+		if err := os.WriteFile(gitConfig, nil, 0o644); err != nil {
+			return h.recordOwnedHostCommandSetupFailure(target, label, err)
+		}
+	}
+	r := h.executeCommand(commandSpec{
+		Label:   "owned-host " + target.Name + " " + label,
+		Dir:     machine.WorkspaceRoot,
+		Name:    name,
+		Args:    args,
+		Timeout: longCommandTimeout,
+		Env:     machine.env(),
+	})
+	if hostReport.CommandDurations == nil {
+		hostReport.CommandDurations = map[string]string{}
+	}
+	hostReport.CommandDurations[key] = r.Duration
+	stdoutPath, stderrPath, err := h.writeOwnedHostCommandArtifacts(bundlePath, target.Name, key, r.Stdout, r.Stderr)
+	if err != nil {
+		artifactFailure := result{Name: "owned-host " + target.Name + " " + label + " artifacts", Status: "FAIL", Error: err.Error(), ExitCode: -1}
+		h.record(artifactFailure)
+		return artifactFailure
+	}
+	hostReport.Artifacts = append(hostReport.Artifacts, reportOwnedHostArtifact{
+		Command:    key,
+		StdoutPath: h.repoArtifactPath(stdoutPath),
+		StderrPath: h.repoArtifactPath(stderrPath),
+	})
+	recorded := r
+	recorded.Stdout = ""
+	recorded.Stderr = ""
+	h.record(recorded)
+	return r
+}
+
+func (h *harness) recordOwnedHostCommandSetupFailure(target ownedHostTarget, label string, err error) result {
+	r := result{Name: "owned-host " + target.Name + " " + label + " setup", Status: "FAIL", Error: err.Error(), ExitCode: -1}
+	h.record(r)
+	return r
+}
+
+func (h *harness) writeOwnedHostCommandArtifacts(bundlePath, hostName, key, stdout, stderr string) (string, string, error) {
+	dir := filepath.Join(bundlePath, slug(hostName))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", err
+	}
+	stdoutPath := filepath.Join(dir, slug(key)+".stdout.txt")
+	stderrPath := filepath.Join(dir, slug(key)+".stderr.txt")
+	redactions := h.redactionMarkers()
+	stdout, _ = redactString(stdout, 0, redactions...)
+	stderr, _ = redactString(stderr, 0, redactions...)
+	if err := os.WriteFile(stdoutPath, []byte(stdout), 0o644); err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(stderrPath, []byte(stderr), 0o644); err != nil {
+		return "", "", err
+	}
+	return stdoutPath, stderrPath, nil
+}
+
+func (h *harness) runOwnedHostSSHDoctor(cfg liveConfig, target ownedHostTarget, _ string, hostReport *reportLiveOwnedHost) bool {
+	if _, err := exec.LookPath("ssh"); err != nil {
+		h.recordOwnedHostSkipOrFail(cfg, hostReport, "owned-host "+target.Name+" ssh prerequisite", "ssh executable not found")
+		return !cfg.Strict
+	}
+	args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=5", target.Address}
+	if target.TargetOS == "windows" {
+		args = append(args, "powershell", "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()")
+	} else {
+		args = append(args, "sh", "-lc", "uname -s && uname -m && command -v git && command -v go")
+	}
+	r := h.executeCommand(commandSpec{
+		Label:      "owned-host " + target.Name + " ssh doctor",
+		Name:       "ssh",
+		Args:       args,
+		Timeout:    15 * time.Second,
+		UseHostEnv: true,
+	})
+	hostReport.CommandDurations = map[string]string{"ssh_doctor": r.Duration}
+	if r.Status != "PASS" {
+		h.recordOwnedHostSkipOrFail(cfg, hostReport, r.Name, strings.TrimSpace(resultError(r).Error()))
+		return !cfg.Strict
+	}
+	hostReport.Doctor = append(hostReport.Doctor, reportOwnedHostDoctor{Name: "ssh-reachability", Status: "pass", Detail: strings.TrimSpace(r.Stdout), Duration: r.Duration})
+	hostReport.Status = "skipped"
+	hostReport.SkipReason = "remote SSH owned-host full workspace flow is reserved for a follow-up slice after reachable host script validation"
+	hostReport.SecretSafety = "not_run"
+	h.skip("owned-host "+target.Name+" remote workspace flow", hostReport.SkipReason)
+	return true
+}
+
+func (h *harness) recordOwnedHostSkipOrFail(cfg liveConfig, hostReport *reportLiveOwnedHost, name, reason string) {
+	status := "SKIP"
+	reportStatus := "skipped"
+	if cfg.Strict {
+		status = "FAIL"
+		reportStatus = "failed"
+	}
+	hostReport.Status = reportStatus
+	hostReport.SkipReason = reason
+	if hostReport.SecretSafety == "" || hostReport.SecretSafety == "pending" {
+		hostReport.SecretSafety = "not_run"
+	}
+	if h.live != nil {
+		h.live.SkipReasons = append(h.live.SkipReasons, reason)
+	}
+	h.record(result{Name: name, Status: status, Error: reason, Duration: formatDuration(0), ExitCode: -1})
+}
+
+func (h *harness) scanOwnedHostEvidenceBundle(bundlePath string) error {
+	return scanPathForFakeSecrets(bundlePath, fakeEnvFixtureSecrets())
+}
+
+func scanPathForFakeSecrets(root string, secrets []string) error {
+	var leaks []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if containsAnySecret(string(data), secrets) {
+			leaks = append(leaks, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(leaks) != 0 {
+		return errors.New("fake secret marker appeared under " + root + ": " + strings.Join(leaks, ", "))
+	}
+	return nil
+}
+
+func copyOwnedHostDir(src, dst string) error {
+	if err := os.RemoveAll(dst); err != nil {
+		return err
+	}
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		return copyOwnedHostFile(path, target)
+	})
+}
+
+func copyOwnedHostFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o644)
+}
+
+func ownedHostInventoryFromEnv(lookup func(string) (string, bool)) ([]ownedHostTarget, error) {
+	value, _ := lookup("CODEMESH_E2E_OWNED_HOSTS")
+	value = strings.TrimSpace(value)
+	var hosts []ownedHostTarget
+	if value != "" {
+		for _, raw := range strings.Split(value, ",") {
+			label := strings.ToLower(strings.TrimSpace(raw))
+			if label == "" {
+				continue
+			}
+			switch label {
+			case "local", "local-macos", "macos":
+				hosts = append(hosts, ownedHostTarget{Name: "local-macos", Kind: "local", TargetOS: "darwin"})
+			case "hermes-win", "windows":
+				hosts = append(hosts, ownedHostTarget{Name: "hermes-win", Kind: "ssh", TargetOS: "windows", Address: "hermes-win"})
+			case "hermes-vm", "linux":
+				hosts = append(hosts, ownedHostTarget{Name: "hermes-vm", Kind: "ssh", TargetOS: "linux", Address: "hermes-vm"})
+			default:
+				return nil, fmt.Errorf("unknown owned-host target %q", raw)
+			}
+		}
+	}
+	if extra, ok := lookup("CODEMESH_E2E_EXTRA_LINUX_HOST"); ok {
+		extra = strings.TrimSpace(extra)
+		if extra != "" {
+			hosts = append(hosts, ownedHostTarget{Name: "extra-linux", Kind: "ssh", TargetOS: "linux", Address: extra})
+		}
+	}
+	return hosts, nil
 }
 
 func (h *harness) prepareBinary() bool {
@@ -1780,7 +2462,36 @@ func (h *harness) finishLive() int {
 			return 1
 		}
 	}
+	if h.liveReportFailed() {
+		return 1
+	}
 	return 0
+}
+
+func (h *harness) liveReportFailed() bool {
+	if h.live == nil {
+		return false
+	}
+	if h.live.Provider != nil && h.live.Provider.Status == "failed" {
+		return true
+	}
+	if h.live.Toolchain != nil && h.live.Toolchain.Status == "failed" {
+		return true
+	}
+	if h.live.Desktop != nil && h.live.Desktop.Status == "failed" {
+		return true
+	}
+	if h.live.OwnedHosts != nil {
+		if h.live.OwnedHosts.Status == "failed" {
+			return true
+		}
+		for _, host := range h.live.OwnedHosts.Inventory {
+			if host.Status == "failed" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *harness) caseProjectRegistryScanWorkflow() {
@@ -6306,6 +7017,8 @@ func liveTargetMatches(selected, target string) bool {
 		return selected == "toolchain" || selected == "host toolchain" || selected == "toolchain host"
 	case liveTargetDesktop:
 		return selected == "desktop" || selected == "peekaboo" || selected == "desktop peekaboo" || selected == "peekaboo desktop"
+	case liveTargetOwnedHost:
+		return selected == "owned-host" || selected == "owned host" || selected == "owned-hosts" || selected == "owned hosts"
 	default:
 		return false
 	}
@@ -6531,6 +7244,42 @@ func acquireLiveLock(dir, label string, now time.Time, pid int, staleAfter time.
 		if errors.Is(err, os.ErrExist) {
 			return nil, fmt.Errorf("%w: %s", errLiveLockHeld, path)
 		}
+		return nil, err
+	}
+	return &liveLock{path: path, token: metadata.Token}, nil
+}
+
+func acquireLiveLockForHost(dir, hostName, label string, now time.Time, pid int, staleAfter time.Duration) (*liveLock, error) {
+	if strings.TrimSpace(hostName) == "" {
+		return nil, errors.New("owned-host lock host name is required")
+	}
+	if strings.TrimSpace(label) == "" {
+		return nil, errors.New("live lock label is required")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, "host-"+slug(hostName)+".lock")
+	metadata := liveLockMetadata{
+		PID:       pid,
+		Host:      hostName,
+		Label:     label,
+		StartedAt: now.UTC().Format(time.RFC3339),
+		Token:     liveLockToken(pid, now),
+	}
+	if err := removeStaleLiveLock(path, now, staleAfter); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("%w: %s", errLiveLockHeld, path)
+		}
+		return nil, err
+	}
+	defer file.Close()
+	if err := json.NewEncoder(file).Encode(metadata); err != nil {
+		_ = os.Remove(path)
 		return nil, err
 	}
 	return &liveLock{path: path, token: metadata.Token}, nil
