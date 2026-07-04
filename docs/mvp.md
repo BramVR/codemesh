@@ -248,6 +248,18 @@ Clones a missing project into its desired local path through the selected Clone 
 
 Does not create placeholders.
 
+### `codemesh bootstrap <manifest-path>`
+
+Reads Workspace Manifest JSON entries, compares them against the registered local machine workspace root and Project Registry, and prints a plan. `--apply` creates parent directories and local registry rows for desired topology only.
+
+Rules:
+
+- requires local machine registration
+- blocks path conflicts before mutation
+- does not clone project content by default
+- does not create project placeholder directories
+- leaves missing projects visible as missing in `tree` and `status`
+
 ### `codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope`
 
 Stores a private binding from a logical env requirement to a provider reference in local state.
@@ -325,11 +337,12 @@ Initial tables:
 11. Doctor preflight and strict warning failure.
 12. Fake-provider Env Binding and agent-scoped env bundle metadata.
 13. Toolchain readiness declaration, doctor reporting, and Agent Run Contract status metadata.
+14. Bootstrap topology without cloning.
 
 ## Planned Later
 
 - multi-machine sync
-- workspace manifest commands for Git-backed desired topology; current code only has the internal entry and dry import-plan slice
+- workspace manifest export/import commands for Git-backed desired topology; current code has the internal entry/load slice and bootstrap input
 - synced remote project indexes
 - shared object cache or worktree Clone Strategies
 - live secret providers or env file writing

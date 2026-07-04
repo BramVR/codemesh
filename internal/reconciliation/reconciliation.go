@@ -100,10 +100,12 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 		return DriftPlan{}, err
 	}
 	desiredAliasByIdentity := make(map[string]string, len(desiredEntries))
+	desiredIdentity := make(map[string]bool, len(desiredEntries))
 	for _, entry := range desiredEntries {
 		if _, exists := desiredAliasByIdentity[entry.Project.Identity]; !exists {
 			desiredAliasByIdentity[entry.Project.Identity] = entry.Project.Alias
 		}
+		desiredIdentity[entry.Project.Identity] = true
 	}
 
 	byIdentity := make(map[string]state.Project, len(projects))
@@ -123,6 +125,12 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 	plan := DriftPlan{WorkspaceRoot: root}
 	seenDesiredIdentities := map[string]bool{}
 	seenDesiredPaths := map[string]string{}
+	for _, project := range projects {
+		if desiredIdentity[project.NormalizedRemote] || strings.TrimSpace(project.LocalPath) == "" {
+			continue
+		}
+		seenDesiredPaths[cleanPath(project.LocalPath)] = project.NormalizedRemote
+	}
 	for _, entry := range desiredEntries {
 		project := entry.Project
 		desiredLocalPath := filepath.Join(root, filepath.FromSlash(project.DesiredPath))
@@ -144,10 +152,11 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 		aliasConflict := aliasTaken && aliasOwnerIdentity != project.Identity
 		pathOwnerIdentity, pathTaken := seenDesiredPaths[desiredLocalPath]
 		pathConflict := pathTaken && pathOwnerIdentity != project.Identity
+		nestedPathOwnerIdentity, nestedPath, nestedPathConflict := nestedDesiredPathConflict(seenDesiredPaths, desiredLocalPath, project.Identity)
 		if !aliasConflict {
 			aliasOwner[project.Alias] = project.Identity
 		}
-		if !pathConflict {
+		if !pathConflict && !nestedPathConflict {
 			seenDesiredPaths[desiredLocalPath] = project.Identity
 		}
 		if aliasConflict {
@@ -156,6 +165,10 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 		}
 		if pathConflict {
 			plan.addConflict(drift, BlockerPathConflict, desiredLocalPath, fmt.Sprintf("desired path already requested by %q", pathOwnerIdentity))
+			continue
+		}
+		if nestedPathConflict {
+			plan.addConflict(drift, BlockerPathConflict, desiredLocalPath, fmt.Sprintf("desired path nests with project path %q owned by %q", nestedPath, nestedPathOwnerIdentity))
 			continue
 		}
 
@@ -194,10 +207,6 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 		plan.Drifts = append(plan.Drifts, drift)
 	}
 
-	desiredIdentity := make(map[string]bool, len(desiredEntries))
-	for _, entry := range desiredEntries {
-		desiredIdentity[entry.Project.Identity] = true
-	}
 	for _, project := range sortedProjects(projects) {
 		if desiredIdentity[project.NormalizedRemote] {
 			continue
@@ -273,6 +282,26 @@ func cleanPath(path string) string {
 		path = abs
 	}
 	return filepath.Clean(path)
+}
+
+func nestedDesiredPathConflict(seen map[string]string, desiredPath, desiredIdentity string) (string, string, bool) {
+	for existingPath, existingIdentity := range seen {
+		if existingIdentity == desiredIdentity {
+			continue
+		}
+		if pathIsAncestor(existingPath, desiredPath) || pathIsAncestor(desiredPath, existingPath) {
+			return existingIdentity, existingPath, true
+		}
+	}
+	return "", "", false
+}
+
+func pathIsAncestor(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func cloneURLFor(project workspacemanifest.ProjectEntry) string {

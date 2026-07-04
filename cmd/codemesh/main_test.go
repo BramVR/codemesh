@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/BramVR/codemesh/internal/envbinding"
 	"github.com/BramVR/codemesh/internal/state"
+	"github.com/BramVR/codemesh/internal/workspacemanifest"
 )
 
 func TestHelpIdentifiesCodeMesh(t *testing.T) {
@@ -228,6 +230,159 @@ func TestMachineRegisterJSONOutput(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestBootstrapPlansThenAppliesTopologyWithoutProjectDirectories(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	manifestDir := filepath.Join(tmp, "manifest")
+	writeManifestEntry(t, manifestDir, "alpha.json", "https://github.com/BramVR/alpha", "alpha", "tools/alpha")
+	writeManifestEntry(t, manifestDir, "beta.json", "https://github.com/BramVR/beta", "beta", "beta")
+	t.Setenv("CODEMESH_HOME", home)
+
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"bootstrap", manifestDir}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("bootstrap plan exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("bootstrap plan stderr = %q, want empty", stderr.String())
+	}
+	for _, want := range []string{"bootstrap plan", "workspace_root: " + workspace, "blocked: false", "missing: alpha " + filepath.Join(workspace, "tools", "alpha"), "missing: beta " + filepath.Join(workspace, "beta")} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("bootstrap plan output missing %q:\n%s", want, stdout.String())
+		}
+	}
+	if _, err := os.Stat(workspace); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run bootstrap created workspace or stat failed unexpectedly: %v", err)
+	}
+	assertProjectRows(t, home, 0)
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"bootstrap", manifestDir, "--apply"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("bootstrap apply exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"bootstrap plan", "applied", "parent: " + workspace, "parent: " + filepath.Join(workspace, "tools"), "added: alpha " + filepath.Join(workspace, "tools", "alpha"), "added: beta " + filepath.Join(workspace, "beta")} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("bootstrap apply output missing %q:\n%s", want, output)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "tools")); err != nil {
+		t.Fatalf("bootstrap parent missing: %v", err)
+	}
+	for _, path := range []string{filepath.Join(workspace, "tools", "alpha"), filepath.Join(workspace, "beta")} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("bootstrap created project path %s or stat failed unexpectedly: %v", path, err)
+		}
+	}
+	assertProjectRows(t, home, 2)
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"tree"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("tree exit code = %d, want 0 for human readiness report\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "- alpha missing "+filepath.Join(workspace, "tools", "alpha")) || !strings.Contains(stdout.String(), "- beta missing "+filepath.Join(workspace, "beta")) {
+		t.Fatalf("tree output missing bootstrapped missing projects:\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"status", "alpha", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("status alpha exit code = %d, want 0 for JSON readiness report\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"state":"missing"`) || !strings.Contains(stdout.String(), `"path_present":false`) {
+		t.Fatalf("status JSON missing missing-state payload:\n%s", stdout.String())
+	}
+}
+
+func TestBootstrapJSONReportsPathConflictWithoutMutation(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	conflictPath := filepath.Join(workspace, "tools", "alpha")
+	if err := os.MkdirAll(conflictPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(conflictPath, "local.txt")
+	if err := os.WriteFile(marker, []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifestDir := filepath.Join(tmp, "manifest")
+	writeManifestEntry(t, manifestDir, "alpha.json", "https://github.com/BramVR/alpha", "alpha", "tools/alpha")
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", manifestDir, "--apply", "--json"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("bootstrap conflict exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("bootstrap conflict stderr = %q, want empty", stderr.String())
+	}
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Apply bool `json:"apply"`
+			Plan  struct {
+				Blocked  bool `json:"blocked"`
+				Blockers []struct {
+					Kind string `json:"kind"`
+					Path string `json:"path"`
+				} `json:"blockers"`
+			} `json:"plan"`
+			Applied struct {
+				AddedProjects []state.Project `json:"added_projects"`
+			} `json:"applied"`
+		} `json:"payload"`
+		Diagnostics struct {
+			Blockers []struct {
+				Code   string `json:"code"`
+				Target string `json:"target"`
+			} `json:"blockers"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("bootstrap conflict stdout was not JSON: %v\n%s", err, stdout.String())
+	}
+	if payload.Command != "bootstrap" || payload.ExitClass != "readiness-blocked" || !payload.Payload.Apply || !payload.Payload.Plan.Blocked {
+		t.Fatalf("bootstrap JSON metadata = %#v", payload)
+	}
+	if len(payload.Payload.Plan.Blockers) != 1 || payload.Payload.Plan.Blockers[0].Kind != "path-conflict" || payload.Payload.Plan.Blockers[0].Path != conflictPath {
+		t.Fatalf("bootstrap plan blockers = %#v", payload.Payload.Plan.Blockers)
+	}
+	if len(payload.Diagnostics.Blockers) != 1 || payload.Diagnostics.Blockers[0].Code != "path-conflict" || payload.Diagnostics.Blockers[0].Target != conflictPath {
+		t.Fatalf("bootstrap diagnostics = %#v", payload.Diagnostics)
+	}
+	if len(payload.Payload.Applied.AddedProjects) != 0 {
+		t.Fatalf("bootstrap applied despite conflict: %#v", payload.Payload.Applied)
+	}
+	assertProjectRows(t, home, 0)
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "keep\n" {
+		t.Fatalf("conflict marker changed or missing: got %q err %v", got, err)
 	}
 }
 
@@ -1873,6 +2028,42 @@ func assertHydrateJSON(data []byte, exitClass, alias, outcome, path string, path
 		}
 	}
 	return nil
+}
+
+func writeManifestEntry(t *testing.T, dir, name, identity, alias, desiredPath string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := workspacemanifest.NewEntry(workspacemanifest.ProjectEntry{
+		Identity:    identity,
+		Alias:       alias,
+		DesiredPath: desiredPath,
+		CloneHints:  workspacemanifest.CloneHints{URL: identity + ".git"},
+	})
+	data, err := workspacemanifest.EncodeEntry(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertProjectRows(t *testing.T, home string, want int) {
+	t.Helper()
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	projects, err := store.ListProjects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != want {
+		t.Fatalf("project rows = %d, want %d: %#v", len(projects), want, projects)
+	}
 }
 
 func assertGitStatusClean(t *testing.T, dir string) {
