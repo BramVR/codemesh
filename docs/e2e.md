@@ -75,6 +75,25 @@ CODEMESH_E2E_LIVE=1 CODEMESH_E2E_LIVE_TARGETS=toolchain make e2e-live
 
 The toolchain smoke builds the current CLI, creates isolated Go and package-manager-style project fixtures under the harness temp root, and runs `codemesh doctor --json` plus `codemesh agent prepare --json` through the same readiness model. Present tools record detected command names and versions without installing or modifying tools. Optional absent host tools record `SKIP` by default and fail only with `CODEMESH_E2E_LIVE_STRICT=1`; the smoke includes one deliberately absent optional tool so the report proves this behavior. The live report writes `live.toolchain.fixtures[]` with separate project facts and host facts so failures can be traced to project policy or machine setup.
 
+Local macOS desktop smoke is opt-in and uses Peekaboo to prove the packaged CLI in a real terminal window:
+
+```sh
+make e2e-peekaboo
+```
+
+The target builds `dist/codemesh`, runs the live harness with `CODEMESH_E2E_LIVE=1` and the `desktop` target, then checks `/opt/homebrew/bin/peekaboo permissions --json --no-remote` or `peekaboo` on `PATH`. It records `SKIP` when the host is not macOS, Peekaboo is missing, Screen Recording or Accessibility permission is unavailable, or a desktop terminal cannot be automated. Strict mode turns the same missing prerequisites into failures:
+
+```sh
+CODEMESH_E2E_LIVE_STRICT=1 make e2e-peekaboo
+```
+
+When prerequisites are available, Peekaboo launches or focuses Terminal with a generated `.command` file and captures a terminal screenshot. The command runs the packaged binary from the isolated live run directory with isolated `CODEMESH_HOME`, `HOME`, `CODEMESH_WORKSPACE`, and `GIT_CONFIG_GLOBAL`, then verifies visible transcript output for `codemesh --help`, `codemesh init`, and `codemesh status`. The stable artifacts are:
+
+- `tmp/e2e-peekaboo-desktop.png`
+- `tmp/e2e-peekaboo-transcript.txt`
+
+The live JSON report references both artifact paths under `live.desktop`. The desktop smoke does not use AppleScript, does not read the user's normal CodeMesh state, and does not type secrets. CI should not run this target unless a standard/free macOS desktop runner is deliberately configured with Peekaboo and local TCC permissions. Required PR CI intentionally excludes Peekaboo.
+
 Live provider smoke is reserved but inert. After `CODEMESH_E2E_LIVE=1`, it records `SKIP` unless all exact provider contract variables are present:
 
 ```sh
@@ -104,6 +123,7 @@ The report includes:
 - `host`: OS, architecture, and Go version for the machine that wrote the report.
 - `isolation`: isolated `CODEMESH_HOME`, `HOME`, workspace, run directory, and Git config path.
 - `live`: live opt-in status, strict mode, target labels, skip reasons, GitHub remote URL, discovered default branch, command durations for GitHub status, Agent Prep, Agent Run, runs, cleanup, hydration smoke steps, clone strategy records for full, partial, and sparse GitHub smokes, targeted toolchain fixture facts, reserved provider smoke skip metadata, per-smoke secret-safety result, and the host-scoped lock path/label when a lock was acquired.
+- `live.desktop`: Peekaboo path, Terminal app, permission status, screenshot path, transcript path, SKIP reason or PASS status, and secret-safety status when the desktop target runs.
 - `two_machine`: offline two-machine smoke summary with both machine IDs, manifest location, hydrated project identity, hydration provenance, drift summary, and cleanup status.
 - `summary`: `pass`, `fail`, `skip`, and `total` counts derived from recorded case results.
 - `secret_safety`: whether report redaction is active and how many known fake fixture values were redacted.
@@ -249,6 +269,8 @@ make e2e
 
 Run `make e2e-packaged` when changing packaging, installed-binary assumptions, source-relative paths, or release-smoke behavior. Run `make e2e-live` when changing the live harness or adding real provider, GUI, network, account, or multi-machine checks. Expect live mode to report `SKIP` unless `CODEMESH_E2E_LIVE=1` is set and free prerequisites are available. Use `CODEMESH_E2E_LIVE=1 CODEMESH_E2E_LIVE_TARGETS=github make e2e-live` for the full, partial, and sparse Clone Strategy live smoke.
 
+Run `make e2e-peekaboo` only on a local macOS desktop or deliberately configured free macOS desktop runner when changing Peekaboo automation, packaged CLI terminal behavior, or screenshot proof. A local `SKIP` is acceptable when Peekaboo or TCC permissions are unavailable; include the SKIP reason from `tmp/e2e-report.json` in handoff proof.
+
 If a command fails, use the printed failure block first. If a machine-readable audit trail is needed, inspect `tmp/e2e-report.json` or set `CODEMESH_E2E_REPORT` to a temp path before running the target.
 
 ## Handoff Gates
@@ -293,5 +315,5 @@ From `steipete/oracle`:
 ## Intentionally Not Run Live
 
 - Poll/wait helpers: no async CodeMesh behavior exists yet.
-- Real provider, GUI, and multi-machine checks: those live targets are not implemented yet, so future checks must record audited skips unless explicitly opted in and free prerequisites are available. Provider smoke must use the exact single-target env contract above and must not invoke password managers by default.
-- Screenshot proof: not applicable to the current CLI-only harness.
+- Real provider and multi-machine checks, plus any future GUI checks beyond Peekaboo: those live targets must record audited skips unless explicitly opted in and free prerequisites are available. Provider smoke must use the exact single-target env contract above and must not invoke password managers by default.
+- Screenshot proof: limited to the opt-in Peekaboo desktop smoke; default source, packaged, and live GitHub/toolchain/provider lanes remain CLI/report-only.

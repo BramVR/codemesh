@@ -214,6 +214,17 @@ func TestLiveTargetSelection(t *testing.T) {
 	if !liveTargetEnabled(cfg, liveTargetGitHub) || liveTargetEnabled(cfg, liveTargetToolchain) {
 		t.Fatalf("default target selection = %#v, want GitHub only", cfg.Targets)
 	}
+
+	cfg = liveConfigFromEnv(mapLookup(map[string]string{
+		"CODEMESH_E2E_LIVE":         "1",
+		"CODEMESH_E2E_LIVE_TARGETS": "desktop,peekaboo",
+	}))
+	if !liveTargetEnabled(cfg, liveTargetDesktop) {
+		t.Fatalf("desktop target not enabled: %#v", cfg.Targets)
+	}
+	if liveTargetEnabled(cfg, liveTargetGitHub) || liveTargetEnabled(cfg, liveTargetToolchain) {
+		t.Fatalf("non-desktop targets enabled for explicit desktop selection: %#v", cfg.Targets)
+	}
 }
 
 func TestLiveGitHubRemoteDefaultsAndOverride(t *testing.T) {
@@ -236,6 +247,74 @@ func TestParseRemoteDefaultBranchFromSymref(t *testing.T) {
 	}
 	if _, err := parseRemoteDefaultBranch("0123456789abcdef\tHEAD\n"); err == nil {
 		t.Fatalf("parseRemoteDefaultBranch accepted missing symref")
+	}
+}
+
+func TestParsePeekabooPermissionsRequiresScreenRecordingAndAccessibility(t *testing.T) {
+	raw := `{
+	  "success": true,
+	  "data": {
+	    "source": "local",
+	    "permissions": [
+	      {"name": "Screen Recording", "isRequired": true, "isGranted": true},
+	      {"name": "Accessibility", "isRequired": true, "isGranted": true}
+	    ]
+	  }
+	}`
+	got, err := parsePeekabooPermissions([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != "local" || !got.ScreenRecording || !got.Accessibility {
+		t.Fatalf("permissions = %#v, want granted local screen/accessibility", got)
+	}
+
+	raw = `{"success":true,"data":{"permissions":[{"name":"Screen Recording","isRequired":true,"isGranted":true}]}}`
+	if _, err := parsePeekabooPermissions([]byte(raw)); err == nil || !strings.Contains(err.Error(), "Accessibility") {
+		t.Fatalf("missing Accessibility error = %v", err)
+	}
+}
+
+func TestWriteReportIncludesLiveDesktopArtifacts(t *testing.T) {
+	h := testHarness(t)
+	h.mode = modeLive
+	h.bin = filepath.Join(h.tmp, "dist", "codemesh")
+	h.reportPath = filepath.Join(h.tmp, "reports", "live.json")
+	h.live = &reportLive{
+		OptIn:   true,
+		Strict:  false,
+		Targets: []string{liveTargetDesktop},
+		Desktop: &reportLiveDesktop{
+			Status:         "pass",
+			PeekabooPath:   "/opt/homebrew/bin/peekaboo",
+			TerminalApp:    "Terminal",
+			ScreenshotPath: filepath.Join(h.root, "tmp", "e2e-peekaboo-desktop.png"),
+			TranscriptPath: filepath.Join(h.root, "tmp", "e2e-peekaboo-transcript.txt"),
+			SecretSafety:   "pass",
+			Permissions: reportPeekabooPermissions{
+				Source:          "local",
+				ScreenRecording: true,
+				Accessibility:   true,
+			},
+		},
+	}
+
+	if err := h.writeReport(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(h.reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got report
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Live == nil || got.Live.Desktop == nil {
+		t.Fatalf("live desktop report missing: %#v", got.Live)
+	}
+	if got.Live.Desktop.ScreenshotPath == "" || got.Live.Desktop.TranscriptPath == "" || got.Live.Desktop.SecretSafety != "pass" {
+		t.Fatalf("desktop report = %#v", got.Live.Desktop)
 	}
 }
 
