@@ -115,6 +115,29 @@ Used by:
 
 - `env bind`
 - `agent prepare`
+- `target export`
+
+### Workspace Target Export
+
+Owns target-ready JSON for future cloud, dev, and agent destinations.
+
+Responsibilities:
+
+- package Workspace Manifest topology
+- include registered machine facts and explicit target facts
+- include scoped Env Binding references without values
+- keep output stable for adapters and tests
+
+Non-responsibilities:
+
+- live Coder, DevPod, Daytona, or team-service calls
+- provider account mutation
+- raw secret or env value export
+- observed readiness, dirty/stale state, or Agent Run export
+
+Used by:
+
+- `target export`
 
 ### Toolchain Readiness
 
@@ -258,6 +281,18 @@ Rules:
 - blocks path conflicts before mutation
 - does not clone project content by default
 - does not create project placeholder directories
+
+### `codemesh target export <target-name>`
+
+Emits a Workspace Target spec for future adapters over local fake or cloud destinations.
+
+Rules:
+
+- requires local machine registration
+- includes manifest topology, machine facts, target facts, and scoped env binding references
+- does not resolve env values or include secret values
+- does not include readiness, dirty/stale state, or Agent Runs
+- does not call Coder, DevPod, Daytona, or remote providers
 - leaves missing projects visible as missing in `tree` and `status`
 
 ### `codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope`

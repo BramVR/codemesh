@@ -30,6 +30,7 @@ import (
 	"github.com/BramVR/codemesh/internal/state"
 	"github.com/BramVR/codemesh/internal/toolchain"
 	"github.com/BramVR/codemesh/internal/workspacemanifest"
+	"github.com/BramVR/codemesh/internal/workspacetarget"
 )
 
 const version = "0.0.0-dev"
@@ -68,6 +69,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runHydrate(args[1:], stdout, stderr)
 	case "bootstrap":
 		return runBootstrap(args[1:], stdout, stderr)
+	case "target":
+		return runTarget(args[1:], stdout, stderr)
 	case "env":
 		return runEnv(args[1:], stdout, stderr)
 	case "machine":
@@ -83,6 +86,127 @@ func run(args []string, stdout, stderr io.Writer) int {
 		printHelp(stderr)
 		return 2
 	}
+}
+
+func runTarget(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+		printTargetHelp(stdout)
+		return 0
+	}
+	switch args[0] {
+	case "export":
+		return runTargetExport(args[1:], stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown target command: %s\n\n", args[0])
+		printTargetHelp(stderr)
+		return 2
+	}
+}
+
+func runTargetExport(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printTargetExportHelp(stdout)
+		return 0
+	}
+	parsed, ok := parseTargetExportArgs(args, stderr)
+	if !ok {
+		printTargetExportHelp(stderr)
+		return 2
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+	spec, err := workspacetarget.Export(context.Background(), store, workspacetarget.Options{
+		ProducerVersion: version,
+		TargetName:      parsed.TargetName,
+		TargetKind:      parsed.Kind,
+		WorkspaceRoot:   parsed.WorkspaceRoot,
+		Scopes:          parsed.Scopes,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "export workspace target: %v\n", err)
+		return 1
+	}
+	result := commandresult.New("target export", commandresult.ExitSuccess, commandresult.Diagnostics{}, spec)
+	if parsed.JSON {
+		if err := presentation.RenderJSON(stdout, result); err != nil {
+			fmt.Fprintf(stderr, "encode target export result: %v\n", err)
+			return commandresult.ExitInternalError.Code()
+		}
+		return 0
+	}
+	if err := presentation.RenderHuman(stdout, result, renderTargetExportPayloadHuman); err != nil {
+		fmt.Fprintf(stderr, "render target export result: %v\n", err)
+		return commandresult.ExitInternalError.Code()
+	}
+	return 0
+}
+
+type parsedTargetExportArgs struct {
+	TargetName    string
+	Kind          string
+	WorkspaceRoot string
+	Scopes        []string
+	JSON          bool
+}
+
+func parseTargetExportArgs(args []string, stderr io.Writer) (parsedTargetExportArgs, bool) {
+	var names []string
+	parsed := parsedTargetExportArgs{Kind: "agent"}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--kind":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "target export --kind requires a kind\n\n")
+				return parsedTargetExportArgs{}, false
+			}
+			parsed.Kind = args[i+1]
+			i++
+		case "--scope":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "target export --scope requires a scope\n\n")
+				return parsedTargetExportArgs{}, false
+			}
+			parsed.Scopes = append(parsed.Scopes, args[i+1])
+			i++
+		case "--workspace-root":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "target export --workspace-root requires a path\n\n")
+				return parsedTargetExportArgs{}, false
+			}
+			parsed.WorkspaceRoot = args[i+1]
+			i++
+		case "--json":
+			parsed.JSON = true
+		default:
+			names = append(names, args[i])
+		}
+	}
+	if len(names) != 1 {
+		fmt.Fprint(stderr, "target export requires exactly one target name\n\n")
+		return parsedTargetExportArgs{}, false
+	}
+	if len(parsed.Scopes) == 0 {
+		fmt.Fprint(stderr, "target export requires at least one --scope\n\n")
+		return parsedTargetExportArgs{}, false
+	}
+	parsed.TargetName = names[0]
+	return parsed, true
+}
+
+func renderTargetExportPayloadHuman(w io.Writer, payload workspacetarget.Spec) error {
+	fmt.Fprintf(w, "workspace target export\n")
+	fmt.Fprintf(w, "target: %s\n", payload.Target.Name)
+	fmt.Fprintf(w, "kind: %s\n", payload.Target.Kind)
+	fmt.Fprintf(w, "workspace_root: %s\n", payload.Target.WorkspaceRoot)
+	fmt.Fprintf(w, "scopes: %s\n", strings.Join(payload.Target.Scopes, ","))
+	fmt.Fprintf(w, "machine: %s %s/%s\n", payload.Machine.ID, payload.Machine.OS, payload.Machine.Architecture)
+	fmt.Fprintf(w, "projects: %d\n", len(payload.Topology))
+	fmt.Fprintf(w, "env_policy: %d\n", len(payload.EnvPolicy))
+	return nil
 }
 
 func runEnv(args []string, stdout, stderr io.Writer) int {
@@ -1909,6 +2033,7 @@ Usage:
   codemesh doctor <project> [--base branch] [--strict] [--json]
   codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]
   codemesh bootstrap <manifest-path> [--apply] [--json]
+  codemesh target export <target-name> --scope scope [--kind kind] [--workspace-root path] [--json]
   codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope
   codemesh machine register [workspace-root] [--json]
   codemesh agent prepare <project> [--base branch] [--profile name] [--partial-clone] [--sparse path] [--env-provider fake] [--allow-env-scope scope] [--json]
@@ -1925,6 +2050,7 @@ Commands:
   doctor     preflight agent handoff readiness without creating a run
   hydrate    clone a missing project into its desired path
   bootstrap  plan or apply workspace topology without cloning
+  target     export target-ready workspace specs
   env        manage private env bindings
   machine    register this machine locally
   agent      prepare and run agent workspaces
@@ -2040,6 +2166,26 @@ Reads one manifest entry file or a directory of JSON entries.
 Default mode reports the plan only.
 --apply creates parent directories and local Project Registry rows.
 Bootstrap does not clone project content or create project placeholders.
+Use --json for the stable command result shape.
+`)
+}
+
+func printTargetHelp(w io.Writer) {
+	fmt.Fprint(w, `Export target-ready workspace specs.
+
+Usage:
+  codemesh target export <target-name> --scope scope [--kind kind] [--workspace-root path] [--json]
+`)
+}
+
+func printTargetExportHelp(w io.Writer) {
+	fmt.Fprint(w, `Export a Workspace Target spec.
+
+Usage:
+  codemesh target export <target-name> --scope scope [--kind kind] [--workspace-root path] [--json]
+
+Packages manifest topology, machine and target facts, and scoped env binding references.
+Does not contact Coder, DevPod, Daytona, or any live provider.
 Use --json for the stable command result shape.
 `)
 }

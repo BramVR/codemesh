@@ -16,6 +16,7 @@
         "commands/doctor.md",
         "commands/hydrate.md",
         "commands/bootstrap.md",
+        "commands/target-export.md",
         "commands/env-bind.md",
         "commands/machine-register.md",
         "commands/agent-prepare.md",

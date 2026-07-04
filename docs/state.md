@@ -97,6 +97,8 @@ Reconciliation compares Workspace Manifest desired topology with the local State
 
 `codemesh bootstrap <manifest-path>` is the first runnable adapter over Workspace Manifest, Reconciliation, Machine Registry, and Project Registry. It reads one manifest entry file or a directory of JSON entries and reports the plan by default. With `--apply`, bootstrap refuses blockers before mutation, creates only needed parent directories, and inserts or updates local Project Registry rows for desired topology. It does not clone project content, create project placeholder directories, start a daemon, mount a filesystem, sync files, install tools, or touch env materialization. Bootstrapped project paths remain missing in `tree` and `status` until explicit hydration.
 
+`codemesh target export <target-name> --scope scope --json` is a local contract tracer over Workspace Manifest, Machine Registry, Project Registry, and Env Binding. It packages desired topology, local machine facts, explicit target facts, and scope-matched env binding references. It does not include observed readiness state, dirty/stale source state, Agent Runs, raw env values, secret values, or fake-provider materialized values. Coder, DevPod, and Daytona are future adapters over this target shape; the export command does not call or mutate those systems.
+
 ## Readiness
 
 Project readiness is derived when `tree`, `status`, `doctor`, `hydrate`, or Agent Prep reads the Project Registry. It is not stored in `projects`.

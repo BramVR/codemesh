@@ -2007,6 +2007,27 @@ func (h *harness) caseBootstrapTopologyWorkflow() {
 	if status.Status != "PASS" || !s.expectOutput(status, `"exit_class":"readiness-blocked"`, `"state":"missing"`, `"path_present":false`) {
 		return
 	}
+	bindTargetEnv := s.command("workspace target bind fake env", "env", "bind", "alpha", "CODEMESH_E2E_TARGET_TOKEN", "--provider", "fake", "--ref", "fake://e2e-target-token", "--scope", "codex")
+	targetFakeValue := envbinding.FakeProviderValue("fake://e2e-target-token")
+	if bindTargetEnv.Status != "PASS" || !s.expectOutput(bindTargetEnv, "bound env requirement: CODEMESH_E2E_TARGET_TOKEN", "provider: fake", "scopes: codex") || !s.expectNoOutput(bindTargetEnv, targetFakeValue) {
+		return
+	}
+	targetExport := s.command("workspace target export local fake", "target", "export", "local-fake-target", "--kind", "agent", "--scope", "codex", "--json")
+	if targetExport.Status != "PASS" {
+		return
+	}
+	if err := targetExportJSONMatches(targetExport.Stdout, "local-fake-target", "agent", workspace, "alpha", "tools/alpha", "CODEMESH_E2E_TARGET_TOKEN", "fake://e2e-target-token"); err != nil {
+		targetExport.Status = "FAIL"
+		targetExport.Error = err.Error()
+		s.updateResult(targetExport)
+		return
+	}
+	if !s.expectNoOutput(targetExport, targetFakeValue, "agent_run", "dirty-checkout", "stale") {
+		return
+	}
+	if !s.expectAgentRunRows("workspace target export records no agent run", 0) {
+		return
+	}
 
 	conflictScenario, err := h.newScenario("bootstrap conflict")
 	if err != nil {
@@ -4367,6 +4388,85 @@ func doctorToolchainJSONMatches(raw, alias, name, status string) error {
 		return fmt.Errorf("toolchain diagnostics = %#v", payload.Payload.Diagnostics)
 	}
 	return nil
+}
+
+func targetExportJSONMatches(raw, targetName, targetKind, workspaceRoot, alias, desiredPath, requirement, secretRef string) error {
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			TargetSpecVersion int `json:"target_spec_version"`
+			Target            struct {
+				Name          string   `json:"name"`
+				Kind          string   `json:"kind"`
+				WorkspaceRoot string   `json:"workspace_root"`
+				Scopes        []string `json:"scopes"`
+			} `json:"target"`
+			Machine struct {
+				ID            string `json:"id"`
+				Hostname      string `json:"hostname"`
+				OS            string `json:"os"`
+				Architecture  string `json:"architecture"`
+				WorkspaceRoot string `json:"workspace_root"`
+			} `json:"machine"`
+			Topology []struct {
+				Project struct {
+					Alias       string `json:"alias"`
+					DesiredPath string `json:"desired_path"`
+				} `json:"project"`
+			} `json:"topology"`
+			EnvPolicy []struct {
+				Project struct {
+					Alias       string `json:"alias"`
+					DesiredPath string `json:"desired_path"`
+				} `json:"project"`
+				Env struct {
+					Bindings []struct {
+						Requirement string   `json:"requirement"`
+						Provider    string   `json:"provider"`
+						SecretRef   string   `json:"secret_ref"`
+						Scopes      []string `json:"scopes"`
+						Values      string   `json:"values"`
+					} `json:"bindings"`
+				} `json:"env"`
+			} `json:"env_policy"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return fmt.Errorf("stdout was not JSON: %w", err)
+	}
+	got := payload.Payload
+	if payload.Command != "target export" || payload.ExitClass != "success" || got.TargetSpecVersion != 1 {
+		return fmt.Errorf("target export metadata = %#v", payload)
+	}
+	if got.Target.Name != targetName || got.Target.Kind != targetKind || got.Target.WorkspaceRoot != workspaceRoot || !reflect.DeepEqual(got.Target.Scopes, []string{"codex"}) {
+		return fmt.Errorf("target facts = %#v", got.Target)
+	}
+	if got.Machine.ID == "" || got.Machine.Hostname == "" || got.Machine.OS == "" || got.Machine.Architecture == "" || got.Machine.WorkspaceRoot != workspaceRoot {
+		return fmt.Errorf("machine facts = %#v", got.Machine)
+	}
+	foundTopology := false
+	for _, entry := range got.Topology {
+		if entry.Project.Alias == alias && entry.Project.DesiredPath == desiredPath {
+			foundTopology = true
+			break
+		}
+	}
+	if !foundTopology {
+		return fmt.Errorf("topology missing %s %s: %#v", alias, desiredPath, got.Topology)
+	}
+	for _, project := range got.EnvPolicy {
+		if project.Project.Alias != alias || project.Project.DesiredPath != desiredPath {
+			continue
+		}
+		for _, binding := range project.Env.Bindings {
+			if binding.Requirement == requirement && binding.Provider == "fake" && binding.SecretRef == secretRef && binding.Values == "not-recorded" && reflect.DeepEqual(binding.Scopes, []string{"codex"}) {
+				return nil
+			}
+		}
+		return fmt.Errorf("env policy for %s missing scoped binding: %#v", alias, project.Env.Bindings)
+	}
+	return fmt.Errorf("env policy missing project %s: %#v", alias, got.EnvPolicy)
 }
 
 func singleDoctorToolchain(raw string) (agentToolchainStatus, error) {
