@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/png"
 	"io"
 	"net"
 	"net/url"
@@ -35,6 +37,7 @@ const (
 	liveTargetGitHub        = "github remote smoke"
 	liveTargetProvider      = "provider smoke"
 	liveTargetToolchain     = "toolchain host smoke"
+	liveTargetDesktop       = "desktop peekaboo smoke"
 	defaultLiveGitHubRemote = "https://github.com/BramVR/codemesh.git"
 )
 
@@ -101,6 +104,7 @@ type reportLive struct {
 	GitHub      *reportLiveGitHub    `json:"github,omitempty"`
 	Provider    *reportLiveProvider  `json:"provider,omitempty"`
 	Toolchain   *reportLiveToolchain `json:"toolchain,omitempty"`
+	Desktop     *reportLiveDesktop   `json:"desktop,omitempty"`
 }
 
 type reportTwoMachine struct {
@@ -171,6 +175,23 @@ type reportLiveToolchainFixture struct {
 	SkipReason    string                `json:"skip_reason,omitempty"`
 }
 
+type reportLiveDesktop struct {
+	Status         string                     `json:"status"`
+	PeekabooPath   string                     `json:"peekaboo_path,omitempty"`
+	TerminalApp    string                     `json:"terminal_app,omitempty"`
+	ScreenshotPath string                     `json:"screenshot_path,omitempty"`
+	TranscriptPath string                     `json:"transcript_path,omitempty"`
+	SkipReason     string                     `json:"skip_reason,omitempty"`
+	SecretSafety   string                     `json:"secret_safety,omitempty"`
+	Permissions    *reportPeekabooPermissions `json:"permissions,omitempty"`
+}
+
+type reportPeekabooPermissions struct {
+	Source          string `json:"source,omitempty"`
+	ScreenRecording bool   `json:"screen_recording"`
+	Accessibility   bool   `json:"accessibility"`
+}
+
 type toolchainProjectFacts struct {
 	Requirement string `json:"requirement"`
 }
@@ -222,6 +243,12 @@ type liveProviderSmokeConfig struct {
 	Requirement string
 	SecretRef   string
 	Scope       string
+}
+
+type peekabooDesktopArtifacts struct {
+	script     string
+	screenshot string
+	transcript string
 }
 
 type liveLockMetadata struct {
@@ -452,6 +479,9 @@ func (h *harness) runLive() int {
 	}
 	if liveTargetEnabled(cfg, liveTargetToolchain) {
 		h.caseLiveToolchainHostSmoke(cfg)
+	}
+	if liveTargetEnabled(cfg, liveTargetDesktop) {
+		h.caseLivePeekabooDesktopSmoke(cfg)
 	}
 	if h.live.GitHub != nil && h.live.GitHub.SecretSafety == "" {
 		h.live.GitHub.SecretSafety = "pending"
@@ -793,6 +823,115 @@ func (h *harness) caseLiveProviderSmoke(_ liveConfig) {
 	h.skip("live provider smoke", h.live.Provider.SkipReason)
 }
 
+func (h *harness) caseLivePeekabooDesktopSmoke(cfg liveConfig) {
+	if h.live == nil {
+		h.live = &reportLive{}
+	}
+	terminalApp := strings.TrimSpace(os.Getenv("CODEMESH_E2E_DESKTOP_TERMINAL_APP"))
+	if terminalApp == "" {
+		terminalApp = "Terminal"
+	}
+	h.live.Desktop = &reportLiveDesktop{Status: "running", TerminalApp: terminalApp, SecretSafety: "pending"}
+	if runtime.GOOS != "darwin" {
+		h.recordLiveDesktopSkipOrFail(cfg, "live peekaboo macOS prerequisite", "Peekaboo desktop smoke requires macOS", "", -1)
+		return
+	}
+	peekaboo, err := findPeekabooBinary()
+	if err != nil {
+		h.recordLiveDesktopSkipOrFail(cfg, "live peekaboo binary prerequisite", err.Error(), "", -1)
+		return
+	}
+	h.live.Desktop.PeekabooPath = peekaboo
+
+	permissions := h.peekabooCommand("live peekaboo permissions", peekaboo, "permissions", "--json", "--no-remote")
+	if permissions.Status != "PASS" {
+		permissions = h.peekabooCommand("live peekaboo permissions status", peekaboo, "permissions", "status", "--json", "--no-remote")
+	}
+	if permissions.Status != "PASS" {
+		h.recordLiveDesktopSkipOrFail(cfg, permissions.Name, resultError(permissions).Error(), permissions.Duration, permissions.ExitCode)
+		return
+	}
+	parsedPermissions, err := parsePeekabooPermissions([]byte(permissions.Stdout))
+	if err != nil {
+		h.recordLiveDesktopSkipOrFail(cfg, "live peekaboo permissions assertion", err.Error(), permissions.Duration, permissions.ExitCode)
+		return
+	}
+	h.live.Desktop.Permissions = &parsedPermissions
+	h.record(permissions)
+
+	artifacts, err := h.preparePeekabooDesktopArtifacts()
+	if err != nil {
+		h.record(result{Name: "live peekaboo artifact setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		h.live.Desktop.Status = "failed"
+		return
+	}
+	h.live.Desktop.ScreenshotPath = h.repoArtifactPath(artifacts.screenshot)
+	h.live.Desktop.TranscriptPath = h.repoArtifactPath(artifacts.transcript)
+	if err := h.writePeekabooDesktopScript(artifacts); err != nil {
+		h.record(result{Name: "live peekaboo script setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		h.live.Desktop.Status = "failed"
+		return
+	}
+
+	launchArgs := []string{"app", "launch", terminalApp, "--open", artifacts.script, "--wait-until-ready", "--json", "--no-remote"}
+	if terminalApp == "Terminal" {
+		launchArgs = []string{"app", "launch", "--bundle-id", "com.apple.Terminal", "--open", artifacts.script, "--wait-until-ready", "--json", "--no-remote"}
+	}
+	for _, step := range []result{
+		h.peekabooCommand("live peekaboo launch terminal command", peekaboo, launchArgs...),
+		h.peekabooCommand("live peekaboo focus terminal", peekaboo, "app", "switch", "--to", terminalApp, "--json", "--no-remote"),
+	} {
+		if step.Status != "PASS" {
+			h.recordLiveDesktopSkipOrFail(cfg, step.Name, resultError(step).Error(), step.Duration, step.ExitCode)
+			return
+		}
+		h.record(step)
+	}
+	if err := waitForFileFragment(artifacts.transcript, "CODEMESH_PEEKABOO_SMOKE_DONE", 45*time.Second); err != nil {
+		if transcriptStarted(artifacts.transcript) {
+			h.record(result{Name: "live peekaboo terminal transcript", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+			h.live.Desktop.Status = "failed"
+			return
+		}
+		h.recordLiveDesktopSkipOrFail(cfg, "live peekaboo terminal transcript", err.Error(), "", -1)
+		return
+	}
+	transcript, err := os.ReadFile(artifacts.transcript)
+	if err != nil {
+		h.record(result{Name: "live peekaboo transcript read", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		h.live.Desktop.Status = "failed"
+		return
+	}
+	if !h.expectPeekabooTranscript(string(transcript)) {
+		h.live.Desktop.Status = "failed"
+		return
+	}
+	h.live.Desktop.SecretSafety = "pass"
+	screenshot := h.peekabooCommand("live peekaboo terminal screenshot", peekaboo, "image", "--app", terminalApp, "--mode", "window", "--path", artifacts.screenshot, "--json", "--no-remote")
+	if screenshot.Status != "PASS" {
+		h.recordLiveDesktopSkipOrFail(cfg, screenshot.Name, resultError(screenshot).Error(), screenshot.Duration, screenshot.ExitCode)
+		return
+	}
+	screenshot.Stdout = ""
+	h.record(screenshot)
+	if info, err := os.Stat(artifacts.screenshot); err != nil || info.Size() == 0 {
+		if err == nil {
+			err = errors.New("screenshot file is empty")
+		}
+		h.record(result{Name: "live peekaboo screenshot artifact", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		h.live.Desktop.Status = "failed"
+		return
+	}
+	if err := screenshotHasVisiblePixels(artifacts.screenshot); err != nil {
+		h.record(result{Name: "live peekaboo screenshot visibility", Status: "FAIL", Error: err.Error(), Duration: screenshot.Duration, ExitCode: -1})
+		h.live.Desktop.Status = "failed"
+		return
+	}
+	h.record(result{Name: "live peekaboo packaged CLI visible output", Status: "PASS", ExitCode: 0})
+	h.live.Desktop.Status = "pass"
+	h.live.Desktop.SecretSafety = "pass"
+}
+
 func (h *harness) caseLiveToolchainHostSmoke(cfg liveConfig) {
 	if h.live == nil {
 		h.live = &reportLive{}
@@ -919,6 +1058,129 @@ func (h *harness) liveToolchainPresentFixture(cfg liveConfig, s *scenario, proje
 		PrepareStatus: metadata.Toolchain[0].Status,
 	})
 	h.record(result{Name: "live toolchain " + kind + " agreement", Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func (h *harness) peekabooCommand(label, peekaboo string, args ...string) result {
+	return h.executeCommand(commandSpec{
+		Label:      label,
+		Name:       peekaboo,
+		Args:       args,
+		Timeout:    defaultCommandTimeout,
+		UseHostEnv: true,
+	})
+}
+
+func (h *harness) recordLiveDesktopSkipOrFail(cfg liveConfig, name, reason, duration string, exitCode int) bool {
+	status := "SKIP"
+	reportStatus := "skipped"
+	if cfg.Strict {
+		status = "FAIL"
+		reportStatus = "failed"
+	}
+	if h.live == nil {
+		h.live = &reportLive{}
+	}
+	if h.live.Desktop == nil {
+		h.live.Desktop = &reportLiveDesktop{}
+	}
+	h.live.Desktop.Status = reportStatus
+	h.live.Desktop.SkipReason = reason
+	if h.live.Desktop.SecretSafety == "" || h.live.Desktop.SecretSafety == "pending" {
+		h.live.Desktop.SecretSafety = "not_run"
+	}
+	h.live.SkipReasons = append(h.live.SkipReasons, reason)
+	h.record(result{Name: name, Status: status, Error: reason, Duration: duration, ExitCode: exitCode})
+	return !cfg.Strict
+}
+
+func (h *harness) preparePeekabooDesktopArtifacts() (peekabooDesktopArtifacts, error) {
+	dir := filepath.Join(h.root, "tmp")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return peekabooDesktopArtifacts{}, err
+	}
+	artifacts := peekabooDesktopArtifacts{
+		script:     filepath.Join(dir, "e2e-peekaboo-run.command"),
+		screenshot: filepath.Join(dir, "e2e-peekaboo-desktop.png"),
+		transcript: filepath.Join(dir, "e2e-peekaboo-transcript.txt"),
+	}
+	for _, path := range []string{artifacts.screenshot, artifacts.transcript} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return peekabooDesktopArtifacts{}, err
+		}
+	}
+	return artifacts, nil
+}
+
+func (h *harness) repoArtifactPath(path string) string {
+	rel, err := filepath.Rel(h.root, path)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
+		return path
+	}
+	return filepath.ToSlash(rel)
+}
+
+func (h *harness) writePeekabooDesktopScript(artifacts peekabooDesktopArtifacts) error {
+	gitConfig := filepath.Join(h.home, ".gitconfig")
+	pathValue := "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+	script := fmt.Sprintf(`#!/bin/zsh
+set -euo pipefail
+exec > >(tee %s) 2>&1
+export CODEMESH_HOME=%s
+export HOME=%s
+export CODEMESH_WORKSPACE=%s
+export GIT_CONFIG_GLOBAL=%s
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_TERMINAL_PROMPT=0
+export PATH=%s
+export TERM="${TERM:-xterm-256color}"
+cd %s
+echo "CODEMESH_PEEKABOO_SMOKE_BEGIN"
+echo "run_dir: $PWD"
+echo "codemesh_home: $CODEMESH_HOME"
+echo "home: $HOME"
+echo
+echo "$ codemesh --help"
+env -i PATH="$PATH" TERM="$TERM" HOME="$HOME" CODEMESH_HOME="$CODEMESH_HOME" CODEMESH_WORKSPACE="$CODEMESH_WORKSPACE" GIT_CONFIG_GLOBAL="$GIT_CONFIG_GLOBAL" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 %s --help
+echo
+echo "$ codemesh init $CODEMESH_WORKSPACE"
+env -i PATH="$PATH" TERM="$TERM" HOME="$HOME" CODEMESH_HOME="$CODEMESH_HOME" CODEMESH_WORKSPACE="$CODEMESH_WORKSPACE" GIT_CONFIG_GLOBAL="$GIT_CONFIG_GLOBAL" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 %s init "$CODEMESH_WORKSPACE"
+echo
+echo "$ codemesh status"
+env -i PATH="$PATH" TERM="$TERM" HOME="$HOME" CODEMESH_HOME="$CODEMESH_HOME" CODEMESH_WORKSPACE="$CODEMESH_WORKSPACE" GIT_CONFIG_GLOBAL="$GIT_CONFIG_GLOBAL" GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 %s status
+echo "CODEMESH_PEEKABOO_SMOKE_DONE"
+`, shellQuote(artifacts.transcript), shellQuote(h.codemeshHome), shellQuote(h.home), shellQuote(h.workspace), shellQuote(gitConfig), shellQuote(pathValue), shellQuote(h.runDir), shellQuote(h.bin), shellQuote(h.bin), shellQuote(h.bin))
+	if err := os.WriteFile(artifacts.script, []byte(script), 0o755); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (h *harness) expectPeekabooTranscript(transcript string) bool {
+	fragments := []string{
+		"CODEMESH_PEEKABOO_SMOKE_BEGIN",
+		"$ codemesh --help",
+		"Usage:",
+		"codemesh init [workspace-root]",
+		"$ codemesh init ",
+		"initialized CodeMesh",
+		"$ codemesh status",
+		"readiness:",
+		"(empty)",
+		"CODEMESH_PEEKABOO_SMOKE_DONE",
+	}
+	for _, fragment := range fragments {
+		if !strings.Contains(transcript, fragment) {
+			h.record(result{Name: "live peekaboo transcript assertion", Status: "FAIL", Error: fmt.Sprintf("transcript did not include %q", fragment), ExitCode: -1})
+			return false
+		}
+	}
+	for _, marker := range h.forbiddenHostPathMarkers() {
+		if marker != "" && strings.Contains(transcript, marker) {
+			h.record(result{Name: "live peekaboo host path isolation", Status: "FAIL", Error: "transcript included forbidden host path marker", ExitCode: -1})
+			return false
+		}
+	}
 	return true
 }
 
@@ -6042,9 +6304,71 @@ func liveTargetMatches(selected, target string) bool {
 		return selected == "provider" || selected == "live provider"
 	case liveTargetToolchain:
 		return selected == "toolchain" || selected == "host toolchain" || selected == "toolchain host"
+	case liveTargetDesktop:
+		return selected == "desktop" || selected == "peekaboo" || selected == "desktop peekaboo" || selected == "peekaboo desktop"
 	default:
 		return false
 	}
+}
+
+func findPeekabooBinary() (string, error) {
+	if path := strings.TrimSpace(os.Getenv("PEEKABOO_BIN")); path != "" {
+		if err := ensureExecutable(path); err != nil {
+			return "", err
+		}
+		return path, nil
+	}
+	if err := ensureExecutable("/opt/homebrew/bin/peekaboo"); err == nil {
+		return "/opt/homebrew/bin/peekaboo", nil
+	}
+	if path, err := exec.LookPath("peekaboo"); err == nil {
+		return path, nil
+	}
+	return "", errors.New("peekaboo executable not found at /opt/homebrew/bin/peekaboo or PATH")
+}
+
+func parsePeekabooPermissions(raw []byte) (reportPeekabooPermissions, error) {
+	var payload struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Source      string `json:"source"`
+			Permissions []struct {
+				Name       string `json:"name"`
+				IsRequired bool   `json:"isRequired"`
+				IsGranted  bool   `json:"isGranted"`
+			} `json:"permissions"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return reportPeekabooPermissions{}, err
+	}
+	if !payload.Success {
+		return reportPeekabooPermissions{}, errors.New("peekaboo permissions command did not report success")
+	}
+	var got reportPeekabooPermissions
+	got.Source = payload.Data.Source
+	required := map[string]*bool{
+		"screen recording": &got.ScreenRecording,
+		"accessibility":    &got.Accessibility,
+	}
+	for _, permission := range payload.Data.Permissions {
+		slot, ok := required[strings.ToLower(strings.TrimSpace(permission.Name))]
+		if !ok {
+			continue
+		}
+		*slot = permission.IsRequired && permission.IsGranted
+	}
+	var missing []string
+	if !got.ScreenRecording {
+		missing = append(missing, "Screen Recording")
+	}
+	if !got.Accessibility {
+		missing = append(missing, "Accessibility")
+	}
+	if len(missing) != 0 {
+		return got, errors.New("peekaboo missing required permissions: " + strings.Join(missing, ", "))
+	}
+	return got, nil
 }
 
 func liveGitHubRemoteFromEnv(lookup func(string) (string, bool)) string {
@@ -6465,4 +6789,52 @@ func indent(s string) string {
 		lines[i] = "    " + lines[i]
 	}
 	return strings.Join(lines, "\n")
+}
+
+func waitForFileFragment(path, fragment string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			if strings.Contains(string(data), fragment) {
+				return nil
+			}
+			lastErr = fmt.Errorf("%s did not include completion marker yet", path)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("timeout waiting for transcript")
+	}
+	return fmt.Errorf("timeout waiting for %q in %s: %w", fragment, path, lastErr)
+}
+
+func transcriptStarted(path string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && strings.Contains(string(data), "CODEMESH_PEEKABOO_SMOKE_BEGIN")
+}
+
+func screenshotHasVisiblePixels(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	img, _, err := image.Decode(file)
+	if err != nil {
+		return err
+	}
+	bounds := img.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += max(1, bounds.Dy()/100) {
+		for x := bounds.Min.X; x < bounds.Max.X; x += max(1, bounds.Dx()/100) {
+			r, g, b, _ := img.At(x, y).RGBA()
+			if r > 0x0800 || g > 0x0800 || b > 0x0800 {
+				return nil
+			}
+		}
+	}
+	return errors.New("screenshot contains no visible nonblack pixels")
 }
