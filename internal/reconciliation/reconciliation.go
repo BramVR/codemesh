@@ -140,13 +140,22 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 			continue
 		}
 		seenDesiredIdentities[project.Identity] = true
-		if owner, ok := seenDesiredPaths[desiredLocalPath]; ok && owner != project.Identity {
-			plan.addConflict(drift, BlockerPathConflict, desiredLocalPath, fmt.Sprintf("desired path already requested by %q", owner))
+		aliasOwnerIdentity, aliasTaken := aliasOwner[project.Alias]
+		aliasConflict := aliasTaken && aliasOwnerIdentity != project.Identity
+		pathOwnerIdentity, pathTaken := seenDesiredPaths[desiredLocalPath]
+		pathConflict := pathTaken && pathOwnerIdentity != project.Identity
+		if !aliasConflict {
+			aliasOwner[project.Alias] = project.Identity
+		}
+		if !pathConflict {
+			seenDesiredPaths[desiredLocalPath] = project.Identity
+		}
+		if aliasConflict {
+			plan.addConflict(drift, BlockerAliasConflict, "", fmt.Sprintf("alias %q already belongs to %q", project.Alias, aliasOwnerIdentity))
 			continue
 		}
-		seenDesiredPaths[desiredLocalPath] = project.Identity
-		if owner, ok := aliasOwner[project.Alias]; ok && owner != project.Identity {
-			plan.addConflict(drift, BlockerAliasConflict, "", fmt.Sprintf("alias %q already belongs to %q", project.Alias, owner))
+		if pathConflict {
+			plan.addConflict(drift, BlockerPathConflict, desiredLocalPath, fmt.Sprintf("desired path already requested by %q", pathOwnerIdentity))
 			continue
 		}
 
@@ -162,7 +171,6 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 			}
 			drift.Kind = DriftMissing
 			plan.Drifts = append(plan.Drifts, drift)
-			aliasOwner[project.Alias] = project.Identity
 			continue
 		}
 
@@ -172,7 +180,6 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 		if observedPath == desiredLocalPath {
 			drift.Kind = DriftUnchanged
 			plan.Drifts = append(plan.Drifts, drift)
-			aliasOwner[project.Alias] = project.Identity
 			continue
 		}
 		if owner, ok := byPath[desiredLocalPath]; ok && owner.NormalizedRemote != project.Identity {
@@ -185,7 +192,6 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 		}
 		drift.Kind = DriftMoved
 		plan.Drifts = append(plan.Drifts, drift)
-		aliasOwner[project.Alias] = project.Identity
 	}
 
 	desiredIdentity := make(map[string]bool, len(desiredEntries))

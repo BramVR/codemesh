@@ -141,6 +141,80 @@ func TestDryRunPlanBlocksManifestAliasConflict(t *testing.T) {
 	}
 }
 
+func TestDryRunPlanReservesAliasAfterDifferentConflict(t *testing.T) {
+	workspace := t.TempDir()
+	conflictPath := filepath.Join(workspace, "taken")
+	if err := os.MkdirAll(conflictPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := BuildDryRunPlan([]workspacemanifest.Entry{
+		manifestEntry("https://github.com/BramVR/first", "shared", "taken"),
+		manifestEntry("https://github.com/BramVR/second", "shared", "second"),
+	}, nil, machine(workspace))
+	if err != nil {
+		t.Fatalf("BuildDryRunPlan error = %v", err)
+	}
+
+	assertDrift(t, plan, "https://github.com/BramVR/first", DriftConflicting, conflictPath)
+	assertDrift(t, plan, "https://github.com/BramVR/second", DriftConflicting, filepath.Join(workspace, "second"))
+	if !plan.Blocked {
+		t.Fatalf("Blocked = false, want path and alias blockers")
+	}
+	if !hasBlocker(plan, BlockerPathConflict, "https://github.com/BramVR/first") {
+		t.Fatalf("Blockers = %#v, want path conflict for first alias claimant", plan.Blockers)
+	}
+	if !hasBlocker(plan, BlockerAliasConflict, "https://github.com/BramVR/second") {
+		t.Fatalf("Blockers = %#v, want alias conflict for later alias reuse", plan.Blockers)
+	}
+}
+
+func TestDryRunPlanReservesAliasAfterManifestPathConflict(t *testing.T) {
+	workspace := t.TempDir()
+
+	plan, err := BuildDryRunPlan([]workspacemanifest.Entry{
+		manifestEntry("https://github.com/BramVR/first", "first", "shared-path"),
+		manifestEntry("https://github.com/BramVR/second", "shared", "shared-path"),
+		manifestEntry("https://github.com/BramVR/third", "shared", "third"),
+	}, nil, machine(workspace))
+	if err != nil {
+		t.Fatalf("BuildDryRunPlan error = %v", err)
+	}
+
+	assertDrift(t, plan, "https://github.com/BramVR/first", DriftMissing, filepath.Join(workspace, "shared-path"))
+	assertDrift(t, plan, "https://github.com/BramVR/second", DriftConflicting, filepath.Join(workspace, "shared-path"))
+	assertDrift(t, plan, "https://github.com/BramVR/third", DriftConflicting, filepath.Join(workspace, "third"))
+	if !hasBlocker(plan, BlockerPathConflict, "https://github.com/BramVR/second") {
+		t.Fatalf("Blockers = %#v, want manifest path conflict for second", plan.Blockers)
+	}
+	if !hasBlocker(plan, BlockerAliasConflict, "https://github.com/BramVR/third") {
+		t.Fatalf("Blockers = %#v, want alias conflict for third", plan.Blockers)
+	}
+}
+
+func TestDryRunPlanReservesPathAfterManifestAliasConflict(t *testing.T) {
+	workspace := t.TempDir()
+
+	plan, err := BuildDryRunPlan([]workspacemanifest.Entry{
+		manifestEntry("https://github.com/BramVR/first", "shared", "one"),
+		manifestEntry("https://github.com/BramVR/second", "shared", "shared-path"),
+		manifestEntry("https://github.com/BramVR/third", "third", "shared-path"),
+	}, nil, machine(workspace))
+	if err != nil {
+		t.Fatalf("BuildDryRunPlan error = %v", err)
+	}
+
+	assertDrift(t, plan, "https://github.com/BramVR/first", DriftMissing, filepath.Join(workspace, "one"))
+	assertDrift(t, plan, "https://github.com/BramVR/second", DriftConflicting, filepath.Join(workspace, "shared-path"))
+	assertDrift(t, plan, "https://github.com/BramVR/third", DriftConflicting, filepath.Join(workspace, "shared-path"))
+	if !hasBlocker(plan, BlockerAliasConflict, "https://github.com/BramVR/second") {
+		t.Fatalf("Blockers = %#v, want alias conflict for second", plan.Blockers)
+	}
+	if !hasBlocker(plan, BlockerPathConflict, "https://github.com/BramVR/third") {
+		t.Fatalf("Blockers = %#v, want manifest path conflict for third", plan.Blockers)
+	}
+}
+
 func TestDryRunPlanAllowsAliasReuseAfterDesiredRename(t *testing.T) {
 	workspace := t.TempDir()
 	projects := []state.Project{
@@ -269,6 +343,15 @@ func assertDrift(t *testing.T, plan DriftPlan, identity string, kind DriftKind, 
 	}
 	t.Fatalf("missing drift for %s in %#v", identity, plan.Drifts)
 	return Drift{}
+}
+
+func hasBlocker(plan DriftPlan, kind BlockerKind, identity string) bool {
+	for _, blocker := range plan.Blockers {
+		if blocker.Kind == kind && blocker.Identity == identity {
+			return true
+		}
+	}
+	return false
 }
 
 type recordingStore struct {
