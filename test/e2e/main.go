@@ -203,7 +203,7 @@ type reportLiveOwnedHost struct {
 	Address                string                      `json:"address,omitempty"`
 	Status                 string                      `json:"status"`
 	SkipReason             string                      `json:"skip_reason,omitempty"`
-	Facts                  reportOwnedHostFacts        `json:"facts,omitempty"`
+	Facts                  *reportOwnedHostFacts       `json:"facts,omitempty"`
 	Doctor                 []reportOwnedHostDoctor     `json:"doctor,omitempty"`
 	Lock                   *reportOwnedHostLock        `json:"lock,omitempty"`
 	CommandDurations       map[string]string           `json:"command_durations,omitempty"`
@@ -608,14 +608,11 @@ func (h *harness) caseLiveOwnedHostSmoke(cfg liveConfig) {
 		})
 		index := len(h.live.OwnedHosts.Inventory) - 1
 		hostReport := &h.live.OwnedHosts.Inventory[index]
-		ok := h.runOwnedHostTarget(cfg, host, bundlePath, hostReport)
+		h.runOwnedHostTarget(cfg, host, bundlePath, hostReport)
 		switch hostReport.Status {
 		case "pass":
 			passCount++
 		case "failed":
-			failCount++
-		}
-		if !ok && cfg.Strict {
 			failCount++
 		}
 	}
@@ -699,7 +696,7 @@ func (h *harness) runOwnedHostTarget(cfg liveConfig, target ownedHostTarget, bun
 }
 
 func (h *harness) runOwnedHostLocalTarget(cfg liveConfig, target ownedHostTarget, bundlePath string, hostReport *reportLiveOwnedHost) bool {
-	hostReport.Facts = reportOwnedHostFacts{OS: runtime.GOOS, Arch: runtime.GOARCH, GoVersion: runtime.Version(), Shell: "sh"}
+	hostReport.Facts = &reportOwnedHostFacts{OS: runtime.GOOS, Arch: runtime.GOARCH, GoVersion: runtime.Version(), Shell: "sh"}
 	if runtime.GOOS != target.TargetOS {
 		h.recordOwnedHostSkipOrFail(cfg, hostReport, "owned-host "+target.Name+" OS prerequisite", "local host is "+runtime.GOOS+", target requires "+target.TargetOS)
 		return !cfg.Strict
@@ -972,15 +969,15 @@ func (h *harness) runOwnedHostLocalWorkspaceFlow(target ownedHostTarget, bundleP
 
 func (h *harness) ownedHostCommand(target ownedHostTarget, hostReport *reportLiveOwnedHost, bundlePath, label, key string, machine twoMachineNode, name string, args ...string) result {
 	if err := os.MkdirAll(machine.CodeMeshHome, 0o755); err != nil {
-		return result{Name: label, Status: "FAIL", Error: err.Error(), ExitCode: -1}
+		return h.recordOwnedHostCommandSetupFailure(target, label, err)
 	}
 	if err := os.MkdirAll(machine.Home, 0o755); err != nil {
-		return result{Name: label, Status: "FAIL", Error: err.Error(), ExitCode: -1}
+		return h.recordOwnedHostCommandSetupFailure(target, label, err)
 	}
 	gitConfig := filepath.Join(machine.Home, ".gitconfig")
 	if _, err := os.Stat(gitConfig); errors.Is(err, os.ErrNotExist) {
 		if err := os.WriteFile(gitConfig, nil, 0o644); err != nil {
-			return result{Name: label, Status: "FAIL", Error: err.Error(), ExitCode: -1}
+			return h.recordOwnedHostCommandSetupFailure(target, label, err)
 		}
 	}
 	r := h.executeCommand(commandSpec{
@@ -995,7 +992,12 @@ func (h *harness) ownedHostCommand(target ownedHostTarget, hostReport *reportLiv
 		hostReport.CommandDurations = map[string]string{}
 	}
 	hostReport.CommandDurations[key] = r.Duration
-	stdoutPath, stderrPath := h.writeOwnedHostCommandArtifacts(bundlePath, target.Name, key, r.Stdout, r.Stderr)
+	stdoutPath, stderrPath, err := h.writeOwnedHostCommandArtifacts(bundlePath, target.Name, key, r.Stdout, r.Stderr)
+	if err != nil {
+		artifactFailure := result{Name: "owned-host " + target.Name + " " + label + " artifacts", Status: "FAIL", Error: err.Error(), ExitCode: -1}
+		h.record(artifactFailure)
+		return artifactFailure
+	}
 	hostReport.Artifacts = append(hostReport.Artifacts, reportOwnedHostArtifact{
 		Command:    key,
 		StdoutPath: h.repoArtifactPath(stdoutPath),
@@ -1008,17 +1010,29 @@ func (h *harness) ownedHostCommand(target ownedHostTarget, hostReport *reportLiv
 	return r
 }
 
-func (h *harness) writeOwnedHostCommandArtifacts(bundlePath, hostName, key, stdout, stderr string) (string, string) {
+func (h *harness) recordOwnedHostCommandSetupFailure(target ownedHostTarget, label string, err error) result {
+	r := result{Name: "owned-host " + target.Name + " " + label + " setup", Status: "FAIL", Error: err.Error(), ExitCode: -1}
+	h.record(r)
+	return r
+}
+
+func (h *harness) writeOwnedHostCommandArtifacts(bundlePath, hostName, key, stdout, stderr string) (string, string, error) {
 	dir := filepath.Join(bundlePath, slug(hostName))
-	_ = os.MkdirAll(dir, 0o755)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", err
+	}
 	stdoutPath := filepath.Join(dir, slug(key)+".stdout.txt")
 	stderrPath := filepath.Join(dir, slug(key)+".stderr.txt")
 	redactions := h.redactionMarkers()
 	stdout, _ = redactString(stdout, 0, redactions...)
 	stderr, _ = redactString(stderr, 0, redactions...)
-	_ = os.WriteFile(stdoutPath, []byte(stdout), 0o644)
-	_ = os.WriteFile(stderrPath, []byte(stderr), 0o644)
-	return stdoutPath, stderrPath
+	if err := os.WriteFile(stdoutPath, []byte(stdout), 0o644); err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(stderrPath, []byte(stderr), 0o644); err != nil {
+		return "", "", err
+	}
+	return stdoutPath, stderrPath, nil
 }
 
 func (h *harness) runOwnedHostSSHDoctor(cfg liveConfig, target ownedHostTarget, _ string, hostReport *reportLiveOwnedHost) bool {
@@ -1132,24 +1146,23 @@ func copyOwnedHostFile(src, dst string) error {
 func ownedHostInventoryFromEnv(lookup func(string) (string, bool)) ([]ownedHostTarget, error) {
 	value, _ := lookup("CODEMESH_E2E_OWNED_HOSTS")
 	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil, nil
-	}
 	var hosts []ownedHostTarget
-	for _, raw := range strings.Split(value, ",") {
-		label := strings.ToLower(strings.TrimSpace(raw))
-		if label == "" {
-			continue
-		}
-		switch label {
-		case "local", "local-macos", "macos":
-			hosts = append(hosts, ownedHostTarget{Name: "local-macos", Kind: "local", TargetOS: "darwin"})
-		case "hermes-win", "windows":
-			hosts = append(hosts, ownedHostTarget{Name: "hermes-win", Kind: "ssh", TargetOS: "windows", Address: "hermes-win"})
-		case "hermes-vm", "linux":
-			hosts = append(hosts, ownedHostTarget{Name: "hermes-vm", Kind: "ssh", TargetOS: "linux", Address: "hermes-vm"})
-		default:
-			return nil, fmt.Errorf("unknown owned-host target %q", raw)
+	if value != "" {
+		for _, raw := range strings.Split(value, ",") {
+			label := strings.ToLower(strings.TrimSpace(raw))
+			if label == "" {
+				continue
+			}
+			switch label {
+			case "local", "local-macos", "macos":
+				hosts = append(hosts, ownedHostTarget{Name: "local-macos", Kind: "local", TargetOS: "darwin"})
+			case "hermes-win", "windows":
+				hosts = append(hosts, ownedHostTarget{Name: "hermes-win", Kind: "ssh", TargetOS: "windows", Address: "hermes-win"})
+			case "hermes-vm", "linux":
+				hosts = append(hosts, ownedHostTarget{Name: "hermes-vm", Kind: "ssh", TargetOS: "linux", Address: "hermes-vm"})
+			default:
+				return nil, fmt.Errorf("unknown owned-host target %q", raw)
+			}
 		}
 	}
 	if extra, ok := lookup("CODEMESH_E2E_EXTRA_LINUX_HOST"); ok {
@@ -2449,7 +2462,36 @@ func (h *harness) finishLive() int {
 			return 1
 		}
 	}
+	if h.liveReportFailed() {
+		return 1
+	}
 	return 0
+}
+
+func (h *harness) liveReportFailed() bool {
+	if h.live == nil {
+		return false
+	}
+	if h.live.Provider != nil && h.live.Provider.Status == "failed" {
+		return true
+	}
+	if h.live.Toolchain != nil && h.live.Toolchain.Status == "failed" {
+		return true
+	}
+	if h.live.Desktop != nil && h.live.Desktop.Status == "failed" {
+		return true
+	}
+	if h.live.OwnedHosts != nil {
+		if h.live.OwnedHosts.Status == "failed" {
+			return true
+		}
+		for _, host := range h.live.OwnedHosts.Inventory {
+			if host.Status == "failed" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *harness) caseProjectRegistryScanWorkflow() {

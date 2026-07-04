@@ -294,6 +294,78 @@ func TestOwnedHostInventoryFromEnvIncludesStaticTargets(t *testing.T) {
 	}
 }
 
+func TestOwnedHostInventoryAllowsExtraLinuxAlone(t *testing.T) {
+	t.Setenv("CODEMESH_E2E_OWNED_HOSTS", "")
+	t.Setenv("CODEMESH_E2E_EXTRA_LINUX_HOST", "builder.example.invalid")
+
+	got, err := ownedHostInventoryFromEnv(os.LookupEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ownedHostTarget{Name: "extra-linux", Kind: "ssh", TargetOS: "linux", Address: "builder.example.invalid"}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("inventory = %#v, want %#v", got, want)
+	}
+}
+
+func TestOwnedHostCommandArtifactWriteErrorsAreReported(t *testing.T) {
+	h := testHarness(t)
+	blocker := filepath.Join(h.tmp, "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := h.writeOwnedHostCommandArtifacts(blocker, "local-macos", "help", "stdout", "stderr")
+	if err == nil {
+		t.Fatalf("writeOwnedHostCommandArtifacts accepted non-directory bundle path")
+	}
+}
+
+func TestOwnedHostCommandSetupFailuresAreRecorded(t *testing.T) {
+	h := testHarness(t)
+	blocker := filepath.Join(h.tmp, "blocked-home")
+	if err := os.WriteFile(blocker, []byte("file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hostReport := &reportLiveOwnedHost{}
+	r := h.ownedHostCommand(
+		ownedHostTarget{Name: "local-macos", Kind: "local", TargetOS: "darwin"},
+		hostReport,
+		filepath.Join(h.tmp, "bundle"),
+		"setup failure",
+		"setup_failure",
+		twoMachineNode{CodeMeshHome: filepath.Join(h.tmp, "codemesh-home"), Home: blocker, WorkspaceRoot: h.tmp},
+		os.Args[0],
+	)
+	if r.Status != "FAIL" {
+		t.Fatalf("status = %s, want FAIL", r.Status)
+	}
+	if len(h.results) != 1 || h.results[0].Status != "FAIL" || !strings.Contains(h.results[0].Name, "setup failure setup") {
+		t.Fatalf("recorded results = %#v, want setup failure", h.results)
+	}
+}
+
+func TestFinishLiveFailsFailedOwnedHostReportWithoutRecordedFail(t *testing.T) {
+	h := testHarness(t)
+	h.mode = modeLive
+	h.bin = filepath.Join(h.tmp, "dist", "codemesh")
+	h.reportPath = filepath.Join(h.tmp, "reports", "live-owned-host.json")
+	h.live = &reportLive{
+		OwnedHosts: &reportLiveOwnedHosts{
+			Status: "failed",
+			Inventory: []reportLiveOwnedHost{{
+				Name:   "local-macos",
+				Status: "failed",
+			}},
+		},
+	}
+	h.results = []result{{Name: "recorded pass", Status: "PASS", ExitCode: 0}}
+
+	if code := h.finishLive(); code == 0 {
+		t.Fatalf("finishLive exit = 0, want failed live subreport to fail the run")
+	}
+}
+
 func TestWriteReportIncludesOwnedHostProofMetadata(t *testing.T) {
 	h := testHarness(t)
 	h.mode = modeLive
@@ -311,7 +383,7 @@ func TestWriteReportIncludesOwnedHostProofMetadata(t *testing.T) {
 				Kind:                   "local",
 				TargetOS:               "darwin",
 				Status:                 "pass",
-				Facts:                  reportOwnedHostFacts{OS: "darwin", Arch: "arm64", GoVersion: "go1.26.3", Shell: "sh"},
+				Facts:                  &reportOwnedHostFacts{OS: "darwin", Arch: "arm64", GoVersion: "go1.26.3", Shell: "sh"},
 				Doctor:                 []reportOwnedHostDoctor{{Name: "git", Status: "pass", Duration: "1ms"}},
 				Lock:                   &reportOwnedHostLock{Path: "/tmp/codemesh-e2e-live-locks/host-local-macos.lock", Label: "codemesh owned-host local-macos", StartedAt: "2026-07-04T12:00:00Z"},
 				CommandDurations:       map[string]string{"agent_run": "10ms"},
