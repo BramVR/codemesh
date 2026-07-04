@@ -176,14 +176,14 @@ type reportLiveToolchainFixture struct {
 }
 
 type reportLiveDesktop struct {
-	Status         string                    `json:"status"`
-	PeekabooPath   string                    `json:"peekaboo_path,omitempty"`
-	TerminalApp    string                    `json:"terminal_app,omitempty"`
-	ScreenshotPath string                    `json:"screenshot_path,omitempty"`
-	TranscriptPath string                    `json:"transcript_path,omitempty"`
-	SkipReason     string                    `json:"skip_reason,omitempty"`
-	SecretSafety   string                    `json:"secret_safety,omitempty"`
-	Permissions    reportPeekabooPermissions `json:"permissions,omitempty"`
+	Status         string                     `json:"status"`
+	PeekabooPath   string                     `json:"peekaboo_path,omitempty"`
+	TerminalApp    string                     `json:"terminal_app,omitempty"`
+	ScreenshotPath string                     `json:"screenshot_path,omitempty"`
+	TranscriptPath string                     `json:"transcript_path,omitempty"`
+	SkipReason     string                     `json:"skip_reason,omitempty"`
+	SecretSafety   string                     `json:"secret_safety,omitempty"`
+	Permissions    *reportPeekabooPermissions `json:"permissions,omitempty"`
 }
 
 type reportPeekabooPermissions struct {
@@ -856,7 +856,7 @@ func (h *harness) caseLivePeekabooDesktopSmoke(cfg liveConfig) {
 		h.recordLiveDesktopSkipOrFail(cfg, "live peekaboo permissions assertion", err.Error(), permissions.Duration, permissions.ExitCode)
 		return
 	}
-	h.live.Desktop.Permissions = parsedPermissions
+	h.live.Desktop.Permissions = &parsedPermissions
 	h.record(permissions)
 
 	artifacts, err := h.preparePeekabooDesktopArtifacts()
@@ -909,12 +909,8 @@ func (h *harness) caseLivePeekabooDesktopSmoke(cfg liveConfig) {
 	h.live.Desktop.SecretSafety = "pass"
 	screenshot := h.peekabooCommand("live peekaboo terminal screenshot", peekaboo, "image", "--app", terminalApp, "--mode", "window", "--path", artifacts.screenshot, "--json", "--no-remote")
 	if screenshot.Status != "PASS" {
-		windowErr := resultError(screenshot).Error()
-		screenshot = h.peekabooCommand("live peekaboo screen screenshot", peekaboo, "image", "--mode", "screen", "--screen-index", "0", "--path", artifacts.screenshot, "--json", "--no-remote")
-		if screenshot.Status != "PASS" {
-			h.recordLiveDesktopSkipOrFail(cfg, screenshot.Name, windowErr+"; "+resultError(screenshot).Error(), screenshot.Duration, screenshot.ExitCode)
-			return
-		}
+		h.recordLiveDesktopSkipOrFail(cfg, screenshot.Name, resultError(screenshot).Error(), screenshot.Duration, screenshot.ExitCode)
+		return
 	}
 	screenshot.Stdout = ""
 	h.record(screenshot)

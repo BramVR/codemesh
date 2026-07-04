@@ -288,10 +288,10 @@ func TestWriteReportIncludesLiveDesktopArtifacts(t *testing.T) {
 			Status:         "pass",
 			PeekabooPath:   "/opt/homebrew/bin/peekaboo",
 			TerminalApp:    "Terminal",
-			ScreenshotPath: filepath.Join(h.root, "tmp", "e2e-peekaboo-desktop.png"),
-			TranscriptPath: filepath.Join(h.root, "tmp", "e2e-peekaboo-transcript.txt"),
+			ScreenshotPath: h.repoArtifactPath(filepath.Join(h.root, "tmp", "e2e-peekaboo-desktop.png")),
+			TranscriptPath: h.repoArtifactPath(filepath.Join(h.root, "tmp", "e2e-peekaboo-transcript.txt")),
 			SecretSafety:   "pass",
-			Permissions: reportPeekabooPermissions{
+			Permissions: &reportPeekabooPermissions{
 				Source:          "local",
 				ScreenRecording: true,
 				Accessibility:   true,
@@ -313,8 +313,45 @@ func TestWriteReportIncludesLiveDesktopArtifacts(t *testing.T) {
 	if got.Live == nil || got.Live.Desktop == nil {
 		t.Fatalf("live desktop report missing: %#v", got.Live)
 	}
-	if got.Live.Desktop.ScreenshotPath == "" || got.Live.Desktop.TranscriptPath == "" || got.Live.Desktop.SecretSafety != "pass" {
+	if got.Live.Desktop.ScreenshotPath != "tmp/e2e-peekaboo-desktop.png" {
+		t.Fatalf("screenshot path = %q, want stable repo-relative tmp path", got.Live.Desktop.ScreenshotPath)
+	}
+	if got.Live.Desktop.TranscriptPath != "tmp/e2e-peekaboo-transcript.txt" {
+		t.Fatalf("transcript path = %q, want stable repo-relative tmp path", got.Live.Desktop.TranscriptPath)
+	}
+	if got.Live.Desktop.SecretSafety != "pass" {
 		t.Fatalf("desktop report = %#v", got.Live.Desktop)
+	}
+	if got.Live.Desktop.Permissions == nil || !got.Live.Desktop.Permissions.ScreenRecording || !got.Live.Desktop.Permissions.Accessibility {
+		t.Fatalf("desktop permissions = %#v", got.Live.Desktop.Permissions)
+	}
+}
+
+func TestWriteReportOmitsDesktopPermissionsWhenNotChecked(t *testing.T) {
+	h := testHarness(t)
+	h.mode = modeLive
+	h.bin = filepath.Join(h.tmp, "dist", "codemesh")
+	h.reportPath = filepath.Join(h.tmp, "reports", "live.json")
+	h.live = &reportLive{
+		OptIn:   true,
+		Targets: []string{liveTargetDesktop},
+		Desktop: &reportLiveDesktop{
+			Status:       "skipped",
+			TerminalApp:  "Terminal",
+			SkipReason:   "Peekaboo desktop smoke requires macOS",
+			SecretSafety: "not_run",
+		},
+	}
+
+	if err := h.writeReport(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(h.reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"permissions"`) {
+		t.Fatalf("skipped desktop report should omit unchecked permissions:\n%s", data)
 	}
 }
 
