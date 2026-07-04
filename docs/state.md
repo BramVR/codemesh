@@ -93,6 +93,8 @@ Workspace Manifest entries are desired shared topology, not observed local state
 
 Manifest entries must not include readiness results, dirty/stale state, Agent Runs, machine facts, env values, or secret values. Manifest command names and flags remain planned until they appear in CLI help and the Command Catalog.
 
+Reconciliation compares Workspace Manifest desired topology with the local State Store machine workspace root and observed Project Registry rows. The current slice produces a dry-run drift plan only: added, missing, moved, conflicting, and unchanged projects. Desired paths are resolved under the registered machine workspace root. Path conflicts are blockers, and dry-run reconciliation does not write SQLite or working trees.
+
 ## Readiness
 
 Project readiness is derived when `tree`, `status`, `doctor`, `hydrate`, or Agent Prep reads the Project Registry. It is not stored in `projects`.
