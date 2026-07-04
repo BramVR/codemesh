@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,6 +65,7 @@ type report struct {
 	Host         reportHost         `json:"host"`
 	Isolation    reportIsolation    `json:"isolation"`
 	Live         *reportLive        `json:"live,omitempty"`
+	TwoMachine   *reportTwoMachine  `json:"two_machine,omitempty"`
 	Summary      reportSummary      `json:"summary"`
 	SecretSafety reportSecretSafety `json:"secret_safety"`
 	Results      []result           `json:"results"`
@@ -98,6 +101,23 @@ type reportLive struct {
 	GitHub      *reportLiveGitHub    `json:"github,omitempty"`
 	Provider    *reportLiveProvider  `json:"provider,omitempty"`
 	Toolchain   *reportLiveToolchain `json:"toolchain,omitempty"`
+}
+
+type reportTwoMachine struct {
+	MachineAID          string                    `json:"machine_a_id"`
+	MachineBID          string                    `json:"machine_b_id"`
+	ManifestLocation    string                    `json:"manifest_location"`
+	HydratedProjectID   string                    `json:"hydrated_project_id"`
+	HydrationProvenance reportHydrationProvenance `json:"hydration_provenance"`
+	DriftSummary        string                    `json:"drift_summary"`
+	CleanupStatus       string                    `json:"cleanup_status"`
+}
+
+type reportHydrationProvenance struct {
+	Remote      string `json:"remote"`
+	Base        string `json:"base"`
+	DesiredPath string `json:"desired_path"`
+	MachineID   string `json:"machine_id"`
 }
 
 type reportLiveGitHub struct {
@@ -188,6 +208,7 @@ type harness struct {
 	output       io.Writer
 	results      []result
 	live         *reportLive
+	twoMachine   *reportTwoMachine
 }
 
 type liveConfig struct {
@@ -250,6 +271,13 @@ type scenario struct {
 	name         string
 	codemeshHome string
 	fixtures     offlineGitFixtures
+}
+
+type twoMachineNode struct {
+	Name          string
+	CodeMeshHome  string
+	Home          string
+	WorkspaceRoot string
 }
 
 func main() {
@@ -330,6 +358,7 @@ func (h *harness) run() int {
 	h.caseDoctorPreflightWorkflow()
 	h.caseBootstrapTopologyWorkflow()
 	h.caseHydrationFixtureWorkflow()
+	h.caseTwoMachineManifestBootstrapReconcileSmoke()
 	h.caseAgentPrepFixtureWorkflow()
 	h.caseCLIContractSnapshotWorkflow()
 	h.record(result{Name: "offline e2e boundary: live network not required", Status: "PASS", ExitCode: 0})
@@ -2392,6 +2421,227 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 	s.expectOutput(status, "state: present", "path_present: true")
 }
 
+func (h *harness) caseTwoMachineManifestBootstrapReconcileSmoke() {
+	caseRoot := filepath.Join(h.tmp, "two-machine")
+	fixtures := offlineGitFixtures{
+		Root:    filepath.Join(caseRoot, "git-fixtures"),
+		Remotes: filepath.Join(caseRoot, "git-fixtures", "remotes"),
+		Sources: filepath.Join(caseRoot, "git-fixtures", "sources"),
+	}
+	if err := os.MkdirAll(fixtures.Remotes, 0o755); err != nil {
+		h.record(result{Name: "two-machine fixture setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	target, err := h.createRemoteOnlyFixture(fixtures, "mesh-target", nil)
+	if err != nil {
+		h.record(result{Name: "two-machine target remote setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	unrelated, err := h.createRemoteOnlyFixture(fixtures, "mesh-unrelated", nil)
+	if err != nil {
+		h.record(result{Name: "two-machine unrelated remote setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+
+	remoteBase, stopGitDaemon, err := h.startLocalGitDaemon(fixtures.Remotes, filepath.Base(target.Remote))
+	if err != nil {
+		h.record(result{Name: "two-machine local git daemon", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	defer stopGitDaemon()
+	targetRemote := remoteBase + "/" + filepath.Base(target.Remote)
+	unrelatedRemote := remoteBase + "/" + filepath.Base(unrelated.Remote)
+
+	machineA, err := h.newTwoMachineNode(caseRoot, "machine-a")
+	if err != nil {
+		h.record(result{Name: "two-machine machine A setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	machineB, err := h.newTwoMachineNode(caseRoot, "machine-b")
+	if err != nil {
+		h.record(result{Name: "two-machine machine B setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := os.MkdirAll(filepath.Join(machineA.WorkspaceRoot, "projects"), 0o755); err != nil {
+		h.record(result{Name: "two-machine machine A workspace setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	targetSourceA := filepath.Join(machineA.WorkspaceRoot, "projects", "mesh-target")
+	unrelatedSourceA := filepath.Join(machineA.WorkspaceRoot, "projects", "mesh-unrelated")
+	targetPathB := filepath.Join(machineB.WorkspaceRoot, "projects", "mesh-target")
+	unrelatedPathB := filepath.Join(machineB.WorkspaceRoot, "projects", "mesh-unrelated")
+
+	if clone := h.twoMachineCommand("two-machine machine A clone selected source", machineA, "git", "clone", targetRemote, targetSourceA); clone.Status != "PASS" {
+		return
+	}
+	if clone := h.twoMachineCommand("two-machine machine A clone unrelated source", machineA, "git", "clone", unrelatedRemote, unrelatedSourceA); clone.Status != "PASS" {
+		return
+	}
+	if init := h.twoMachineCommand("two-machine machine A init", machineA, h.bin, "init", machineA.WorkspaceRoot); init.Status != "PASS" {
+		return
+	}
+	registerA := h.twoMachineCommand("two-machine machine A register", machineA, h.bin, "machine", "register", machineA.WorkspaceRoot, "--json")
+	machineAID, ok := h.expectMachineRegisterJSON("two-machine machine A id", registerA, machineA.WorkspaceRoot)
+	if !ok {
+		return
+	}
+	if add := h.twoMachineCommand("two-machine machine A add selected project", machineA, h.bin, "add", targetSourceA, "--alias", "mesh-target"); add.Status != "PASS" {
+		return
+	}
+	if add := h.twoMachineCommand("two-machine machine A add unrelated project", machineA, h.bin, "add", unrelatedSourceA, "--alias", "mesh-unrelated"); add.Status != "PASS" {
+		return
+	}
+	rowsA, err := readProjectRowsFromStore(filepath.Join(machineA.CodeMeshHome, "codemesh.db"))
+	if err != nil {
+		h.record(result{Name: "two-machine machine A manifest source rows", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	targetRowA, ok := projectRowByAlias(rowsA, "mesh-target")
+	if !ok {
+		h.record(result{Name: "two-machine machine A manifest source rows", Status: "FAIL", Error: "mesh-target row missing", ExitCode: -1})
+		return
+	}
+	unrelatedRowA, ok := projectRowByAlias(rowsA, "mesh-unrelated")
+	if !ok {
+		h.record(result{Name: "two-machine machine A manifest source rows", Status: "FAIL", Error: "mesh-unrelated row missing", ExitCode: -1})
+		return
+	}
+	if targetRowA.CloneURL != targetRemote || unrelatedRowA.CloneURL != unrelatedRemote {
+		h.record(result{Name: "two-machine machine A manifest source rows", Status: "FAIL", Error: fmt.Sprintf("clone URLs = %q %q", targetRowA.CloneURL, unrelatedRowA.CloneURL), ExitCode: -1})
+		return
+	}
+
+	manifest := filepath.Join(caseRoot, "manifest")
+	targetDesiredPath := "projects/mesh-target"
+	unrelatedDesiredPath := "projects/mesh-unrelated"
+	targetManifest := filepath.Join(manifest, "mesh-target.json")
+	if err := writeE2EManifestEntryWithCloneURL(manifest, "mesh-target.json", targetRowA.NormalizedRemote, "mesh-target", targetDesiredPath, targetRowA.CloneURL); err != nil {
+		h.record(result{Name: "two-machine selected manifest entry", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := writeE2EManifestEntryWithCloneURL(manifest, "mesh-unrelated.json", unrelatedRowA.NormalizedRemote, "mesh-unrelated", unrelatedDesiredPath, unrelatedRowA.CloneURL); err != nil {
+		h.record(result{Name: "two-machine unrelated manifest entry", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if !h.expectManifestEntry("two-machine machine A selected manifest state", targetManifest, targetRowA.NormalizedRemote, "mesh-target", targetDesiredPath, targetRowA.CloneURL) {
+		return
+	}
+
+	if init := h.twoMachineCommand("two-machine machine B init", machineB, h.bin, "init", machineB.WorkspaceRoot); init.Status != "PASS" {
+		return
+	}
+	registerB := h.twoMachineCommand("two-machine machine B register", machineB, h.bin, "machine", "register", machineB.WorkspaceRoot, "--json")
+	machineBID, ok := h.expectMachineRegisterJSON("two-machine machine B id", registerB, machineB.WorkspaceRoot)
+	if !ok {
+		return
+	}
+	if machineAID == machineBID {
+		h.record(result{Name: "two-machine distinct machine identities", Status: "FAIL", Error: "machine IDs matched across isolated homes", ExitCode: -1})
+		return
+	}
+	h.record(result{Name: "two-machine distinct machine identities", Status: "PASS", ExitCode: 0})
+
+	plan := h.twoMachineCommand("two-machine bootstrap dry-run plan", machineB, h.bin, "bootstrap", manifest)
+	if plan.Status != "PASS" || !resultContainsAll(plan, "bootstrap plan", "apply: false", "blocked: false", "missing: mesh-target "+targetPathB, "missing: mesh-unrelated "+unrelatedPathB) {
+		if plan.Status == "PASS" {
+			plan.Status = "FAIL"
+			plan.Error = "bootstrap dry-run did not report both missing projects"
+			h.updateResultByName(plan)
+		}
+		return
+	}
+	if !h.expectProjectRowsAt("two-machine bootstrap dry-run leaves registry empty", machineB.CodeMeshHome) {
+		return
+	}
+	if !h.expectPathMissingResult("two-machine bootstrap dry-run no selected checkout", targetPathB) || !h.expectPathMissingResult("two-machine bootstrap dry-run no unrelated checkout", unrelatedPathB) {
+		return
+	}
+
+	apply := h.twoMachineCommand("two-machine bootstrap apply topology", machineB, h.bin, "bootstrap", manifest, "--apply")
+	if apply.Status != "PASS" || !resultContainsAll(apply, "apply: true", "applied", "added: mesh-target "+targetPathB, "added: mesh-unrelated "+unrelatedPathB) {
+		if apply.Status == "PASS" {
+			apply.Status = "FAIL"
+			apply.Error = "bootstrap apply did not report both registry additions"
+			h.updateResultByName(apply)
+		}
+		return
+	}
+	if !h.expectProjectRowsAt("two-machine machine B bootstrapped registry", machineB.CodeMeshHome,
+		projectRow{Alias: "mesh-target", NormalizedRemote: targetRowA.NormalizedRemote, CloneURL: targetRemote, LocalPath: targetPathB},
+		projectRow{Alias: "mesh-unrelated", NormalizedRemote: unrelatedRowA.NormalizedRemote, CloneURL: unrelatedRemote, LocalPath: unrelatedPathB},
+	) {
+		return
+	}
+	if !h.expectPathMissingResult("two-machine bootstrap apply no selected checkout", targetPathB) || !h.expectPathMissingResult("two-machine bootstrap apply no unrelated checkout", unrelatedPathB) {
+		return
+	}
+
+	hydrate := h.twoMachineCommand("two-machine hydrate selected project", machineB, h.bin, "hydrate", "mesh-target", "--json")
+	if hydrate.Status != "PASS" || !h.expectTwoMachineHydrateJSON("two-machine hydrate selected project metadata", hydrate, "mesh-target", targetRowA.NormalizedRemote, targetPathB) {
+		return
+	}
+	if !h.expectGitCheckoutAtBase("two-machine hydrated checkout branch", targetPathB, "main") {
+		return
+	}
+	if !h.expectGitOrigin("two-machine hydrated checkout origin", targetPathB, targetRemote) {
+		return
+	}
+	if !h.expectPathMissingResult("two-machine selected hydrate no unrelated checkout", unrelatedPathB) {
+		return
+	}
+	if inside, err := pathInside(machineA.WorkspaceRoot, targetPathB); err != nil || inside || targetPathB == targetSourceA {
+		h.record(result{Name: "two-machine no source checkout reuse", Status: "FAIL", Error: fmt.Sprintf("machine B target path reused machine A source: inside=%t err=%v", inside, err), ExitCode: -1})
+		return
+	}
+	h.record(result{Name: "two-machine no source checkout reuse", Status: "PASS", ExitCode: 0})
+
+	driftManifest := filepath.Join(caseRoot, "manifest-drift")
+	movedDesiredPath := "projects/mesh-target-moved"
+	movedPathB := filepath.Join(machineB.WorkspaceRoot, "projects", "mesh-target-moved")
+	if err := writeE2EManifestEntryWithCloneURL(driftManifest, "mesh-target.json", targetRowA.NormalizedRemote, "mesh-target", movedDesiredPath, targetRowA.CloneURL); err != nil {
+		h.record(result{Name: "two-machine drift manifest selected", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := writeE2EManifestEntryWithCloneURL(driftManifest, "mesh-unrelated.json", unrelatedRowA.NormalizedRemote, "mesh-unrelated", unrelatedDesiredPath, unrelatedRowA.CloneURL); err != nil {
+		h.record(result{Name: "two-machine drift manifest unrelated", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	drift := h.twoMachineCommand("two-machine reconcile dry-run moved drift", machineB, h.bin, "bootstrap", driftManifest, "--json")
+	if drift.Status != "PASS" || !resultContainsAll(drift, `"command":"bootstrap"`, `"apply":false`, `"kind":"moved"`, `"alias":"mesh-target"`, movedPathB) {
+		if drift.Status == "PASS" {
+			drift.Status = "FAIL"
+			drift.Error = "reconcile dry-run did not report moved drift before mutation"
+			h.updateResultByName(drift)
+		}
+		return
+	}
+	if !h.expectProjectRowsAt("two-machine reconcile dry-run registry unchanged", machineB.CodeMeshHome,
+		projectRow{Alias: "mesh-target", NormalizedRemote: targetRowA.NormalizedRemote, CloneURL: targetRemote, LocalPath: targetPathB},
+		projectRow{Alias: "mesh-unrelated", NormalizedRemote: unrelatedRowA.NormalizedRemote, CloneURL: unrelatedRemote, LocalPath: unrelatedPathB},
+	) {
+		return
+	}
+	if !h.expectPathMissingResult("two-machine reconcile dry-run no moved checkout", movedPathB) {
+		return
+	}
+
+	h.twoMachine = &reportTwoMachine{
+		MachineAID:        machineAID,
+		MachineBID:        machineBID,
+		ManifestLocation:  manifest,
+		HydratedProjectID: targetRowA.NormalizedRemote,
+		HydrationProvenance: reportHydrationProvenance{
+			Remote:      targetRowA.NormalizedRemote,
+			Base:        "main",
+			DesiredPath: targetDesiredPath,
+			MachineID:   machineBID,
+		},
+		DriftSummary:  "moved: mesh-target " + targetPathB + " -> " + movedPathB,
+		CleanupStatus: "scheduled: harness temp cleanup",
+	}
+	h.record(result{Name: "two-machine smoke report", Status: "PASS", ExitCode: 0})
+}
+
 func (h *harness) caseAgentPrepFixtureWorkflow() {
 	s, err := h.newScenario("agent prep")
 	if err != nil {
@@ -3472,6 +3722,7 @@ func (h *harness) writeReport() error {
 			GitConfig:    filepath.Join(h.home, ".gitconfig"),
 		},
 		Live:         h.live,
+		TwoMachine:   h.twoMachine,
 		Summary:      summarizeResults(results),
 		SecretSafety: reportSecretSafety{Enabled: true, RedactedValues: redactedValues},
 		Results:      results,
@@ -3807,6 +4058,10 @@ func writeMissingBlockToolchainPolicy(path string) error {
 }
 
 func writeE2EManifestEntry(dir, name, identity, alias, desiredPath string) error {
+	return writeE2EManifestEntryWithCloneURL(dir, name, identity, alias, desiredPath, identity+".git")
+}
+
+func writeE2EManifestEntryWithCloneURL(dir, name, identity, alias, desiredPath, cloneURL string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -3822,8 +4077,219 @@ func writeE2EManifestEntry(dir, name, identity, alias, desiredPath string) error
     "groups": []
   }
 }
-`, identity, alias, desiredPath, identity+".git")
+`, identity, alias, desiredPath, cloneURL)
 	return os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644)
+}
+
+func (h *harness) newTwoMachineNode(root, name string) (twoMachineNode, error) {
+	node := twoMachineNode{
+		Name:          name,
+		CodeMeshHome:  filepath.Join(root, name, "codemesh-home"),
+		Home:          filepath.Join(root, name, "home"),
+		WorkspaceRoot: filepath.Join(root, name, "workspace"),
+	}
+	if err := os.MkdirAll(node.CodeMeshHome, 0o755); err != nil {
+		return node, err
+	}
+	if err := os.MkdirAll(node.Home, 0o755); err != nil {
+		return node, err
+	}
+	if err := os.WriteFile(filepath.Join(node.Home, ".gitconfig"), nil, 0o644); err != nil {
+		return node, err
+	}
+	if err := os.MkdirAll(node.WorkspaceRoot, 0o755); err != nil {
+		return node, err
+	}
+	return node, nil
+}
+
+func (n twoMachineNode) env() []string {
+	return []string{
+		"CODEMESH_HOME=" + n.CodeMeshHome,
+		"HOME=" + n.Home,
+		"GIT_CONFIG_GLOBAL=" + filepath.Join(n.Home, ".gitconfig"),
+	}
+}
+
+func (h *harness) twoMachineCommand(label string, machine twoMachineNode, name string, args ...string) result {
+	r := h.executeCommand(commandSpec{
+		Label:   label,
+		Dir:     machine.WorkspaceRoot,
+		Name:    name,
+		Args:    args,
+		Timeout: longCommandTimeout,
+		Env:     machine.env(),
+	})
+	h.record(r)
+	return r
+}
+
+func (h *harness) startLocalGitDaemon(basePath, probeRepo string) (string, func(), error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", nil, err
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		return "", nil, err
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, "git", "daemon", "--verbose", "--log-destination=stderr", "--export-all", "--reuseaddr", "--base-path="+basePath, "--listen=127.0.0.1", "--port="+strconv.Itoa(port), basePath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return "", nil, err
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	stop := func() {
+		cancel()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		select {
+		case <-done:
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+
+	remoteBase := "git://127.0.0.1:" + strconv.Itoa(port)
+	probeURL := remoteBase + "/" + probeRepo
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case waitErr := <-done:
+			cancel()
+			return "", nil, fmt.Errorf("git daemon exited early: %v %s", waitErr, strings.TrimSpace(stderr.String()))
+		default:
+		}
+		probeCtx, probeCancel := context.WithTimeout(context.Background(), time.Second)
+		probe := exec.CommandContext(probeCtx, "git", "ls-remote", probeURL, "HEAD")
+		if err := probe.Run(); err == nil {
+			probeCancel()
+			return remoteBase, stop, nil
+		}
+		probeCancel()
+		time.Sleep(100 * time.Millisecond)
+	}
+	stop()
+	return "", nil, fmt.Errorf("git daemon did not become ready for %s: %s", probeURL, strings.TrimSpace(stderr.String()))
+}
+
+func (h *harness) expectMachineRegisterJSON(name string, r result, workspaceRoot string) (string, bool) {
+	if r.Status != "PASS" {
+		return "", false
+	}
+	var payload struct {
+		ID            string `json:"id"`
+		WorkspaceRoot string `json:"workspace_root"`
+	}
+	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: "stdout was not JSON: " + err.Error(), ExitCode: -1})
+		return "", false
+	}
+	if payload.ID == "" || payload.WorkspaceRoot != workspaceRoot {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("machine payload = %#v, want workspace %s", payload, workspaceRoot), ExitCode: -1})
+		return "", false
+	}
+	h.record(result{Name: name, Status: "PASS", ExitCode: 0})
+	return payload.ID, true
+}
+
+func (h *harness) expectManifestEntry(name, path, identity, alias, desiredPath, cloneURL string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	var entry struct {
+		ManifestVersion int `json:"manifest_version"`
+		Project         struct {
+			Identity    string `json:"identity"`
+			Alias       string `json:"alias"`
+			DesiredPath string `json:"desired_path"`
+			CloneHints  struct {
+				URL string `json:"url"`
+			} `json:"clone_hints"`
+		} `json:"project"`
+	}
+	if err := json.Unmarshal(data, &entry); err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if entry.ManifestVersion != 1 || entry.Project.Identity != identity || entry.Project.Alias != alias || entry.Project.DesiredPath != desiredPath || entry.Project.CloneHints.URL != cloneURL {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("manifest entry = %#v", entry), ExitCode: -1})
+		return false
+	}
+	h.record(result{Name: name, Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func projectRowByAlias(rows []projectRow, alias string) (projectRow, bool) {
+	for _, row := range rows {
+		if row.Alias == alias {
+			return row, true
+		}
+	}
+	return projectRow{}, false
+}
+
+func (h *harness) expectProjectRowsAt(name, codemeshHome string, want ...projectRow) bool {
+	got, err := readProjectRowsFromStore(filepath.Join(codemeshHome, "codemesh.db"))
+	if err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if len(got) != len(want) {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project rows = %#v, want %#v", got, want), ExitCode: -1})
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row %d = %#v, want %#v", i, got[i], want[i]), ExitCode: -1})
+			return false
+		}
+	}
+	h.record(result{Name: name, Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func (h *harness) expectPathMissingResult(name, path string) bool {
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("path exists or stat failed: %v", err), ExitCode: -1})
+		return false
+	}
+	h.record(result{Name: name, Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func (h *harness) expectTwoMachineHydrateJSON(name string, r result, alias, remote, path string) bool {
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Project     string `json:"project"`
+			Outcome     string `json:"outcome"`
+			Path        string `json:"path"`
+			PathPresent bool   `json:"path_present"`
+			Remote      string `json:"remote"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: "stdout was not JSON: " + err.Error(), ExitCode: -1})
+		return false
+	}
+	got := payload.Payload
+	if payload.Command != "hydrate" || payload.ExitClass != "success" || got.Project != alias || got.Outcome != "hydrated" || got.Path != path || !got.PathPresent || got.Remote != remote {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("hydrate payload = %#v", payload), ExitCode: -1})
+		return false
+	}
+	h.record(result{Name: name, Status: "PASS", ExitCode: 0})
+	return true
 }
 
 func (h *harness) createClonedFixture(fixtures offlineGitFixtures, name string, mutate func(string) error) (gitFixtureProject, error) {
@@ -3948,6 +4414,20 @@ func (h *harness) print(r result) {
 func (h *harness) record(r result) {
 	h.print(r)
 	h.results = append(h.results, r)
+}
+
+func (h *harness) updateResultByName(r result) {
+	for i := len(h.results) - 1; i >= 0; i-- {
+		if h.results[i].Name == r.Name {
+			previous := h.results[i]
+			h.results[i] = r
+			if previous.Status != r.Status || previous.Error != r.Error {
+				h.print(r)
+			}
+			return
+		}
+	}
+	h.record(r)
 }
 
 func (h *harness) newScenario(name string) (*scenario, error) {
