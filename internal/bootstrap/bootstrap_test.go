@@ -54,6 +54,42 @@ func TestApplyCreatesParentsAndRegistryRowsWithoutProjectDirectories(t *testing.
 	}
 }
 
+func TestApplyCreatesWorkspaceRootForRootDesiredPath(t *testing.T) {
+	temp := t.TempDir()
+	workspace := filepath.Join(temp, "workspace")
+	parentMarker := filepath.Join(temp, "parent-marker")
+	if err := os.WriteFile(parentMarker, []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := newMemoryStore(machine(workspace))
+
+	result, err := Bootstrapper{Store: store}.Apply(context.Background(), []workspacemanifest.Entry{
+		manifestEntry("https://github.com/BramVR/root", "root", "."),
+	})
+	if err != nil {
+		t.Fatalf("Apply error = %v", err)
+	}
+
+	if !hasAppliedParent(result, workspace) {
+		t.Fatalf("applied parents = %#v, want workspace root", result.Applied.ParentDirectories)
+	}
+	if hasAppliedParent(result, temp) {
+		t.Fatalf("applied parents = %#v, must not include workspace parent", result.Applied.ParentDirectories)
+	}
+	if info, err := os.Stat(workspace); err != nil || !info.IsDir() {
+		t.Fatalf("workspace root missing or not directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "root")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bootstrap created project placeholder under root desired path: %v", err)
+	}
+	if got, err := os.ReadFile(parentMarker); err != nil || string(got) != "keep\n" {
+		t.Fatalf("parent marker changed or missing: got %q err %v", got, err)
+	}
+	if len(store.projects) != 1 || store.projects[0].LocalPath != workspace {
+		t.Fatalf("project rows = %#v, want root project row at workspace", store.projects)
+	}
+}
+
 func TestApplyRefusesPathConflictWithoutMutation(t *testing.T) {
 	workspace := t.TempDir()
 	conflictPath := filepath.Join(workspace, "tools", "alpha")

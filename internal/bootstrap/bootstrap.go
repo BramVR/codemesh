@@ -176,11 +176,16 @@ func projectFromImportChange(change workspacemanifest.ImportChange) state.Projec
 
 func parentDirectories(plan reconciliation.DriftPlan) []string {
 	seen := map[string]bool{}
+	workspaceRoot := filepath.Clean(plan.WorkspaceRoot)
 	for _, drift := range plan.Drifts {
 		if drift.Kind != reconciliation.DriftMissing && drift.Kind != reconciliation.DriftMoved && drift.Kind != reconciliation.DriftUnchanged {
 			continue
 		}
-		parent := filepath.Dir(drift.DesiredLocalPath)
+		desiredPath := filepath.Clean(drift.DesiredLocalPath)
+		parent := filepath.Dir(desiredPath)
+		if desiredPath == workspaceRoot {
+			parent = workspaceRoot
+		}
 		if parent == "." || parent == "" {
 			continue
 		}
