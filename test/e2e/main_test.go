@@ -225,6 +225,130 @@ func TestLiveTargetSelection(t *testing.T) {
 	if liveTargetEnabled(cfg, liveTargetGitHub) || liveTargetEnabled(cfg, liveTargetToolchain) {
 		t.Fatalf("non-desktop targets enabled for explicit desktop selection: %#v", cfg.Targets)
 	}
+
+	cfg = liveConfigFromEnv(mapLookup(map[string]string{
+		"CODEMESH_E2E_LIVE":         "1",
+		"CODEMESH_E2E_LIVE_TARGETS": "owned-host, owned hosts",
+	}))
+	if !liveTargetEnabled(cfg, liveTargetOwnedHost) {
+		t.Fatalf("owned-host target not enabled: %#v", cfg.Targets)
+	}
+	if liveTargetEnabled(cfg, liveTargetGitHub) || liveTargetEnabled(cfg, liveTargetDesktop) {
+		t.Fatalf("non-owned-host targets enabled for explicit owned-host selection: %#v", cfg.Targets)
+	}
+}
+
+func TestOwnedHostDefaultRecordsSkipAndReportMetadata(t *testing.T) {
+	t.Setenv("CODEMESH_E2E_OWNED_HOSTS", "")
+
+	h := testHarness(t)
+	h.live = &reportLive{OwnedHosts: &reportLiveOwnedHosts{}}
+
+	h.caseLiveOwnedHostSmoke(liveConfig{})
+
+	if len(h.results) != 1 || h.results[0].Name != "owned-host inventory config" || h.results[0].Status != "SKIP" {
+		t.Fatalf("results = %#v, want owned-host config skip", h.results)
+	}
+	if h.live.OwnedHosts == nil || h.live.OwnedHosts.Status != "skipped" || !strings.Contains(h.live.OwnedHosts.SkipReason, "CODEMESH_E2E_OWNED_HOSTS") {
+		t.Fatalf("owned-host report = %#v", h.live.OwnedHosts)
+	}
+}
+
+func TestOwnedHostStrictMissingInventoryFails(t *testing.T) {
+	t.Setenv("CODEMESH_E2E_OWNED_HOSTS", "")
+
+	h := testHarness(t)
+	h.live = &reportLive{OwnedHosts: &reportLiveOwnedHosts{}}
+
+	h.caseLiveOwnedHostSmoke(liveConfig{Strict: true})
+
+	if len(h.results) != 1 || h.results[0].Status != "FAIL" {
+		t.Fatalf("results = %#v, want strict owned-host config failure", h.results)
+	}
+	if h.live.OwnedHosts == nil || h.live.OwnedHosts.Status != "failed" {
+		t.Fatalf("owned-host report = %#v, want failed", h.live.OwnedHosts)
+	}
+}
+
+func TestOwnedHostInventoryFromEnvIncludesStaticTargets(t *testing.T) {
+	t.Setenv("CODEMESH_E2E_OWNED_HOSTS", "local-macos,hermes-win,hermes-vm")
+	t.Setenv("CODEMESH_E2E_EXTRA_LINUX_HOST", "builder.example.invalid")
+
+	got, err := ownedHostInventoryFromEnv(os.LookupEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("inventory count = %d, want 4: %#v", len(got), got)
+	}
+	want := []ownedHostTarget{
+		{Name: "local-macos", Kind: "local", TargetOS: "darwin"},
+		{Name: "hermes-win", Kind: "ssh", TargetOS: "windows", Address: "hermes-win"},
+		{Name: "hermes-vm", Kind: "ssh", TargetOS: "linux", Address: "hermes-vm"},
+		{Name: "extra-linux", Kind: "ssh", TargetOS: "linux", Address: "builder.example.invalid"},
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("inventory[%d] = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestWriteReportIncludesOwnedHostProofMetadata(t *testing.T) {
+	h := testHarness(t)
+	h.mode = modeLive
+	h.bin = filepath.Join(h.tmp, "dist", "codemesh")
+	h.reportPath = filepath.Join(h.tmp, "reports", "live-owned-host.json")
+	h.live = &reportLive{
+		OptIn:   true,
+		Targets: []string{liveTargetOwnedHost},
+		OwnedHosts: &reportLiveOwnedHosts{
+			Status:       "pass",
+			BundlePath:   "tmp/e2e-owned-host",
+			SecretSafety: "pass",
+			Inventory: []reportLiveOwnedHost{{
+				Name:                   "local-macos",
+				Kind:                   "local",
+				TargetOS:               "darwin",
+				Status:                 "pass",
+				Facts:                  reportOwnedHostFacts{OS: "darwin", Arch: "arm64", GoVersion: "go1.26.3", Shell: "sh"},
+				Doctor:                 []reportOwnedHostDoctor{{Name: "git", Status: "pass", Duration: "1ms"}},
+				Lock:                   &reportOwnedHostLock{Path: "/tmp/codemesh-e2e-live-locks/host-local-macos.lock", Label: "codemesh owned-host local-macos", StartedAt: "2026-07-04T12:00:00Z"},
+				CommandDurations:       map[string]string{"agent_run": "10ms"},
+				Artifacts:              []reportOwnedHostArtifact{{Command: "agent_run_contract", StdoutPath: "tmp/e2e-owned-host/local-macos/codemesh-run.json"}},
+				CodeMeshE2EReportPaths: []string{"tmp/e2e-report.json"},
+				SelectedRunIDs:         []string{"run-owned"},
+				MachineIDs:             []string{"machine-a", "machine-b"},
+				ManifestLocation:       "tmp/e2e-owned-host/local-macos/manifest",
+				HydratedProjectID:      "git://127.0.0.1:12345/owned-target",
+				CleanupStatus:          "managed agent run cleaned",
+				Visual:                 &reportOwnedHostVisualProof{Status: "skipped", SkipReason: "visual proof unavailable"},
+				SecretSafety:           "pass",
+			}},
+		},
+	}
+
+	if err := h.writeReport(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(h.reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got report
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Live == nil || got.Live.OwnedHosts == nil || got.Live.OwnedHosts.Status != "pass" {
+		t.Fatalf("owned-host report missing: %#v", got.Live)
+	}
+	host := got.Live.OwnedHosts.Inventory[0]
+	if host.SelectedRunIDs[0] != "run-owned" || host.MachineIDs[1] != "machine-b" || host.ManifestLocation != "tmp/e2e-owned-host/local-macos/manifest" || host.Artifacts[0].StdoutPath == "" {
+		t.Fatalf("owned-host host report = %#v", host)
+	}
+	if host.Visual == nil || host.Visual.Status != "skipped" || host.SecretSafety != "pass" {
+		t.Fatalf("owned-host visual/secret report = %#v", host)
+	}
 }
 
 func TestLiveGitHubRemoteDefaultsAndOverride(t *testing.T) {

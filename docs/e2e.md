@@ -94,6 +94,35 @@ When prerequisites are available, Peekaboo launches or focuses Terminal with a g
 
 The live JSON report references both artifact paths under `live.desktop`. The desktop smoke does not use AppleScript, does not read the user's normal CodeMesh state, and does not type secrets. CI should not run this target unless a standard/free macOS desktop runner is deliberately configured with Peekaboo and local TCC permissions. Required PR CI intentionally excludes Peekaboo.
 
+Owned-host proof is opt-in and uses a packaged CodeMesh binary against Bram-owned local/static targets:
+
+```sh
+make e2e-owned-host
+```
+
+The target builds `dist/codemesh`, runs live mode with `CODEMESH_E2E_LIVE_TARGETS=owned-host`, and records a green `SKIP` unless a non-secret owned-host inventory is configured. Enable the first local slice with:
+
+```sh
+CODEMESH_E2E_OWNED_HOSTS=local-macos make e2e-owned-host
+```
+
+Known inventory labels:
+
+- `local-macos`: local macOS host, packaged CLI, no SSH.
+- `hermes-win`: static SSH target at `hermes-win`, native Windows doctor path.
+- `hermes-vm`: static SSH target at `hermes-vm`, Linux/POSIX doctor path.
+- `CODEMESH_E2E_EXTRA_LINUX_HOST=<host>` adds one optional Linux SSH target named `extra-linux`.
+
+The inventory carries host names and addresses only; it must not contain credentials, tokens, or secret provider references. SSH targets use ordinary existing SSH configuration and `BatchMode=yes`. Missing SSH reachability, missing host tools, or unavailable hosts record `SKIP` by default and become `FAIL` with:
+
+```sh
+CODEMESH_E2E_LIVE_STRICT=1 make e2e-owned-host
+```
+
+The local owned-host slice proves the packaged binary from outside the source checkout, then runs the CodeMesh workspace-control-plane flow on two isolated machine homes: machine registration, manifest handoff, bootstrap dry-run, bootstrap apply without default cloning, explicit hydrate, agent prepare, harmless deterministic `agent run`, runs listing, guarded cleanup, and reconcile dry-run drift proof. Remote SSH targets currently run static doctor/reachability classification only; they never fake a successful workspace proof.
+
+Owned-host evidence is written under `tmp/e2e-owned-host/`. The JSON report records `live.owned_hosts` with host facts, doctor outcomes, per-host lock metadata, command durations, stdout/stderr artifact paths, selected run IDs, machine IDs, manifest location, hydrated project identity, cleanup status, visual artifact metadata, skip/fail reasons, and secret-safety status. Screenshots, videos, contact sheets, and proof bundles must stay under `tmp/`, GitHub attachments, CI artifacts, or an external artifact manifest; they must not be committed to product branches. Visual proof is skipped unless a free local desktop capture path is available, and strict mode fails configured missing visual prerequisites when that path is explicitly selected.
+
 Live provider smoke is reserved but inert. After `CODEMESH_E2E_LIVE=1`, it records `SKIP` unless all exact provider contract variables are present:
 
 ```sh
@@ -124,6 +153,7 @@ The report includes:
 - `isolation`: isolated `CODEMESH_HOME`, `HOME`, workspace, run directory, and Git config path.
 - `live`: live opt-in status, strict mode, target labels, skip reasons, GitHub remote URL, discovered default branch, command durations for GitHub status, Agent Prep, Agent Run, runs, cleanup, hydration smoke steps, clone strategy records for full, partial, and sparse GitHub smokes, targeted toolchain fixture facts, reserved provider smoke skip metadata, per-smoke secret-safety result, and the host-scoped lock path/label when a lock was acquired.
 - `live.desktop`: Peekaboo path, Terminal app, permission status, screenshot path, transcript path, SKIP reason or PASS status, and secret-safety status when the desktop target runs.
+- `live.owned_hosts`: owned-host inventory status, proof-bundle path, host facts, doctor outcomes, per-host lock metadata, command durations, stdout/stderr artifact paths, CodeMesh report paths, selected run IDs, machine IDs, manifest location, hydrated project identity, cleanup status, visual artifact metadata, skip/fail reasons, and secret-safety status.
 - `two_machine`: offline two-machine smoke summary with both machine IDs, manifest location, hydrated project identity, hydration provenance, drift summary, and cleanup status.
 - `summary`: `pass`, `fail`, `skip`, and `total` counts derived from recorded case results.
 - `secret_safety`: whether report redaction is active and how many known fake fixture values were redacted.
@@ -271,6 +301,8 @@ Run `make e2e-packaged` when changing packaging, installed-binary assumptions, s
 
 Run `make e2e-peekaboo` only on a local macOS desktop or deliberately configured free macOS desktop runner when changing Peekaboo automation, packaged CLI terminal behavior, or screenshot proof. A local `SKIP` is acceptable when Peekaboo or TCC permissions are unavailable; include the SKIP reason from `tmp/e2e-report.json` in handoff proof.
 
+Run `make e2e-owned-host` when changing owned-host proof, static SSH target classification, packaged CLI workspace-control-plane proof, per-host evidence bundles, or visual proof metadata. A default `SKIP` is acceptable without `CODEMESH_E2E_OWNED_HOSTS`; include the owned-host section from `tmp/e2e-report.json` in handoff proof.
+
 If a command fails, use the printed failure block first. If a machine-readable audit trail is needed, inspect `tmp/e2e-report.json` or set `CODEMESH_E2E_REPORT` to a temp path before running the target.
 
 ## Handoff Gates
@@ -315,5 +347,5 @@ From `steipete/oracle`:
 ## Intentionally Not Run Live
 
 - Poll/wait helpers: no async CodeMesh behavior exists yet.
-- Real provider and multi-machine checks, plus any future GUI checks beyond Peekaboo: those live targets must record audited skips unless explicitly opted in and free prerequisites are available. Provider smoke must use the exact single-target env contract above and must not invoke password managers by default.
-- Screenshot proof: limited to the opt-in Peekaboo desktop smoke; default source, packaged, and live GitHub/toolchain/provider lanes remain CLI/report-only.
+- Real provider checks and any future GUI checks beyond Peekaboo/owned-host visual metadata: those live targets must record audited skips unless explicitly opted in and free prerequisites are available. Provider smoke must use the exact single-target env contract above and must not invoke password managers by default.
+- Screenshot proof: limited to the opt-in Peekaboo desktop smoke and future owned-host visual proof when a free local capture path is explicitly configured; default source, packaged, and live GitHub/toolchain/provider lanes remain CLI/report-only.
