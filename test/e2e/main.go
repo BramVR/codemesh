@@ -328,6 +328,7 @@ func (h *harness) run() int {
 	h.caseProjectRegistryAliasPathStateWorkflow()
 	h.caseReadinessStatusFixtureWorkflow()
 	h.caseDoctorPreflightWorkflow()
+	h.caseBootstrapTopologyWorkflow()
 	h.caseHydrationFixtureWorkflow()
 	h.caseAgentPrepFixtureWorkflow()
 	h.caseCLIContractSnapshotWorkflow()
@@ -1944,6 +1945,117 @@ func (h *harness) caseDoctorPreflightWorkflow() {
 		return
 	}
 	s.expectAgentRunRows("doctor preflight blocker records no agent run", 0)
+}
+
+func (h *harness) caseBootstrapTopologyWorkflow() {
+	s, err := h.newScenario("bootstrap topology")
+	if err != nil {
+		h.record(result{Name: "bootstrap topology workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	workspace := filepath.Join(s.fixtures.Root, "fresh-workspace")
+	manifest := filepath.Join(s.fixtures.Root, "manifest")
+	alphaPath := filepath.Join(workspace, "tools", "alpha")
+	betaPath := filepath.Join(workspace, "beta")
+	if err := writeE2EManifestEntry(manifest, "alpha.json", "https://example.invalid/bram/alpha", "alpha", "tools/alpha"); err != nil {
+		h.record(result{Name: "bootstrap topology manifest alpha", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := writeE2EManifestEntry(manifest, "beta.json", "https://example.invalid/bram/beta", "beta", "beta"); err != nil {
+		h.record(result{Name: "bootstrap topology manifest beta", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if init := s.command("bootstrap topology init", "init", workspace); init.Status != "PASS" {
+		return
+	}
+	if register := s.command("bootstrap topology machine register", "machine", "register", workspace); register.Status != "PASS" {
+		return
+	}
+
+	plan := s.command("bootstrap topology plan", "bootstrap", manifest)
+	if plan.Status != "PASS" || !s.expectOutput(plan, "bootstrap plan", "workspace_root: "+workspace, "blocked: false", "missing: alpha "+alphaPath, "missing: beta "+betaPath) {
+		return
+	}
+	if !s.expectPathMissing("bootstrap topology dry-run workspace missing", workspace) {
+		return
+	}
+	if !s.expectProjectRowCountRaw("bootstrap topology dry-run rows", 0) {
+		return
+	}
+
+	apply := s.command("bootstrap topology apply", "bootstrap", manifest, "--apply")
+	if apply.Status != "PASS" || !s.expectOutput(apply, "bootstrap plan", "applied", "parent: "+workspace, "parent: "+filepath.Join(workspace, "tools"), "added: alpha "+alphaPath, "added: beta "+betaPath) {
+		return
+	}
+	if !s.expectPathExists("bootstrap topology parent exists", filepath.Join(workspace, "tools")) {
+		return
+	}
+	if !s.expectPathMissing("bootstrap topology alpha remains missing", alphaPath) || !s.expectPathMissing("bootstrap topology beta remains missing", betaPath) {
+		return
+	}
+	if !s.expectProjectRowsRaw("bootstrap topology rows",
+		projectRow{Alias: "alpha", NormalizedRemote: "https://example.invalid/bram/alpha", CloneURL: "https://example.invalid/bram/alpha.git", LocalPath: alphaPath},
+		projectRow{Alias: "beta", NormalizedRemote: "https://example.invalid/bram/beta", CloneURL: "https://example.invalid/bram/beta.git", LocalPath: betaPath},
+	) {
+		return
+	}
+	tree := s.command("bootstrap topology tree missing projects", "tree")
+	if tree.Status != "PASS" || !s.expectOutput(tree, "alpha missing "+alphaPath, "beta missing "+betaPath) {
+		return
+	}
+	status := s.command("bootstrap topology status missing project", "status", "alpha", "--json")
+	if status.Status != "PASS" || !s.expectOutput(status, `"exit_class":"readiness-blocked"`, `"state":"missing"`, `"path_present":false`) {
+		return
+	}
+
+	conflictScenario, err := h.newScenario("bootstrap conflict")
+	if err != nil {
+		h.record(result{Name: "bootstrap conflict workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	conflictWorkspace := filepath.Join(conflictScenario.fixtures.Root, "workspace")
+	conflictManifest := filepath.Join(conflictScenario.fixtures.Root, "manifest")
+	conflictPath := filepath.Join(conflictWorkspace, "tools", "alpha")
+	if err := os.MkdirAll(conflictPath, 0o755); err != nil {
+		h.record(result{Name: "bootstrap conflict path setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	marker := filepath.Join(conflictPath, "local.txt")
+	if err := os.WriteFile(marker, []byte("keep\n"), 0o644); err != nil {
+		h.record(result{Name: "bootstrap conflict marker setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := writeE2EManifestEntry(conflictManifest, "alpha.json", "https://example.invalid/bram/conflict-alpha", "alpha", "tools/alpha"); err != nil {
+		h.record(result{Name: "bootstrap conflict manifest", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if init := conflictScenario.command("bootstrap conflict init", "init", conflictWorkspace); init.Status != "PASS" {
+		return
+	}
+	if register := conflictScenario.command("bootstrap conflict machine register", "machine", "register", conflictWorkspace); register.Status != "PASS" {
+		return
+	}
+	conflict := conflictScenario.expectedFailure("bootstrap path conflict refusal", "bootstrap", conflictManifest, "--apply", "--json")
+	if conflict.Status != "FAIL" {
+		conflict.Status = "FAIL"
+		conflict.Error = "bootstrap conflict unexpectedly passed"
+	} else if conflict.ExitCode != 1 {
+		conflict.Error = fmt.Sprintf("bootstrap conflict exit code = %d, want 1", conflict.ExitCode)
+	} else if conflict.Stderr != "" {
+		conflict.Error = "bootstrap conflict wrote stderr: " + conflict.Stderr
+	} else if !strings.Contains(conflict.Stdout, `"exit_class":"readiness-blocked"`) || !strings.Contains(conflict.Stdout, `"kind":"path-conflict"`) || !strings.Contains(conflict.Stdout, conflictPath) {
+		conflict.Error = "bootstrap conflict JSON did not report path-conflict blocker"
+	} else if got, err := os.ReadFile(marker); err != nil || string(got) != "keep\n" {
+		conflict.Error = fmt.Sprintf("bootstrap conflict marker changed or missing: got %q err %v", got, err)
+	} else {
+		conflict.Status = "PASS"
+		conflict.Error = ""
+	}
+	conflictScenario.record(conflict)
+	if conflict.Status != "PASS" {
+		return
+	}
+	conflictScenario.expectProjectRowCountRaw("bootstrap conflict rows unchanged", 0)
 }
 
 func (h *harness) caseSecretSafetyReportAndStateStore() bool {
@@ -3673,6 +3785,26 @@ func writeMissingBlockToolchainPolicy(path string) error {
 	return os.WriteFile(filepath.Join(path, ".codemesh.yml"), []byte("agent:\n  toolchain:\n    mode: block\n    requirements:\n      - codemesh-missing-tool\n"), 0o644)
 }
 
+func writeE2EManifestEntry(dir, name, identity, alias, desiredPath string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data := fmt.Sprintf(`{
+  "manifest_version": 1,
+  "project": {
+    "identity": %q,
+    "alias": %q,
+    "desired_path": %q,
+    "clone_hints": {
+      "url": %q
+    },
+    "groups": []
+  }
+}
+`, identity, alias, desiredPath, identity+".git")
+	return os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644)
+}
+
 func (h *harness) createClonedFixture(fixtures offlineGitFixtures, name string, mutate func(string) error) (gitFixtureProject, error) {
 	return h.createClonedFixtureWithSeed(fixtures, name, nil, mutate)
 }
@@ -4766,6 +4898,20 @@ func (s *scenario) expectProjectRowCount(name string, want int) bool {
 	return s.expectProjectRowsAreIsolated(name+" isolation", projects)
 }
 
+func (s *scenario) expectProjectRowCountRaw(name string, want int) bool {
+	projects, err := readProjectRowsFromStore(filepath.Join(s.codemeshHome, "codemesh.db"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if len(projects) != want {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row count = %d, want %d", len(projects), want), ExitCode: -1})
+		return false
+	}
+	s.h.record(result{Name: name, Status: "PASS", ExitCode: 0})
+	return true
+}
+
 func (s *scenario) expectProjectRows(name string, want ...projectRow) bool {
 	got, err := readProjectRowsFromStore(filepath.Join(s.codemeshHome, "codemesh.db"))
 	if err != nil {
@@ -4783,6 +4929,26 @@ func (s *scenario) expectProjectRows(name string, want ...projectRow) bool {
 		}
 	}
 	return s.expectProjectRowsAreIsolated(name+" isolation", got)
+}
+
+func (s *scenario) expectProjectRowsRaw(name string, want ...projectRow) bool {
+	got, err := readProjectRowsFromStore(filepath.Join(s.codemeshHome, "codemesh.db"))
+	if err != nil {
+		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return false
+	}
+	if len(got) != len(want) {
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project rows = %#v, want %#v", got, want), ExitCode: -1})
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row %d = %#v, want %#v", i, got[i], want[i]), ExitCode: -1})
+			return false
+		}
+	}
+	s.h.record(result{Name: name, Status: "PASS", ExitCode: 0})
+	return true
 }
 
 func (s *scenario) expectProjectRowsAreIsolated(name string, rows []projectRow) bool {

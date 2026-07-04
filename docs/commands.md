@@ -17,6 +17,7 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 - [`codemesh status [project] [--base branch] [--json]`](commands/status.md)
 - [`codemesh doctor <project> [--base branch] [--strict] [--json]`](commands/doctor.md)
 - [`codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]`](commands/hydrate.md)
+- [`codemesh bootstrap <manifest-path> [--apply] [--json]`](commands/bootstrap.md)
 - [`codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope`](commands/env-bind.md)
 - [`codemesh machine register [workspace-root] [--json]`](commands/machine-register.md)
 - [`codemesh agent prepare <project> [--base branch] [--profile name] [--partial-clone] [--sparse path] [--env-provider fake] [--allow-env-scope scope] [--json]`](commands/agent-prepare.md)
@@ -79,6 +80,8 @@ Use `codemesh scan "$workspace"` instead of `codemesh add ...` when discovering 
 
 Use `codemesh hydrate <project>` after a project is already registered and its desired local path is missing. Hydration clones the registered remote into that path and refuses existing non-empty path conflicts.
 
+Use `codemesh bootstrap <manifest-path>` after `codemesh machine register` to preview shared Workspace Manifest topology on the current machine. Add `--apply` to create only parent directories and local Project Registry rows; project content stays missing until explicit hydration.
+
 ## Planned Or Unimplemented
 
 These directions remain product direction, not runnable commands today:
@@ -92,4 +95,4 @@ These directions remain product direction, not runnable commands today:
 
 Research docs may sketch future commands for those areas. Treat them as planned until they appear in current CLI help and this catalog.
 
-The planned Workspace Manifest surface will export and import small per-project desired-topology entries: project identity, alias, relative desired path, clone hints, and grouping. It must not export observed readiness, dirty/stale status, Agent Runs, machine facts, env values, or secret values. Until manifest commands appear in CLI help and this catalog, the manifest remains an internal module and planned command surface, not a runnable user command.
+The current Workspace Manifest input for `bootstrap` is one JSON entry file or a directory of small per-project desired-topology entries: project identity, alias, relative desired path, clone hints, and grouping. It must not export observed readiness, dirty/stale status, Agent Runs, machine facts, env values, or secret values. Manifest export/import commands remain planned until they appear in CLI help and this catalog.

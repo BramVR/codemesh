@@ -424,6 +424,58 @@ where id = ?
 	return added, ProjectUpsertAdded, nil
 }
 
+func (s *SQLiteStore) UpdateProject(ctx context.Context, id int64, project Project) (Project, error) {
+	if id == 0 {
+		return Project{}, errors.New("project id is required")
+	}
+	if project.Alias == "" {
+		return Project{}, errors.New("project alias is required")
+	}
+	if project.NormalizedRemote == "" {
+		return Project{}, errors.New("project normalized remote is required")
+	}
+	if project.CloneURL == "" {
+		project.CloneURL = project.NormalizedRemote
+	}
+	if project.LocalPath == "" {
+		return Project{}, errors.New("project local path is required")
+	}
+
+	var existingID int64
+	err := s.db.QueryRowContext(ctx, `select id from projects where alias = ? and id != ?`, project.Alias, id).Scan(&existingID)
+	if err == nil {
+		return Project{}, fmt.Errorf("%w: alias %q already exists; choose a different name", ErrAliasConflict, project.Alias)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Project{}, fmt.Errorf("check project alias %q: %w", project.Alias, err)
+	}
+	err = s.db.QueryRowContext(ctx, `select id from projects where normalized_remote = ? and id != ?`, project.NormalizedRemote, id).Scan(&existingID)
+	if err == nil {
+		return Project{}, fmt.Errorf("%w: remote %q already exists", ErrRemoteConflict, project.NormalizedRemote)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Project{}, fmt.Errorf("check project remote %q: %w", project.NormalizedRemote, err)
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+update projects
+set alias = ?, normalized_remote = ?, clone_url = ?, local_path = ?, updated_at = ?
+where id = ?
+`, project.Alias, project.NormalizedRemote, project.CloneURL, project.LocalPath, time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return Project{}, fmt.Errorf("update project %q topology: %w", project.Alias, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return Project{}, fmt.Errorf("check project %d topology update: %w", id, err)
+	}
+	if affected == 0 {
+		return Project{}, fmt.Errorf("project %d not found", id)
+	}
+	project.ID = id
+	return project, nil
+}
+
 func (s *SQLiteStore) ListProjects(ctx context.Context) ([]Project, error) {
 	rows, err := s.db.QueryContext(ctx, `
 select id, alias, normalized_remote, clone_url, local_path

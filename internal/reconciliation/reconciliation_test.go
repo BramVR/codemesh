@@ -215,6 +215,43 @@ func TestDryRunPlanReservesPathAfterManifestAliasConflict(t *testing.T) {
 	}
 }
 
+func TestDryRunPlanBlocksNestedManifestProjectPaths(t *testing.T) {
+	workspace := t.TempDir()
+
+	plan, err := BuildDryRunPlan([]workspacemanifest.Entry{
+		manifestEntry("https://github.com/BramVR/parent", "parent", "tools/parent"),
+		manifestEntry("https://github.com/BramVR/nested", "nested", "tools/parent/nested"),
+	}, nil, machine(workspace))
+	if err != nil {
+		t.Fatalf("BuildDryRunPlan error = %v", err)
+	}
+
+	assertDrift(t, plan, "https://github.com/BramVR/parent", DriftMissing, filepath.Join(workspace, "tools", "parent"))
+	assertDrift(t, plan, "https://github.com/BramVR/nested", DriftConflicting, filepath.Join(workspace, "tools", "parent", "nested"))
+	if !plan.Blocked || !hasBlocker(plan, BlockerPathConflict, "https://github.com/BramVR/nested") {
+		t.Fatalf("plan = %#v, want nested path conflict blocker", plan)
+	}
+}
+
+func TestDryRunPlanBlocksNestedPathAgainstExistingRegistryProject(t *testing.T) {
+	workspace := t.TempDir()
+	projects := []state.Project{
+		project(1, "parent", "https://github.com/BramVR/parent", filepath.Join(workspace, "tools", "parent")),
+	}
+
+	plan, err := BuildDryRunPlan([]workspacemanifest.Entry{
+		manifestEntry("https://github.com/BramVR/nested", "nested", "tools/parent/nested"),
+	}, projects, machine(workspace))
+	if err != nil {
+		t.Fatalf("BuildDryRunPlan error = %v", err)
+	}
+
+	assertDrift(t, plan, "https://github.com/BramVR/nested", DriftConflicting, filepath.Join(workspace, "tools", "parent", "nested"))
+	if !plan.Blocked || !hasBlocker(plan, BlockerPathConflict, "https://github.com/BramVR/nested") {
+		t.Fatalf("plan = %#v, want nested registry path conflict blocker", plan)
+	}
+}
+
 func TestDryRunPlanAllowsAliasReuseAfterDesiredRename(t *testing.T) {
 	workspace := t.TempDir()
 	projects := []state.Project{

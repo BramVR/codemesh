@@ -89,11 +89,13 @@ Scan reports added, updated, unchanged, and skipped candidates. Skips are runtim
 
 ## Workspace Manifest
 
-Workspace Manifest entries are desired shared topology, not observed local state. The current slice is an internal module for small per-project JSON entries that can round-trip project identity, alias, relative desired path, clone hints, and grouping. Export derives desired paths from Project Registry rows relative to a workspace root and omits machine-local paths from the entry shape. Import is a dry comparison against local Project Registry rows that reports add, update, unchanged, or alias-conflict changes needed; it does not mutate SQLite or working trees.
+Workspace Manifest entries are desired shared topology, not observed local state. The current slice uses small per-project JSON entries that can round-trip project identity, alias, relative desired path, clone hints, and grouping. Export derives desired paths from Project Registry rows relative to a workspace root and omits machine-local paths from the entry shape. Import is a dry comparison against local Project Registry rows that reports add, update, unchanged, or alias-conflict changes needed; it does not mutate SQLite or working trees.
 
-Manifest entries must not include readiness results, dirty/stale state, Agent Runs, machine facts, env values, or secret values. Manifest command names and flags remain planned until they appear in CLI help and the Command Catalog.
+Manifest entries must not include readiness results, dirty/stale state, Agent Runs, machine facts, env values, or secret values. Manifest export/import command names and flags remain planned until they appear in CLI help and the Command Catalog.
 
-Reconciliation compares Workspace Manifest desired topology with the local State Store machine workspace root and observed Project Registry rows. The current slice produces a dry-run drift plan only: added, missing, moved, conflicting, and unchanged projects. Desired paths are resolved under the registered machine workspace root. Path conflicts are blockers, and dry-run reconciliation does not write SQLite or working trees.
+Reconciliation compares Workspace Manifest desired topology with the local State Store machine workspace root and observed Project Registry rows. It produces a drift plan: added, missing, moved, conflicting, and unchanged projects. Desired paths are resolved under the registered machine workspace root. Path conflicts are blockers.
+
+`codemesh bootstrap <manifest-path>` is the first runnable adapter over Workspace Manifest, Reconciliation, Machine Registry, and Project Registry. It reads one manifest entry file or a directory of JSON entries and reports the plan by default. With `--apply`, bootstrap refuses blockers before mutation, creates only needed parent directories, and inserts or updates local Project Registry rows for desired topology. It does not clone project content, create project placeholder directories, start a daemon, mount a filesystem, sync files, install tools, or touch env materialization. Bootstrapped project paths remain missing in `tree` and `status` until explicit hydration.
 
 ## Readiness
 

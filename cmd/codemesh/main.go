@@ -17,6 +17,7 @@ import (
 	"github.com/BramVR/codemesh/internal/agentcontract"
 	"github.com/BramVR/codemesh/internal/agentprep"
 	"github.com/BramVR/codemesh/internal/agentruns"
+	"github.com/BramVR/codemesh/internal/bootstrap"
 	"github.com/BramVR/codemesh/internal/clonestrategy"
 	"github.com/BramVR/codemesh/internal/commandresult"
 	"github.com/BramVR/codemesh/internal/config"
@@ -24,9 +25,11 @@ import (
 	"github.com/BramVR/codemesh/internal/machineregistry"
 	"github.com/BramVR/codemesh/internal/presentation"
 	"github.com/BramVR/codemesh/internal/readiness"
+	"github.com/BramVR/codemesh/internal/reconciliation"
 	"github.com/BramVR/codemesh/internal/registry"
 	"github.com/BramVR/codemesh/internal/state"
 	"github.com/BramVR/codemesh/internal/toolchain"
+	"github.com/BramVR/codemesh/internal/workspacemanifest"
 )
 
 const version = "0.0.0-dev"
@@ -63,6 +66,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runDoctor(args[1:], stdout, stderr)
 	case "hydrate":
 		return runHydrate(args[1:], stdout, stderr)
+	case "bootstrap":
+		return runBootstrap(args[1:], stdout, stderr)
 	case "env":
 		return runEnv(args[1:], stdout, stderr)
 	case "machine":
@@ -744,6 +749,237 @@ func renderHydratePayloadHuman(w io.Writer, payload hydratePayload) error {
 	}
 	fmt.Fprintf(w, "hydrated project: %s\npath: %s\nremote: %s\n", payload.Project, payload.Path, payload.Remote)
 	return nil
+}
+
+func runBootstrap(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printBootstrapHelp(stdout)
+		return 0
+	}
+	bootstrapArgs, ok := parseBootstrapArgs(args, stderr)
+	if !ok {
+		printBootstrapHelp(stderr)
+		return 2
+	}
+	entries, err := workspacemanifest.LoadEntries(bootstrapArgs.ManifestPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "read workspace manifest: %v\n", err)
+		return 1
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	var result bootstrap.Result
+	if bootstrapArgs.Apply {
+		result, err = bootstrap.Bootstrapper{Store: store}.Apply(ctx, entries)
+	} else {
+		plan, planErr := bootstrap.Bootstrapper{Store: store}.Plan(ctx, entries)
+		result = bootstrap.Result{Plan: plan}
+		err = planErr
+	}
+	if err != nil {
+		var blocked bootstrap.BlockedError
+		if !errors.As(err, &blocked) {
+			fmt.Fprintf(stderr, "bootstrap workspace: %v\n", err)
+			return 1
+		}
+		commandResult := newBootstrapResult(bootstrapArgs, result)
+		if bootstrapArgs.JSON {
+			if err := presentation.RenderJSON(stdout, commandResult); err != nil {
+				fmt.Fprintf(stderr, "encode bootstrap result: %v\n", err)
+				return commandresult.ExitInternalError.Code()
+			}
+			return bootstrapExitCode(commandResult)
+		}
+		if err := presentation.RenderHuman(stdout, commandResult, renderBootstrapPayloadHuman); err != nil {
+			fmt.Fprintf(stderr, "render bootstrap result: %v\n", err)
+			return commandresult.ExitInternalError.Code()
+		}
+		return bootstrapExitCode(commandResult)
+	}
+	commandResult := newBootstrapResult(bootstrapArgs, result)
+	if bootstrapArgs.JSON {
+		if err := presentation.RenderJSON(stdout, commandResult); err != nil {
+			fmt.Fprintf(stderr, "encode bootstrap result: %v\n", err)
+			return commandresult.ExitInternalError.Code()
+		}
+		return bootstrapExitCode(commandResult)
+	}
+	if err := presentation.RenderHuman(stdout, commandResult, renderBootstrapPayloadHuman); err != nil {
+		fmt.Fprintf(stderr, "render bootstrap result: %v\n", err)
+		return commandresult.ExitInternalError.Code()
+	}
+	return bootstrapExitCode(commandResult)
+}
+
+type parsedBootstrapArgs struct {
+	ManifestPath string
+	Apply        bool
+	JSON         bool
+}
+
+func parseBootstrapArgs(args []string, stderr io.Writer) (parsedBootstrapArgs, bool) {
+	var manifestPaths []string
+	var apply bool
+	var jsonOutput bool
+	for _, arg := range args {
+		switch arg {
+		case "--apply":
+			apply = true
+		case "--json":
+			jsonOutput = true
+		default:
+			manifestPaths = append(manifestPaths, arg)
+		}
+	}
+	if len(manifestPaths) != 1 {
+		fmt.Fprint(stderr, "bootstrap requires exactly one workspace manifest path\n\n")
+		return parsedBootstrapArgs{}, false
+	}
+	return parsedBootstrapArgs{ManifestPath: manifestPaths[0], Apply: apply, JSON: jsonOutput}, true
+}
+
+type bootstrapPayload struct {
+	Apply   bool                     `json:"apply"`
+	Plan    reconciliation.DriftPlan `json:"plan"`
+	Applied bootstrapAppliedPayload  `json:"applied"`
+}
+
+type bootstrapAppliedPayload struct {
+	ParentDirectories []string                  `json:"parent_directories"`
+	AddedProjects     []bootstrapProjectPayload `json:"added_projects"`
+	UpdatedProjects   []bootstrapProjectPayload `json:"updated_projects"`
+}
+
+type bootstrapProjectPayload struct {
+	Alias    string `json:"alias"`
+	Remote   string `json:"remote"`
+	CloneURL string `json:"clone_url"`
+	Path     string `json:"path"`
+}
+
+func newBootstrapResult(args parsedBootstrapArgs, result bootstrap.Result) commandresult.Result[bootstrapPayload] {
+	diagnostics := bootstrapDiagnostics(result.Plan.Blockers)
+	exitClass := commandresult.ExitSuccess
+	if len(diagnostics.Blockers) != 0 {
+		exitClass = commandresult.ExitReadinessBlocked
+	}
+	return commandresult.New("bootstrap", exitClass, diagnostics, bootstrapPayload{
+		Apply:   args.Apply,
+		Plan:    result.Plan,
+		Applied: bootstrapApplied(result.Applied),
+	})
+}
+
+func bootstrapApplied(applied bootstrap.Applied) bootstrapAppliedPayload {
+	return bootstrapAppliedPayload{
+		ParentDirectories: append([]string(nil), applied.ParentDirectories...),
+		AddedProjects:     bootstrapProjects(applied.AddedProjects),
+		UpdatedProjects:   bootstrapProjects(applied.UpdatedProjects),
+	}
+}
+
+func bootstrapProjects(projects []state.Project) []bootstrapProjectPayload {
+	if projects == nil {
+		return []bootstrapProjectPayload{}
+	}
+	payloads := make([]bootstrapProjectPayload, 0, len(projects))
+	for _, project := range projects {
+		payloads = append(payloads, bootstrapProjectPayload{
+			Alias:    project.Alias,
+			Remote:   project.NormalizedRemote,
+			CloneURL: project.CloneURL,
+			Path:     project.LocalPath,
+		})
+	}
+	return payloads
+}
+
+func bootstrapDiagnostics(blockers []reconciliation.Blocker) commandresult.Diagnostics {
+	diagnostics := commandresult.Diagnostics{}
+	for _, blocker := range blockers {
+		target := blocker.Path
+		if target == "" {
+			target = blocker.Alias
+		}
+		diagnostics.Blockers = append(diagnostics.Blockers, commandresult.Diagnostic{
+			Code:    string(blocker.Kind),
+			Message: blocker.Reason,
+			Target:  target,
+		})
+	}
+	return diagnostics
+}
+
+func bootstrapExitCode(result commandresult.Result[bootstrapPayload]) int {
+	if result.ExitClass == commandresult.ExitReadinessBlocked {
+		return 1
+	}
+	return result.ExitClass.Code()
+}
+
+func renderBootstrapPayloadHuman(w io.Writer, payload bootstrapPayload) error {
+	fmt.Fprintln(w, "bootstrap plan")
+	fmt.Fprintf(w, "workspace_root: %s\n", payload.Plan.WorkspaceRoot)
+	fmt.Fprintf(w, "apply: %t\n", payload.Apply)
+	fmt.Fprintf(w, "blocked: %t\n", payload.Plan.Blocked)
+	if len(payload.Plan.Drifts) == 0 {
+		fmt.Fprintln(w, "drifts: none")
+	}
+	for _, drift := range payload.Plan.Drifts {
+		renderBootstrapDrift(w, drift)
+	}
+	for _, blocker := range payload.Plan.Blockers {
+		fmt.Fprintf(w, "blocker: %s %s %s\n", blocker.Kind, blocker.Path, blocker.Reason)
+	}
+	if !payload.Apply || payload.Plan.Blocked {
+		return nil
+	}
+	fmt.Fprintln(w, "applied")
+	if len(payload.Applied.ParentDirectories) == 0 {
+		fmt.Fprintln(w, "parents: none")
+	} else {
+		for _, parent := range payload.Applied.ParentDirectories {
+			fmt.Fprintf(w, "parent: %s\n", parent)
+		}
+	}
+	if len(payload.Applied.AddedProjects) == 0 {
+		fmt.Fprintln(w, "added: none")
+	} else {
+		for _, project := range payload.Applied.AddedProjects {
+			fmt.Fprintf(w, "added: %s %s\n", project.Alias, project.Path)
+		}
+	}
+	if len(payload.Applied.UpdatedProjects) == 0 {
+		fmt.Fprintln(w, "updated: none")
+	} else {
+		for _, project := range payload.Applied.UpdatedProjects {
+			fmt.Fprintf(w, "updated: %s %s\n", project.Alias, project.Path)
+		}
+	}
+	return nil
+}
+
+func renderBootstrapDrift(w io.Writer, drift reconciliation.Drift) {
+	switch drift.Kind {
+	case reconciliation.DriftMissing:
+		fmt.Fprintf(w, "missing: %s %s\n", drift.Alias, drift.DesiredLocalPath)
+	case reconciliation.DriftMoved:
+		fmt.Fprintf(w, "moved: %s %s -> %s\n", drift.Alias, drift.ObservedLocalPath, drift.DesiredLocalPath)
+	case reconciliation.DriftUnchanged:
+		fmt.Fprintf(w, "unchanged: %s %s\n", drift.Alias, drift.DesiredLocalPath)
+	case reconciliation.DriftAdded:
+		fmt.Fprintf(w, "local-only: %s %s\n", drift.Alias, drift.ObservedLocalPath)
+	case reconciliation.DriftConflicting:
+		fmt.Fprintf(w, "conflict: %s %s %s\n", drift.Alias, drift.DesiredLocalPath, drift.Reason)
+	default:
+		fmt.Fprintf(w, "%s: %s %s\n", drift.Kind, drift.Alias, drift.DesiredLocalPath)
+	}
 }
 
 func runAgent(args []string, stdout, stderr io.Writer) int {
@@ -1672,6 +1908,7 @@ Usage:
   codemesh status [project] [--base branch] [--json]
   codemesh doctor <project> [--base branch] [--strict] [--json]
   codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]
+  codemesh bootstrap <manifest-path> [--apply] [--json]
   codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope
   codemesh machine register [workspace-root] [--json]
   codemesh agent prepare <project> [--base branch] [--profile name] [--partial-clone] [--sparse path] [--env-provider fake] [--allow-env-scope scope] [--json]
@@ -1687,6 +1924,7 @@ Commands:
   status     report project readiness
   doctor     preflight agent handoff readiness without creating a run
   hydrate    clone a missing project into its desired path
+  bootstrap  plan or apply workspace topology without cloning
   env        manage private env bindings
   machine    register this machine locally
   agent      prepare and run agent workspaces
@@ -1788,6 +2026,20 @@ Usage:
 Clones the registered remote into the desired local path.
 Refuses existing non-empty non-Git paths.
 Use --partial-clone and repeatable --sparse path for explicit Git-native laziness.
+Use --json for the stable command result shape.
+`)
+}
+
+func printBootstrapHelp(w io.Writer) {
+	fmt.Fprint(w, `Bootstrap workspace topology from a Workspace Manifest.
+
+Usage:
+  codemesh bootstrap <manifest-path> [--apply] [--json]
+
+Reads one manifest entry file or a directory of JSON entries.
+Default mode reports the plan only.
+--apply creates parent directories and local Project Registry rows.
+Bootstrap does not clone project content or create project placeholders.
 Use --json for the stable command result shape.
 `)
 }
