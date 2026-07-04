@@ -386,6 +386,122 @@ func TestBootstrapJSONReportsPathConflictWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestTargetExportJSONIncludesTopologyMachineAndScopedEnvRefs(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	projectPath := filepath.Join(workspace, "alpha")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectPath, ".codemesh.yml"), []byte("agent:\n  env:\n    mode: block\n    required_keys:\n      - CODEMESH_ALPHA_TOKEN\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	machine, err := store.RegisterMachine(context.Background(), state.MachineFacts{
+		Hostname:      "local-fake-host",
+		OS:            "linux",
+		Architecture:  "amd64",
+		WorkspaceRoot: workspace,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.AddProject(context.Background(), state.Project{
+		Alias:            "alpha",
+		NormalizedRemote: "https://example.invalid/bram/alpha",
+		CloneURL:         "https://example.invalid/bram/alpha.git",
+		LocalPath:        projectPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertEnvBinding(context.Background(), state.EnvBinding{
+		ProjectID:   project.ID,
+		Requirement: "CODEMESH_ALPHA_TOKEN",
+		Provider:    envbinding.ProviderFake,
+		SecretRef:   "fake://alpha-token-ref",
+		Scopes:      []string{"codex"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"target", "export", "local-fake-target", "--kind", "agent", "--scope", "codex", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("target export exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	var payload struct {
+		Command string `json:"command"`
+		Payload struct {
+			TargetSpecVersion int `json:"target_spec_version"`
+			Target            struct {
+				Name   string   `json:"name"`
+				Kind   string   `json:"kind"`
+				Scopes []string `json:"scopes"`
+			} `json:"target"`
+			Machine struct {
+				ID            string `json:"id"`
+				Hostname      string `json:"hostname"`
+				WorkspaceRoot string `json:"workspace_root"`
+			} `json:"machine"`
+			Topology []struct {
+				Project struct {
+					DesiredPath string `json:"desired_path"`
+				} `json:"project"`
+			} `json:"topology"`
+			EnvPolicy []struct {
+				Env struct {
+					Bindings []struct {
+						Requirement string `json:"requirement"`
+						SecretRef   string `json:"secret_ref"`
+						Values      string `json:"values"`
+					} `json:"bindings"`
+				} `json:"env"`
+			} `json:"env_policy"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("target export JSON did not parse: %v\n%s", err, stdout.String())
+	}
+	if payload.Command != "target export" || payload.Payload.TargetSpecVersion != 1 || payload.Payload.Target.Name != "local-fake-target" || payload.Payload.Target.Kind != "agent" {
+		t.Fatalf("target export metadata = %#v", payload)
+	}
+	if payload.Payload.Machine.ID != machine.ID || payload.Payload.Machine.Hostname != "local-fake-host" || payload.Payload.Machine.WorkspaceRoot != workspace {
+		t.Fatalf("machine facts = %#v, want local fake machine", payload.Payload.Machine)
+	}
+	if len(payload.Payload.Topology) != 1 || payload.Payload.Topology[0].Project.DesiredPath != "alpha" {
+		t.Fatalf("topology = %#v, want alpha desired path", payload.Payload.Topology)
+	}
+	if len(payload.Payload.EnvPolicy) != 1 || len(payload.Payload.EnvPolicy[0].Env.Bindings) != 1 {
+		t.Fatalf("env policy = %#v, want one scoped binding", payload.Payload.EnvPolicy)
+	}
+	binding := payload.Payload.EnvPolicy[0].Env.Bindings[0]
+	if binding.Requirement != "CODEMESH_ALPHA_TOKEN" || binding.SecretRef != "fake://alpha-token-ref" || binding.Values != "not-recorded" {
+		t.Fatalf("binding = %#v, want ref metadata without values", binding)
+	}
+	for _, forbidden := range []string{"codemesh_fake_secret", "local_path", "agent_run", "readiness"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("target export leaked %q:\n%s", forbidden, stdout.String())
+		}
+	}
+}
+
 func TestAddHelp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
