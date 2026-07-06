@@ -14,6 +14,8 @@ Options:
   --publish               Upload/comment through crabbox artifacts publish.
   --publish-dry-run       Print publish/comment commands without side effects.
   --publish-storage NAME  auto, broker, local, s3, cloudflare, or r2.
+  --publish-endpoint-url URL
+                          R2/S3 endpoint URL for direct uploads.
   --publish-base-url URL  Public base URL for inline-ready assets.
   --publish-bucket NAME   Artifact bucket for s3/cloudflare/r2.
   --publish-prefix PREFIX Artifact object prefix.
@@ -28,6 +30,7 @@ repo_slug="${CRABBOX_GITHUB_REPO:-}"
 publish=false
 publish_dry_run=false
 publish_storage="${CRABBOX_PUBLISH_STORAGE:-}"
+publish_endpoint_url="${CRABBOX_PUBLISH_ENDPOINT_URL:-${CRABBOX_ARTIFACTS_R2_ENDPOINT_URL:-}}"
 publish_base_url="${CRABBOX_PUBLISH_BASE_URL:-}"
 publish_bucket="${CRABBOX_PUBLISH_BUCKET:-}"
 publish_prefix="${CRABBOX_PUBLISH_PREFIX:-}"
@@ -55,6 +58,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --publish-storage)
       publish_storage="${2:?missing value for --publish-storage}"
+      shift 2
+      ;;
+    --publish-endpoint-url)
+      publish_endpoint_url="${2:?missing value for --publish-endpoint-url}"
       shift 2
       ;;
     --publish-base-url)
@@ -177,6 +184,9 @@ if [ "$publish" = true ]; then
   fi
   if [ -n "$publish_storage" ]; then
     publish_args+=(-storage "$publish_storage")
+  fi
+  if [ -n "$publish_endpoint_url" ]; then
+    publish_args+=(-endpoint-url "$publish_endpoint_url")
   fi
   if [ -n "$publish_base_url" ]; then
     publish_args+=(-base-url "$publish_base_url")
