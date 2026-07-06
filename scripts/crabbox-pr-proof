@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/crabbox-pr-proof [options]
+
+Runs packaged e2e on Crabbox, records a desktop terminal proof, makes a GIF,
+and writes a PR-ready markdown summary under .crabbox/proof/.
+
+Options:
+  --pr N                  PR number for publish/comment.
+  --repo OWNER/REPO       GitHub repo slug for publish/comment.
+  --publish               Upload/comment through crabbox artifacts publish.
+  --publish-dry-run       Print publish/comment commands without side effects.
+  --publish-storage NAME  auto, broker, local, s3, cloudflare, or r2.
+  --publish-base-url URL  Public base URL for inline-ready assets.
+  --publish-bucket NAME   Artifact bucket for s3/cloudflare/r2.
+  --publish-prefix PREFIX Artifact object prefix.
+  --record-duration DUR   Desktop recording duration. Default: 12s.
+  --no-video              Skip desktop recording/GIF.
+  -h, --help              Show this help.
+EOF
+}
+
+pr_number="${CRABBOX_PR_NUMBER:-}"
+repo_slug="${CRABBOX_GITHUB_REPO:-}"
+publish=false
+publish_dry_run=false
+publish_storage="${CRABBOX_PUBLISH_STORAGE:-}"
+publish_base_url="${CRABBOX_PUBLISH_BASE_URL:-}"
+publish_bucket="${CRABBOX_PUBLISH_BUCKET:-}"
+publish_prefix="${CRABBOX_PUBLISH_PREFIX:-}"
+record_duration="${CRABBOX_RECORD_DURATION:-12s}"
+video=true
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pr)
+      pr_number="${2:?missing value for --pr}"
+      shift 2
+      ;;
+    --repo)
+      repo_slug="${2:?missing value for --repo}"
+      shift 2
+      ;;
+    --publish)
+      publish=true
+      shift
+      ;;
+    --publish-dry-run)
+      publish=true
+      publish_dry_run=true
+      shift
+      ;;
+    --publish-storage)
+      publish_storage="${2:?missing value for --publish-storage}"
+      shift 2
+      ;;
+    --publish-base-url)
+      publish_base_url="${2:?missing value for --publish-base-url}"
+      shift 2
+      ;;
+    --publish-bucket)
+      publish_bucket="${2:?missing value for --publish-bucket}"
+      shift 2
+      ;;
+    --publish-prefix)
+      publish_prefix="${2:?missing value for --publish-prefix}"
+      shift 2
+      ;;
+    --record-duration)
+      record_duration="${2:?missing value for --record-duration}"
+      shift 2
+      ;;
+    --no-video)
+      video=false
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -z "$pr_number" ] && command -v gh >/dev/null 2>&1; then
+  pr_number="$(gh pr view --json number --jq .number 2>/dev/null || true)"
+fi
+
+if [ -z "$repo_slug" ] && command -v gh >/dev/null 2>&1; then
+  repo_slug="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)"
+fi
+
+slug="local"
+if [ -n "$pr_number" ]; then
+  slug="pr-${pr_number}"
+fi
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+proof_dir=".crabbox/proof/${slug}-${stamp}"
+summary_file="${proof_dir}/summary.md"
+run_proof="${proof_dir}/run-proof.md"
+report_file="${proof_dir}/e2e-report.json"
+screenshot_file="${proof_dir}/terminal.png"
+video_file="${proof_dir}/terminal.mp4"
+gif_file="${proof_dir}/terminal.gif"
+trimmed_video_file="${proof_dir}/terminal.trimmed.mp4"
+comment_file="${proof_dir}/comment-local.md"
+
+mkdir -p "$proof_dir"
+
+remote_cmd='git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init -b main >/dev/null; CODEMESH_E2E_REPORT=tmp/e2e-report.json make e2e-packaged'
+
+crabbox run \
+  --shell \
+  --emit-proof "$run_proof" \
+  --artifact-glob tmp/e2e-report.json \
+  --require-artifact tmp/e2e-report.json \
+  --download "tmp/e2e-report.json=${report_file}" \
+  -- "$remote_cmd"
+
+if [ "$video" = true ]; then
+  crabbox desktop terminal \
+    --id hermes-vm \
+    --screenshot "$screenshot_file" \
+    --record "$video_file" \
+    --record-duration "$record_duration" \
+    --wait-visible 1s \
+    -- bash -lc "$remote_cmd"
+
+  crabbox artifacts gif \
+    -input "$video_file" \
+    -output "$gif_file" \
+    -trimmed-video-output "$trimmed_video_file" \
+    -fps 8 \
+    -width 900
+fi
+
+{
+  echo "CodeMesh Crabbox PR proof"
+  echo
+  echo "- gate: \`make e2e-packaged\`"
+  echo "- remote: \`hermes-vm\` through Crabbox static SSH over Tailscale"
+  echo "- report: \`${report_file}\`"
+  echo "- run proof: \`${run_proof}\`"
+  if [ "$video" = true ]; then
+    echo "- video: \`${video_file}\`"
+    echo "- gif: \`${gif_file}\`"
+    echo "- screenshot: \`${screenshot_file}\`"
+  fi
+} > "$summary_file"
+
+template_args=(artifacts template -kind openclaw -summary-file "$summary_file" -output "$comment_file")
+if [ "$video" = true ]; then
+  template_args+=(-after "$gif_file")
+fi
+
+crabbox "${template_args[@]}"
+
+if [ "$publish" = true ]; then
+  if [ -z "$pr_number" ]; then
+    echo "publish requested but no PR number found; pass --pr N" >&2
+    exit 2
+  fi
+
+  publish_args=(artifacts publish -dir "$proof_dir" -pr "$pr_number" -summary-file "$summary_file" -template openclaw)
+  if [ "$publish_dry_run" = true ]; then
+    publish_args+=(-dry-run)
+  fi
+  if [ -n "$repo_slug" ]; then
+    publish_args+=(-repo "$repo_slug")
+  fi
+  if [ -n "$publish_storage" ]; then
+    publish_args+=(-storage "$publish_storage")
+  fi
+  if [ -n "$publish_base_url" ]; then
+    publish_args+=(-base-url "$publish_base_url")
+  fi
+  if [ -n "$publish_bucket" ]; then
+    publish_args+=(-bucket "$publish_bucket")
+  fi
+  if [ -n "$publish_prefix" ]; then
+    publish_args+=(-prefix "$publish_prefix")
+  fi
+
+  crabbox "${publish_args[@]}"
+fi
+
+echo "proof_dir: ${proof_dir}"
+echo "comment: ${comment_file}"

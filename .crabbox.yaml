@@ -1,0 +1,53 @@
+provider: ssh
+target: linux
+network: tailscale
+profile: hermes
+
+lease:
+  idleTimeout: 30m
+  ttl: 2h
+
+sync:
+  exclude:
+    - dist/
+    - tmp/
+    - .codemesh/
+
+env:
+  allow:
+    - CI
+    - NODE_OPTIONS
+
+jobs:
+  test:
+    command: make test
+    stop: always
+  e2e:
+    shell: true
+    command: >
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1
+      || git init -b main >/dev/null;
+      make e2e
+    stop: always
+  e2e-packaged:
+    shell: true
+    command: >
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1
+      || git init -b main >/dev/null;
+      make e2e-packaged
+    artifactGlobs:
+      - tmp/e2e-report.json
+    requiredArtifacts:
+      - tmp/e2e-report.json
+    stop: always
+  pr-proof:
+    shell: true
+    command: >
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1
+      || git init -b main >/dev/null;
+      CODEMESH_E2E_REPORT=tmp/e2e-report.json make e2e-packaged
+    artifactGlobs:
+      - tmp/e2e-report.json
+    requiredArtifacts:
+      - tmp/e2e-report.json
+    stop: always

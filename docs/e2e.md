@@ -319,6 +319,48 @@ Run `make docs-site-test` when docs-site inputs change. Run default `make e2e-li
 
 GitHub Actions adds CI-only cross-OS proof. Required PR CI runs `make test`, `make e2e`, and `make e2e-packaged` on Ubuntu and macOS with distinct `CODEMESH_E2E_REPORT` paths for source and packaged modes, then uploads the JSON reports as short-retention artifacts even when a test step fails. Windows required PR CI runs a targeted Go unit smoke, builds `dist/codemesh.exe`, and runs the binary help smoke; Windows e2e remains an explicit tracked skip for issue 92 while POSIX-mode e2e coverage runs on Ubuntu and macOS. Live/network, including the Clone Strategy live smoke, and Peekaboo checks are not part of required PR CI unless a future workflow opts into them explicitly.
 
+## Crabbox PR Proof
+
+CodeMesh can run Peter-style Crabbox proof from the free `hermes-vm` static SSH target:
+
+```sh
+make crabbox-pr-proof
+```
+
+or directly:
+
+```sh
+scripts/crabbox-pr-proof
+```
+
+The proof command syncs the dirty checkout to Crabbox, runs `make e2e-packaged` on `hermes-vm`, requires `tmp/e2e-report.json`, writes a Crabbox run proof block, opens a visible terminal on the remote desktop, records MP4 proof, creates a GIF preview, captures a screenshot/contact sheet, and writes a local PR-comment markdown draft.
+
+Artifacts land under `.crabbox/proof/<run>/`:
+
+- `run-proof.md`
+- `e2e-report.json`
+- `terminal.mp4`
+- `terminal.gif`
+- `terminal.png`
+- `terminal.contact.png`
+- `comment-local.md`
+
+Dry-run PR publishing:
+
+```sh
+scripts/crabbox-pr-proof --pr 123 --publish-dry-run
+```
+
+Real inline GitHub PR comments need public asset hosting. Crabbox supports broker/local/S3/Cloudflare/R2 publishing, but the no-spend default here is local proof plus dry-run markdown. If a free public base URL or bucket is configured later, publish with:
+
+```sh
+scripts/crabbox-pr-proof --pr 123 --publish \
+  --publish-storage r2 \
+  --publish-bucket codemesh-artifacts \
+  --publish-endpoint-url https://<account-id>.r2.cloudflarestorage.com \
+  --publish-base-url https://example.invalid/codemesh-artifacts
+```
+
 ## Adopted Patterns
 
 From `steipete/gifgrep`:
@@ -348,4 +390,4 @@ From `steipete/oracle`:
 
 - Poll/wait helpers: no async CodeMesh behavior exists yet.
 - Real provider checks and any future GUI checks beyond Peekaboo/owned-host visual metadata: those live targets must record audited skips unless explicitly opted in and free prerequisites are available. Provider smoke must use the exact single-target env contract above and must not invoke password managers by default.
-- Screenshot proof: limited to the opt-in Peekaboo desktop smoke and future owned-host visual proof when a free local capture path is explicitly configured; default source, packaged, and live GitHub/toolchain/provider lanes remain CLI/report-only.
+- Screenshot/video proof: limited to the opt-in Peekaboo desktop smoke, Crabbox PR proof workflow, and future owned-host visual proof when a free local capture path is explicitly configured; default source, packaged, and live GitHub/toolchain/provider lanes remain CLI/report-only.
