@@ -1,0 +1,25 @@
+# Changelog
+
+## Unreleased
+
+Target first release: `v0.1.0`.
+
+### Highlights
+
+- Local-first workspace control plane: project registry, readiness, explicit hydration, bootstrap, and topology export for Git-backed projects.
+- Agent handoff MVP: `codemesh agent prepare`, Agent Run Contract v1, handoff docs metadata, deterministic `agent run`, run listing, and guarded cleanup.
+- Secret-safe readiness: env requirements and fake-provider env bundles prove scope and presence without storing raw secret values.
+- Multi-machine foundation: machine registry, workspace manifest entries, reconciliation dry-run planning, two-machine e2e proof, and owned-host proof lanes.
+- Public docs and proof lanes: command catalog, docs site, source/packaged e2e, live GitHub smoke, desktop smoke, cross-OS CI, and Crabbox-style PR proof.
+
+### Changes
+
+- Added local state init, Project Registry scan/add/tree/status, readiness diagnostics, and explicit hydration for registered Git projects: https://github.com/BramVR/codemesh/pull/19 https://github.com/BramVR/codemesh/pull/20 https://github.com/BramVR/codemesh/pull/21 https://github.com/BramVR/codemesh/pull/23
+- Added repo-local project policy, env readiness checks, default/policy handoff docs, and command docs for current CLI behavior: https://github.com/BramVR/codemesh/pull/22 https://github.com/BramVR/codemesh/pull/64 https://github.com/BramVR/codemesh/pull/65 https://github.com/BramVR/codemesh/pull/66 https://github.com/BramVR/codemesh/pull/67 https://github.com/BramVR/codemesh/pull/68 https://github.com/BramVR/codemesh/pull/69
+- Added Agent Prep, run listing, guarded cleanup, Agent Run Contract v1, deterministic `agent run`, source-checkout-independent prep, base-selection provenance, and JSON command contracts: https://github.com/BramVR/codemesh/pull/35 https://github.com/BramVR/codemesh/pull/36 https://github.com/BramVR/codemesh/pull/108 https://github.com/BramVR/codemesh/pull/105 https://github.com/BramVR/codemesh/pull/113 https://github.com/BramVR/codemesh/pull/112 https://github.com/BramVR/codemesh/pull/111
+- Added shared readiness semantics, `doctor`, stable command result/presentation behavior, CLI contract snapshots, and toolchain readiness reporting/delegation: https://github.com/BramVR/codemesh/pull/107 https://github.com/BramVR/codemesh/pull/110 https://github.com/BramVR/codemesh/pull/116 https://github.com/BramVR/codemesh/pull/117
+- Added Git Operations identity/redaction, machine registration, Workspace Manifest entries, bootstrap without default cloning, reconciliation drift planning, target export, and clone strategy controls for full/partial/sparse checkout: https://github.com/BramVR/codemesh/pull/99 https://github.com/BramVR/codemesh/pull/100 https://github.com/BramVR/codemesh/pull/122 https://github.com/BramVR/codemesh/pull/125 https://github.com/BramVR/codemesh/pull/120 https://github.com/BramVR/codemesh/pull/121
+- Added fake-provider Env Binding and smoke coverage for secret-free agent-scoped bundles: https://github.com/BramVR/codemesh/pull/114 https://github.com/BramVR/codemesh/pull/115
+- Added public docs inventory, command catalog/reference pages, docs site/theme, GitHub Pages workflow, README alignment, and release-lane setup docs: https://github.com/BramVR/codemesh/pull/46 https://github.com/BramVR/codemesh/pull/53 https://github.com/BramVR/codemesh/pull/60 https://github.com/BramVR/codemesh/pull/61 https://github.com/BramVR/codemesh/pull/62 https://github.com/BramVR/codemesh/pull/63
+- Added offline and packaged e2e harnesses, local Git fixtures, e2e report audit checks, expanded registry/readiness/hydration/agent-prep coverage, and packaged negative CLI proof: https://github.com/BramVR/codemesh/pull/14 https://github.com/BramVR/codemesh/pull/17 https://github.com/BramVR/codemesh/pull/18 https://github.com/BramVR/codemesh/pull/39 https://github.com/BramVR/codemesh/pull/40 https://github.com/BramVR/codemesh/pull/41 https://github.com/BramVR/codemesh/pull/42 https://github.com/BramVR/codemesh/pull/43 https://github.com/BramVR/codemesh/pull/44 https://github.com/BramVR/codemesh/pull/45
+- Added live/free proof lanes: live e2e guardrails, public GitHub remote smoke, live agent prepare, cross-OS CI artifacts, toolchain host smoke, two-machine manifest smoke, Peekaboo desktop smoke, owned-host e2e proof, and Crabbox-style PR proof workflow: https://github.com/BramVR/codemesh/pull/101 https://github.com/BramVR/codemesh/pull/102 https://github.com/BramVR/codemesh/pull/104 https://github.com/BramVR/codemesh/pull/106 https://github.com/BramVR/codemesh/pull/118 https://github.com/BramVR/codemesh/pull/127 https://github.com/BramVR/codemesh/pull/128 https://github.com/BramVR/codemesh/pull/130 https://github.com/BramVR/codemesh/pull/131
