@@ -12,6 +12,7 @@ sync:
     - dist/
     - tmp/
     - .codemesh/
+    - .crabbox/
 
 env:
   allow:
