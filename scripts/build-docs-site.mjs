@@ -51,6 +51,7 @@ for (const page of pages) {
 
 fs.writeFileSync(path.join(outDir, "favicon.svg"), faviconSvg(), "utf8");
 copyAsset("codemesh-hero.svg");
+copyAsset("codemesh-workspace-fabric.png");
 copyAsset("social-card.png");
 copyAsset("social-card.svg");
 fs.writeFileSync(path.join(outDir, ".nojekyll"), "", "utf8");
@@ -459,6 +460,11 @@ function layout({ page, html, toc, prev, next, sectionName }) {
 }
 
 function homeHero(rootPrefix) {
+  const statItems = [
+    ["Registry", "local SQLite"],
+    ["Readiness", "dirty / stale / env"],
+    ["Agent Prep", "temp clone handoff"],
+  ];
   const features = [
     ["Project Registry", "state.html#project-registry"],
     ["Readiness", "state.html#readiness"],
@@ -468,13 +474,14 @@ function homeHero(rootPrefix) {
     ["Local SQLite", "state.html#database"],
   ];
   return `<header class="home-hero">
-        <div>
+        <div class="hero-copy">
           <p class="eyebrow">Local-first / Git-backed / agent-ready</p>
           <h1>${productName}</h1>
           <p class="lede">${escapeHtml(productDescription)}</p>
           <div class="actions"><a class="btn primary" href="quickstart.html">Quickstart</a><a class="btn" href="install.html">Install</a><a class="btn" href="commands.html">Commands</a><a class="btn" href="${repoBase}" rel="noopener">GitHub</a></div>
+          <div class="hero-stats" aria-label="CodeMesh MVP coverage">${statItems.map(([label, value]) => `<div><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value)}</span></div>`).join("")}</div>
         </div>
-        <div class="hero-art"><img src="${rootPrefix}assets/codemesh-hero.svg" alt="CodeMesh workspace graph with local projects, readiness signals, and agent workspaces"></div>
+        <figure class="hero-art"><img src="${rootPrefix}assets/codemesh-workspace-fabric.png" alt="3D CodeMesh workspace fabric with local projects, readiness signals, machines, and agent workspaces"></figure>
         <div class="feature-row" aria-label="Project capabilities">${features.map(([feature, href]) => `<a class="feature-pill" href="${href}">${featureIconSvg()}${escapeHtml(feature)}</a>`).join("")}</div>
       </header>`;
 }

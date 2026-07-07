@@ -61,6 +61,7 @@ test("docs-site builds static artifact from public allowlist", () => {
     const commandRefText = commandRefs.map((rel) => fs.readFileSync(path.join(outDir, rel), "utf8")).join("\n");
     const llmsFull = fs.readFileSync(path.join(outDir, "llms-full.txt"), "utf8");
     const heroSvg = fs.readFileSync(path.join(outDir, "assets", "codemesh-hero.svg"), "utf8");
+    const heroPng = fs.statSync(path.join(outDir, "assets", "codemesh-workspace-fabric.png"));
     const socialSvg = fs.readFileSync(path.join(outDir, "assets", "social-card.svg"), "utf8");
     const favicon = fs.readFileSync(path.join(outDir, "favicon.svg"), "utf8");
 
@@ -81,6 +82,7 @@ test("docs-site builds static artifact from public allowlist", () => {
       "llms-full.txt",
       "favicon.svg",
       "assets/codemesh-hero.svg",
+      "assets/codemesh-workspace-fabric.png",
       "assets/social-card.png",
       "assets/social-card.svg",
       ".nojekyll",
@@ -102,8 +104,10 @@ test("docs-site builds static artifact from public allowlist", () => {
     assert.match(index, /id="doc-search"/);
     assert.match(index, /data-theme-toggle/);
     assert.match(index, /class="nav-toggle"/);
-    assert.match(index, /assets\/codemesh-hero\.svg/);
+    assert.match(index, /assets\/codemesh-workspace-fabric\.png/);
+    assert.doesNotMatch(index, /Project inventory, readiness checks, and temporary agent workspaces remain local and Git-backed\./);
     assert.match(index, /https:\/\/bramvr\.github\.io\/codemesh\/assets\/social-card\.png/);
+    assert.ok(heroPng.size > 100_000, "generated hero PNG should be copied");
     assert.match(heroSvg, /CodeMesh graph of projects, machines, temp agent workspaces, and readiness signals/);
     assert.match(heroSvg, /Canonical workspace/);
     assert.match(heroSvg, /Project Registry/);
@@ -213,6 +217,7 @@ test("pages workflow builds, smoke-tests, and safely skips disabled Pages", () =
     "dist/docs-site/llms-full.txt",
     "dist/docs-site/favicon.svg",
     "dist/docs-site/assets/codemesh-hero.svg",
+    "dist/docs-site/assets/codemesh-workspace-fabric.png",
     "dist/docs-site/assets/social-card.png",
     "dist/docs-site/assets/social-card.svg",
     "dist/docs-site/.nojekyll",

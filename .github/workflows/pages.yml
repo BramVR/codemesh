@@ -45,6 +45,7 @@ jobs:
           test -s dist/docs-site/llms-full.txt
           test -s dist/docs-site/favicon.svg
           test -s dist/docs-site/assets/codemesh-hero.svg
+          test -s dist/docs-site/assets/codemesh-workspace-fabric.png
           test -s dist/docs-site/assets/social-card.png
           test -s dist/docs-site/assets/social-card.svg
           test -f dist/docs-site/.nojekyll
@@ -87,6 +88,7 @@ jobs:
           test -s dist/docs-site/llms-full.txt
           test -s dist/docs-site/favicon.svg
           test -s dist/docs-site/assets/codemesh-hero.svg
+          test -s dist/docs-site/assets/codemesh-workspace-fabric.png
           test -s dist/docs-site/assets/social-card.png
           test -s dist/docs-site/assets/social-card.svg
           test -f dist/docs-site/.nojekyll
