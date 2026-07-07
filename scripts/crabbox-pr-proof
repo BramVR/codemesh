@@ -116,6 +116,7 @@ report_file="${proof_dir}/e2e-report.json"
 screenshot_file="${proof_dir}/terminal.png"
 video_file="${proof_dir}/terminal.mp4"
 gif_file="${proof_dir}/terminal.gif"
+contact_sheet_file="${proof_dir}/terminal.contact.png"
 trimmed_video_file="${proof_dir}/terminal.trimmed.mp4"
 comment_file="${proof_dir}/comment-local.md"
 
@@ -136,6 +137,7 @@ if [ "$video" = true ]; then
     --id hermes-vm \
     --screenshot "$screenshot_file" \
     --record "$video_file" \
+    --contact-sheet-output "$contact_sheet_file" \
     --record-duration "$record_duration" \
     --wait-visible 1s \
     -- bash -lc "$remote_cmd"
@@ -159,6 +161,7 @@ fi
     echo "- video: \`${video_file}\`"
     echo "- gif: \`${gif_file}\`"
     echo "- screenshot: \`${screenshot_file}\`"
+    echo "- contact sheet: \`${contact_sheet_file}\`"
   fi
 } > "$summary_file"
 
