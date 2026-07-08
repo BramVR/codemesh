@@ -31,7 +31,7 @@ Release `v0.1.0` after Bram explicitly authorizes release execution and chooses 
 - Open ready-for-agent issue: https://github.com/BramVR/codemesh/issues/70, broad roadmap backlog; not a release blocker.
 - Tags/releases: none.
 - Package registry: none.
-- Current CLI version: `0.0.0-dev`; release execution should not tag until this is resolved.
+- Current CLI version in the release candidate: `0.1.0`.
 
 ## Required Pre-Release Checks
 
@@ -64,7 +64,7 @@ make e2e-owned-host
 
 - No automated release workflow yet; GitHub Release notes and tag creation are manual.
 - No binary artifacts or package registry path yet; users build from source.
-- CLI currently reports `0.0.0-dev`, so the release needs a separate authorized versioning step before final checks, CI confirmation, and tag.
+- CLI versioning is intentionally static for this first release candidate; future releases should replace it with build-time or release-branch version injection.
 - Go dependency freshness has indirect update candidates; no direct dependency update is required for this proposal unless the final govulncheck finds a called vulnerability.
 - Windows coverage is a targeted smoke, not full POSIX-style e2e.
 
