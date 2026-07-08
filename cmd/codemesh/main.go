@@ -506,6 +506,8 @@ func runMachine(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "register":
 		return runMachineRegister(args[1:], stdout, stderr)
+	case "status":
+		return runMachineStatus(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown machine command: %s\n\n", args[0])
 		printMachineHelp(stderr)
@@ -518,14 +520,19 @@ func runMachineRegister(args []string, stdout, stderr io.Writer) int {
 		printMachineRegisterHelp(stdout)
 		return 0
 	}
-	workspaceArg, jsonOutput, ok := parseMachineRegisterArgs(args, stderr)
+	parsed, ok := parseMachineRegisterArgs(args, stderr)
 	if !ok {
 		printMachineRegisterHelp(stderr)
 		return 2
 	}
-	workspaceRoot, err := config.ResolveWorkspaceRoot(workspaceArg)
+	workspaceRoot, err := config.ResolveWorkspaceRoot(parsed.WorkspaceRoot)
 	if err != nil {
 		fmt.Fprintf(stderr, "resolve workspace root: %v\n", err)
+		return 1
+	}
+	paths, err := config.ResolvePaths()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve CodeMesh home: %v\n", err)
 		return 1
 	}
 	store, err := openMigratedStore()
@@ -534,67 +541,158 @@ func runMachineRegister(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer store.Close()
-	machine, err := machineregistry.Registry{Store: store}.Register(context.Background(), workspaceRoot)
+	machine, err := machineregistry.Registry{Store: store}.Register(context.Background(), machineregistry.RegisterOptions{
+		Name:          parsed.Name,
+		CodeMeshHome:  paths.Home,
+		WorkspaceRoot: workspaceRoot,
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "register machine: %v\n", err)
 		return 1
 	}
-	if jsonOutput {
-		if err := json.NewEncoder(stdout).Encode(machineRegisterJSON{
-			ID:            machine.ID,
-			Hostname:      machine.Hostname,
-			OS:            machine.OS,
-			Architecture:  machine.Architecture,
-			WorkspaceRoot: machine.WorkspaceRoot,
-			RegisteredAt:  machine.CreatedAt.UTC().Format(time.RFC3339),
-			UpdatedAt:     machine.UpdatedAt.UTC().Format(time.RFC3339),
-		}); err != nil {
+	if parsed.JSON {
+		if err := json.NewEncoder(stdout).Encode(newMachineJSON(machine)); err != nil {
 			fmt.Fprintf(stderr, "encode machine registration: %v\n", err)
 			return 1
 		}
 		return 0
 	}
-	fmt.Fprintf(stdout, "machine registered\nid: %s\nhostname: %s\nos: %s\narchitecture: %s\nworkspace_root: %s\nregistered_at: %s\nupdated_at: %s\n",
-		machine.ID,
-		machine.Hostname,
-		machine.OS,
-		machine.Architecture,
-		machine.WorkspaceRoot,
-		machine.CreatedAt.UTC().Format(time.RFC3339),
-		machine.UpdatedAt.UTC().Format(time.RFC3339),
-	)
+	renderMachineHuman(stdout, "machine registered", machine)
 	return 0
 }
 
-type machineRegisterJSON struct {
+func runMachineStatus(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printMachineStatusHelp(stdout)
+		return 0
+	}
+	jsonOutput, ok := parseMachineStatusArgs(args, stderr)
+	if !ok {
+		printMachineStatusHelp(stderr)
+		return 2
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+	machine, err := currentMachine(context.Background(), store)
+	if err != nil {
+		fmt.Fprintf(stderr, "read machine status: %v\n", err)
+		return 1
+	}
+	if jsonOutput {
+		if err := json.NewEncoder(stdout).Encode(newMachineJSON(machine)); err != nil {
+			fmt.Fprintf(stderr, "encode machine status: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	renderMachineHuman(stdout, "machine status", machine)
+	return 0
+}
+
+func currentMachine(ctx context.Context, store interface {
+	ListMachines(context.Context) ([]state.Machine, error)
+}) (state.Machine, error) {
+	machines, err := store.ListMachines(ctx)
+	if err != nil {
+		return state.Machine{}, err
+	}
+	if len(machines) == 0 {
+		return state.Machine{}, errors.New("machine is not registered")
+	}
+	return machines[0], nil
+}
+
+type machineJSON struct {
 	ID            string `json:"id"`
+	Name          string `json:"name"`
 	Hostname      string `json:"hostname"`
 	OS            string `json:"os"`
 	Architecture  string `json:"architecture"`
+	CodeMeshHome  string `json:"codemesh_home"`
 	WorkspaceRoot string `json:"workspace_root"`
 	RegisteredAt  string `json:"registered_at"`
 	UpdatedAt     string `json:"updated_at"`
 }
 
-func parseMachineRegisterArgs(args []string, stderr io.Writer) (string, bool, bool) {
+func newMachineJSON(machine state.Machine) machineJSON {
+	return machineJSON{
+		ID:            machine.ID,
+		Name:          machine.Name,
+		Hostname:      machine.Hostname,
+		OS:            machine.OS,
+		Architecture:  machine.Architecture,
+		CodeMeshHome:  machine.CodeMeshHome,
+		WorkspaceRoot: machine.WorkspaceRoot,
+		RegisteredAt:  machine.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:     machine.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+func renderMachineHuman(stdout io.Writer, title string, machine state.Machine) {
+	fmt.Fprintf(stdout, "%s\nid: %s\nname: %s\nhostname: %s\nos: %s\narchitecture: %s\ncodemesh_home: %s\nworkspace_root: %s\nregistered_at: %s\nupdated_at: %s\n",
+		title,
+		machine.ID,
+		machine.Name,
+		machine.Hostname,
+		machine.OS,
+		machine.Architecture,
+		machine.CodeMeshHome,
+		machine.WorkspaceRoot,
+		machine.CreatedAt.UTC().Format(time.RFC3339),
+		machine.UpdatedAt.UTC().Format(time.RFC3339),
+	)
+}
+
+type parsedMachineRegisterArgs struct {
+	WorkspaceRoot string
+	Name          string
+	JSON          bool
+}
+
+func parseMachineRegisterArgs(args []string, stderr io.Writer) (parsedMachineRegisterArgs, bool) {
 	var workspaceRoots []string
+	var parsed parsedMachineRegisterArgs
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			parsed.JSON = true
+		case "--name":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "machine register --name requires a name\n\n")
+				return parsedMachineRegisterArgs{}, false
+			}
+			parsed.Name = args[i+1]
+			i++
+		default:
+			workspaceRoots = append(workspaceRoots, args[i])
+		}
+	}
+	if len(workspaceRoots) > 1 {
+		fmt.Fprint(stderr, "machine register accepts at most one workspace root\n\n")
+		return parsedMachineRegisterArgs{}, false
+	}
+	if len(workspaceRoots) == 1 {
+		parsed.WorkspaceRoot = workspaceRoots[0]
+	}
+	return parsed, true
+}
+
+func parseMachineStatusArgs(args []string, stderr io.Writer) (bool, bool) {
 	var jsonOutput bool
 	for _, arg := range args {
 		switch arg {
 		case "--json":
 			jsonOutput = true
 		default:
-			workspaceRoots = append(workspaceRoots, arg)
+			fmt.Fprintf(stderr, "unknown machine status argument: %s\n\n", arg)
+			return false, false
 		}
 	}
-	if len(workspaceRoots) > 1 {
-		fmt.Fprint(stderr, "machine register accepts at most one workspace root\n\n")
-		return "", false, false
-	}
-	if len(workspaceRoots) == 1 {
-		return workspaceRoots[0], jsonOutput, true
-	}
-	return "", jsonOutput, true
+	return jsonOutput, true
 }
 
 func runRuns(args []string, stdout, stderr io.Writer) int {
@@ -2035,7 +2133,8 @@ Usage:
   codemesh bootstrap <manifest-path> [--apply] [--json]
   codemesh target export <target-name> --scope scope [--kind kind] [--workspace-root path] [--json]
   codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope
-  codemesh machine register [workspace-root] [--json]
+  codemesh machine register [workspace-root] [--name name] [--json]
+  codemesh machine status [--json]
   codemesh agent prepare <project> [--base branch] [--profile name] [--partial-clone] [--sparse path] [--env-provider fake] [--allow-env-scope scope] [--json]
   codemesh agent run <run-id> --label label [--timeout duration] -- <command...>
   codemesh runs
@@ -2194,7 +2293,8 @@ func printMachineHelp(w io.Writer) {
 	fmt.Fprint(w, `Register local machine identity.
 
 Usage:
-  codemesh machine register [workspace-root] [--json]
+  codemesh machine register [workspace-root] [--name name] [--json]
+  codemesh machine status [--json]
 `)
 }
 
@@ -2202,9 +2302,17 @@ func printMachineRegisterHelp(w io.Writer) {
 	fmt.Fprint(w, `Register local machine identity.
 
 Usage:
-  codemesh machine register [workspace-root] [--json]
+  codemesh machine register [workspace-root] [--name name] [--json]
 
 Creates or reuses a persistent local machine ID and updates mutable local facts.
+`)
+}
+
+func printMachineStatusHelp(w io.Writer) {
+	fmt.Fprint(w, `Show local machine registration.
+
+Usage:
+  codemesh machine status [--json]
 `)
 }
 

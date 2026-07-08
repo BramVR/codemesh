@@ -2542,8 +2542,8 @@ func (h *harness) caseMachineRegisterWorkflow() {
 		return
 	}
 
-	register := s.command("machine register human output", "machine", "register", firstRoot)
-	if register.Status != "PASS" || !s.expectOutput(register, "machine registered", "id: ", "hostname: ", "os: ", "architecture: ", "workspace_root: "+firstRoot, "registered_at: ", "updated_at: ") {
+	register := s.command("machine register human output", "machine", "register", firstRoot, "--name", "Fixture Laptop")
+	if register.Status != "PASS" || !s.expectOutput(register, "machine registered", "id: ", "name: Fixture Laptop", "hostname: ", "os: ", "architecture: ", "codemesh_home: "+s.codemeshHome, "workspace_root: "+firstRoot, "registered_at: ", "updated_at: ") {
 		return
 	}
 	firstID := valueAfterPrefix(register.Stdout, "id: ")
@@ -2574,12 +2574,30 @@ func (h *harness) caseMachineRegisterWorkflow() {
 		return
 	}
 
+	statusJSON := s.command("machine status json output", "machine", "status", "--json")
+	if statusJSON.Status != "PASS" {
+		return
+	}
+	var statusPayload struct {
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		CodeMeshHome string `json:"codemesh_home"`
+	}
+	if err := json.Unmarshal([]byte(statusJSON.Stdout), &statusPayload); err != nil {
+		s.failCommandAssertion(statusJSON, "stdout was not JSON: "+err.Error())
+		return
+	}
+	if statusPayload.ID != firstID || statusPayload.Name != "Fixture Laptop" || statusPayload.CodeMeshHome != s.codemeshHome {
+		s.failCommandAssertion(statusJSON, fmt.Sprintf("machine status payload = %#v, want id %q name Fixture Laptop home %q", statusPayload, firstID, s.codemeshHome))
+		return
+	}
+
 	machines, err := readMachineRowsFromStore(filepath.Join(s.codemeshHome, "codemesh.db"))
 	if err != nil {
 		h.record(result{Name: "machine register state row", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
-	if len(machines) != 1 || machines[0].ID != firstID || machines[0].WorkspaceRoot != secondRoot {
+	if len(machines) != 1 || machines[0].ID != firstID || machines[0].Name != "Fixture Laptop" || machines[0].CodeMeshHome != s.codemeshHome || machines[0].WorkspaceRoot != secondRoot {
 		h.record(result{Name: "machine register state row", Status: "FAIL", Error: fmt.Sprintf("machine rows = %#v", machines), ExitCode: -1})
 		return
 	}
@@ -6650,9 +6668,11 @@ type projectRow struct {
 
 type machineRow struct {
 	ID            string
+	Name          string
 	Hostname      string
 	OS            string
 	Architecture  string
+	CodeMeshHome  string
 	WorkspaceRoot string
 }
 
@@ -6749,7 +6769,7 @@ func readMachineRowsFromStore(dbPath string) ([]machineRow, error) {
 		return nil, err
 	}
 	defer db.Close()
-	rows, err := db.Query(`select machine_id, hostname, os, architecture, workspace_root from machines where machine_id is not null and machine_id != '' order by id`)
+	rows, err := db.Query(`select machine_id, name, hostname, os, architecture, codemesh_home, workspace_root from machines where machine_id is not null and machine_id != '' order by id`)
 	if err != nil {
 		return nil, err
 	}
@@ -6757,7 +6777,7 @@ func readMachineRowsFromStore(dbPath string) ([]machineRow, error) {
 	var machines []machineRow
 	for rows.Next() {
 		var machine machineRow
-		if err := rows.Scan(&machine.ID, &machine.Hostname, &machine.OS, &machine.Architecture, &machine.WorkspaceRoot); err != nil {
+		if err := rows.Scan(&machine.ID, &machine.Name, &machine.Hostname, &machine.OS, &machine.Architecture, &machine.CodeMeshHome, &machine.WorkspaceRoot); err != nil {
 			return nil, err
 		}
 		machines = append(machines, machine)

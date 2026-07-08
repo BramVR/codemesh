@@ -74,24 +74,29 @@ type EnvBinding struct {
 }
 
 type MachineFacts struct {
+	Name          string
 	Hostname      string
 	OS            string
 	Architecture  string
+	CodeMeshHome  string
 	WorkspaceRoot string
 }
 
 type Machine struct {
 	ID            string
+	Name          string
 	Hostname      string
 	OS            string
 	Architecture  string
+	CodeMeshHome  string
 	WorkspaceRoot string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
 
 type SQLiteStore struct {
-	db *sql.DB
+	db   *sql.DB
+	home string
 }
 
 func Initialize(ctx context.Context, home, workspaceRoot string) (InitResult, error) {
@@ -151,7 +156,11 @@ func Open(path string) (*SQLiteStore, error) {
 	if path == "" {
 		return nil, errors.New("database path is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	home, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return nil, fmt.Errorf("resolve database directory: %w", err)
+	}
+	if err := os.MkdirAll(home, 0o700); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
 	}
 	if err := ensurePrivateFile(path); err != nil {
@@ -162,7 +171,7 @@ func Open(path string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open state database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	return &SQLiteStore{db: db}, nil
+	return &SQLiteStore{db: db, home: home}, nil
 }
 
 func (s *SQLiteStore) Migrate(ctx context.Context) error {
@@ -213,8 +222,28 @@ create table if not exists schema_migrations (
 	if _, err := applyMigration(ctx, tx, 5, migration5); err != nil {
 		return err
 	}
+	if _, err := applyMigration(ctx, tx, 6, migration6); err != nil {
+		return err
+	}
+	if err := backfillMachineCodeMeshHome(ctx, tx, s.home); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration: %w", err)
+	}
+	return nil
+}
+
+func backfillMachineCodeMeshHome(ctx context.Context, tx *sql.Tx, home string) error {
+	if strings.TrimSpace(home) == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+update machines
+set codemesh_home = ?
+where machine_id is not null and machine_id != '' and codemesh_home = ''
+`, home); err != nil {
+		return fmt.Errorf("backfill machine CodeMesh home: %w", err)
 	}
 	return nil
 }
@@ -505,11 +534,15 @@ func (s *SQLiteStore) RegisterMachine(ctx context.Context, facts MachineFacts) (
 	if strings.TrimSpace(facts.Hostname) == "" {
 		return Machine{}, errors.New("machine hostname is required")
 	}
+	requestedName := strings.TrimSpace(facts.Name)
 	if strings.TrimSpace(facts.OS) == "" {
 		return Machine{}, errors.New("machine OS is required")
 	}
 	if strings.TrimSpace(facts.Architecture) == "" {
 		return Machine{}, errors.New("machine architecture is required")
+	}
+	if strings.TrimSpace(facts.CodeMeshHome) == "" {
+		return Machine{}, errors.New("machine CodeMesh home is required")
 	}
 	if strings.TrimSpace(facts.WorkspaceRoot) == "" {
 		return Machine{}, errors.New("machine workspace root is required")
@@ -524,13 +557,13 @@ func (s *SQLiteStore) RegisterMachine(ctx context.Context, facts MachineFacts) (
 	now := time.Now().UTC()
 	nowText := now.Format(time.RFC3339)
 	var rowID int64
-	var machineID, createdAtText string
+	var machineID, existingName, createdAtText string
 	err = tx.QueryRowContext(ctx, `
-select id, coalesce(machine_id, ''), coalesce(registered_at, created_at)
+select id, coalesce(machine_id, ''), name, coalesce(registered_at, created_at)
 from machines
 order by case when machine_id is not null and machine_id != '' then 0 else 1 end, id
 limit 1
-`).Scan(&rowID, &machineID, &createdAtText)
+`).Scan(&rowID, &machineID, &existingName, &createdAtText)
 	switch {
 	case err == nil:
 		if machineID == "" {
@@ -539,11 +572,18 @@ limit 1
 				return Machine{}, err
 			}
 		}
+		name := requestedName
+		if name == "" {
+			name = strings.TrimSpace(existingName)
+		}
+		if name == "" {
+			name = strings.TrimSpace(facts.Hostname)
+		}
 		if _, err := tx.ExecContext(ctx, `
 update machines
-set name = ?, machine_id = ?, hostname = ?, os = ?, architecture = ?, workspace_root = ?, registered_at = ?, updated_at = ?
+set name = ?, machine_id = ?, hostname = ?, os = ?, architecture = ?, codemesh_home = ?, workspace_root = ?, registered_at = ?, updated_at = ?
 where id = ?
-`, facts.Hostname, machineID, facts.Hostname, facts.OS, facts.Architecture, facts.WorkspaceRoot, createdAtText, nowText, rowID); err != nil {
+`, name, machineID, facts.Hostname, facts.OS, facts.Architecture, facts.CodeMeshHome, facts.WorkspaceRoot, createdAtText, nowText, rowID); err != nil {
 			return Machine{}, fmt.Errorf("update machine facts: %w", err)
 		}
 	case errors.Is(err, sql.ErrNoRows):
@@ -552,10 +592,14 @@ where id = ?
 			return Machine{}, err
 		}
 		createdAtText = nowText
+		name := requestedName
+		if name == "" {
+			name = strings.TrimSpace(facts.Hostname)
+		}
 		if _, err := tx.ExecContext(ctx, `
-insert into machines(name, machine_id, hostname, os, architecture, workspace_root, registered_at, created_at, updated_at)
-values(?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, facts.Hostname, machineID, facts.Hostname, facts.OS, facts.Architecture, facts.WorkspaceRoot, createdAtText, createdAtText, nowText); err != nil {
+insert into machines(name, machine_id, hostname, os, architecture, codemesh_home, workspace_root, registered_at, created_at, updated_at)
+values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, name, machineID, facts.Hostname, facts.OS, facts.Architecture, facts.CodeMeshHome, facts.WorkspaceRoot, createdAtText, createdAtText, nowText); err != nil {
 			return Machine{}, fmt.Errorf("insert machine facts: %w", err)
 		}
 	default:
@@ -571,18 +615,30 @@ values(?, ?, ?, ?, ?, ?, ?, ?, ?)
 	}
 	return Machine{
 		ID:            machineID,
+		Name:          registeredMachineName(requestedName, existingName, facts.Hostname),
 		Hostname:      facts.Hostname,
 		OS:            facts.OS,
 		Architecture:  facts.Architecture,
+		CodeMeshHome:  facts.CodeMeshHome,
 		WorkspaceRoot: facts.WorkspaceRoot,
 		CreatedAt:     createdAt,
 		UpdatedAt:     now,
 	}, nil
 }
 
+func registeredMachineName(requestedName, existingName, hostname string) string {
+	if requestedName != "" {
+		return requestedName
+	}
+	if strings.TrimSpace(existingName) != "" {
+		return strings.TrimSpace(existingName)
+	}
+	return strings.TrimSpace(hostname)
+}
+
 func (s *SQLiteStore) ListMachines(ctx context.Context) ([]Machine, error) {
 	rows, err := s.db.QueryContext(ctx, `
-select machine_id, hostname, os, architecture, workspace_root, coalesce(registered_at, created_at), updated_at
+select machine_id, name, hostname, os, architecture, codemesh_home, workspace_root, coalesce(registered_at, created_at), updated_at
 from machines
 where machine_id is not null and machine_id != ''
 order by id
@@ -596,7 +652,7 @@ order by id
 	for rows.Next() {
 		var machine Machine
 		var createdAt, updatedAt string
-		if err := rows.Scan(&machine.ID, &machine.Hostname, &machine.OS, &machine.Architecture, &machine.WorkspaceRoot, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&machine.ID, &machine.Name, &machine.Hostname, &machine.OS, &machine.Architecture, &machine.CodeMeshHome, &machine.WorkspaceRoot, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan machine: %w", err)
 		}
 		parsedCreatedAt, err := time.Parse(time.RFC3339, createdAt)
@@ -953,4 +1009,8 @@ var migration5 = []string{
   unique(project_id, requirement),
   foreign key(project_id) references projects(id)
 )`,
+}
+
+var migration6 = []string{
+	`alter table machines add column codemesh_home text not null default ''`,
 }

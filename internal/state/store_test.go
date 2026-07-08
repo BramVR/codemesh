@@ -322,15 +322,17 @@ func TestMigrateAddsMachineFactsWithoutLosingExistingState(t *testing.T) {
 		t.Fatalf("projects after machine migration = %#v, want existing project preserved", projects)
 	}
 	machine, err := store.RegisterMachine(ctx, MachineFacts{
+		Name:          "Office Mac",
 		Hostname:      "first-host",
 		OS:            "darwin",
 		Architecture:  "arm64",
+		CodeMeshHome:  "/tmp/codemesh-home",
 		WorkspaceRoot: "/tmp/workspace",
 	})
 	if err != nil {
 		t.Fatalf("RegisterMachine error = %v", err)
 	}
-	if machine.ID == "" || machine.Hostname != "first-host" || machine.OS != "darwin" || machine.Architecture != "arm64" || machine.WorkspaceRoot != "/tmp/workspace" || machine.CreatedAt.IsZero() || machine.UpdatedAt.IsZero() {
+	if machine.ID == "" || machine.Name != "Office Mac" || machine.Hostname != "first-host" || machine.OS != "darwin" || machine.Architecture != "arm64" || machine.CodeMeshHome != "/tmp/codemesh-home" || machine.WorkspaceRoot != "/tmp/workspace" || machine.CreatedAt.IsZero() || machine.UpdatedAt.IsZero() {
 		t.Fatalf("machine facts = %#v", machine)
 	}
 	var machineRows int
@@ -342,24 +344,77 @@ func TestMigrateAddsMachineFactsWithoutLosingExistingState(t *testing.T) {
 	}
 }
 
+func TestMigrateBackfillsMachineCodeMeshHome(t *testing.T) {
+	ctx := context.Background()
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	dbPath := filepath.Join(home, "codemesh.db")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db := openRawDB(t, dbPath)
+	if _, err := db.Exec(`create table schema_migrations (version integer primary key, applied_at text not null)`); err != nil {
+		t.Fatalf("create schema_migrations fixture: %v", err)
+	}
+	for _, migration := range [][]string{migration1, migration2, migration3, migration4, migration5} {
+		for _, stmt := range migration {
+			if _, err := db.Exec(stmt); err != nil {
+				t.Fatalf("apply migration fixture: %v", err)
+			}
+		}
+	}
+	if _, err := db.Exec(`insert into schema_migrations(version, applied_at) values(1, ?), (2, ?), (3, ?), (4, ?), (5, ?)`, "2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z", "2026-01-01T00:00:02Z", "2026-01-01T00:00:03Z", "2026-01-01T00:00:04Z"); err != nil {
+		t.Fatalf("record migration fixtures: %v", err)
+	}
+	if _, err := db.Exec(`
+insert into machines(name, machine_id, hostname, os, architecture, workspace_root, registered_at, created_at, updated_at)
+values('Travel Laptop', 'machine_existing', 'host', 'darwin', 'arm64', '/tmp/workspace', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+`); err != nil {
+		t.Fatalf("insert machine fixture: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open error = %v", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate error = %v", err)
+	}
+
+	machines, err := store.ListMachines(ctx)
+	if err != nil {
+		t.Fatalf("ListMachines error = %v", err)
+	}
+	if len(machines) != 1 || machines[0].CodeMeshHome != home {
+		t.Fatalf("machines after home backfill = %#v, want CodeMesh home %q", machines, home)
+	}
+}
+
 func TestRegisterMachineReusesIDAndUpdatesMutableFacts(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 	defer store.Close()
 
 	first, err := store.RegisterMachine(ctx, MachineFacts{
+		Name:          "First Name",
 		Hostname:      "first-host",
 		OS:            "darwin",
 		Architecture:  "arm64",
+		CodeMeshHome:  "/tmp/home-one",
 		WorkspaceRoot: "/tmp/one",
 	})
 	if err != nil {
 		t.Fatalf("first RegisterMachine error = %v", err)
 	}
 	second, err := store.RegisterMachine(ctx, MachineFacts{
+		Name:          "Second Name",
 		Hostname:      "second-host",
 		OS:            "linux",
 		Architecture:  "amd64",
+		CodeMeshHome:  "/tmp/home-two",
 		WorkspaceRoot: "/tmp/two",
 	})
 	if err != nil {
@@ -372,7 +427,7 @@ func TestRegisterMachineReusesIDAndUpdatesMutableFacts(t *testing.T) {
 	if second.CreatedAt != first.CreatedAt {
 		t.Fatalf("created_at changed: first %s second %s", first.CreatedAt, second.CreatedAt)
 	}
-	if second.Hostname != "second-host" || second.OS != "linux" || second.Architecture != "amd64" || second.WorkspaceRoot != "/tmp/two" {
+	if second.Name != "Second Name" || second.Hostname != "second-host" || second.OS != "linux" || second.Architecture != "amd64" || second.CodeMeshHome != "/tmp/home-two" || second.WorkspaceRoot != "/tmp/two" {
 		t.Fatalf("mutable facts not updated: %#v", second)
 	}
 	machines, err := store.ListMachines(ctx)
@@ -381,6 +436,41 @@ func TestRegisterMachineReusesIDAndUpdatesMutableFacts(t *testing.T) {
 	}
 	if len(machines) != 1 {
 		t.Fatalf("machine rows = %d, want 1", len(machines))
+	}
+	if machines[0].Name != "Second Name" || machines[0].CodeMeshHome != "/tmp/home-two" {
+		t.Fatalf("listed machine facts not updated: %#v", machines[0])
+	}
+}
+
+func TestRegisterMachinePreservesDisplayNameWhenNameOmitted(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	defer store.Close()
+
+	first, err := store.RegisterMachine(ctx, MachineFacts{
+		Name:          "Travel Laptop",
+		Hostname:      "first-host",
+		OS:            "darwin",
+		Architecture:  "arm64",
+		CodeMeshHome:  "/tmp/home-one",
+		WorkspaceRoot: "/tmp/one",
+	})
+	if err != nil {
+		t.Fatalf("first RegisterMachine error = %v", err)
+	}
+	second, err := store.RegisterMachine(ctx, MachineFacts{
+		Hostname:      "renamed-host",
+		OS:            "darwin",
+		Architecture:  "arm64",
+		CodeMeshHome:  "/tmp/home-two",
+		WorkspaceRoot: "/tmp/two",
+	})
+	if err != nil {
+		t.Fatalf("second RegisterMachine error = %v", err)
+	}
+
+	if second.ID != first.ID || second.Name != "Travel Laptop" || second.Hostname != "renamed-host" || second.CodeMeshHome != "/tmp/home-two" || second.WorkspaceRoot != "/tmp/two" {
+		t.Fatalf("machine after omitted name update = %#v", second)
 	}
 }
 

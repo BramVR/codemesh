@@ -16,15 +16,23 @@ type Registry struct {
 	Store Store
 }
 
-func (r Registry) Register(ctx context.Context, workspaceRoot string) (state.Machine, error) {
+type RegisterOptions struct {
+	Name          string
+	CodeMeshHome  string
+	WorkspaceRoot string
+}
+
+func (r Registry) Register(ctx context.Context, opts RegisterOptions) (state.Machine, error) {
 	hostname, err := os.Hostname()
 	if err != nil {
 		return state.Machine{}, err
 	}
 	return r.Store.RegisterMachine(ctx, state.MachineFacts{
+		Name:          opts.Name,
 		Hostname:      hostname,
 		OS:            runtime.GOOS,
 		Architecture:  runtime.GOARCH,
-		WorkspaceRoot: workspaceRoot,
+		CodeMeshHome:  opts.CodeMeshHome,
+		WorkspaceRoot: opts.WorkspaceRoot,
 	})
 }

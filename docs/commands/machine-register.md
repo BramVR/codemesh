@@ -9,12 +9,12 @@ read_when:
 ## Syntax
 
 ```sh
-codemesh machine register [workspace-root] [--json]
+codemesh machine register [workspace-root] [--name name] [--json]
 ```
 
 ## Purpose
 
-Creates or reuses a persistent local machine ID, then records mutable local facts: hostname, OS, architecture, workspace root, and timestamps.
+Creates or reuses a persistent local machine ID, then records mutable local facts: display name, hostname, OS, architecture, CodeMesh home, workspace root, and timestamps.
 
 Machine facts stay in the local CodeMesh state store. They are observed machine state, not shared topology.
 
@@ -27,13 +27,14 @@ workspace="$demo/workspace"
 
 mkdir -p "$workspace"
 codemesh init "$workspace"
-codemesh machine register "$workspace"
+codemesh machine register "$workspace" --name "Demo Machine"
 codemesh machine register "$workspace" --json
 ```
 
 ## Current Limitations
 
 - Registers only the current local machine.
+- Re-running without `--name` preserves the existing display name while updating placement facts.
 - Does not publish facts to a manifest or remote service.
 - Does not sync projects or bootstrap another machine.
 
