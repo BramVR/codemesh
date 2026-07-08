@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.1.0 - 2026-07-08
 
-Target first release: `v0.1.0`.
+First CodeMesh MVP source release.
 
 ### Highlights
 

@@ -48,6 +48,22 @@ func TestUnknownCommandFails(t *testing.T) {
 	}
 }
 
+func TestVersionReportsReleaseVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"--version"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if got, want := strings.TrimSpace(stdout.String()), "codemesh 0.1.0"; got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestCommandCatalogMatchesTopLevelHelp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 

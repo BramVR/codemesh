@@ -33,7 +33,7 @@ import (
 	"github.com/BramVR/codemesh/internal/workspacetarget"
 )
 
-const version = "0.0.0-dev"
+const version = "0.1.0"
 
 const statusReadinessTimeout = 30 * time.Second
 const hydrateTimeout = 10 * time.Minute
