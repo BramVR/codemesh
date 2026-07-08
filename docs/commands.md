@@ -20,7 +20,8 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 - [`codemesh bootstrap <manifest-path> [--apply] [--json]`](commands/bootstrap.md)
 - [`codemesh target export <target-name> --scope scope [--kind kind] [--workspace-root path] [--json]`](commands/target-export.md)
 - [`codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope`](commands/env-bind.md)
-- [`codemesh machine register [workspace-root] [--json]`](commands/machine-register.md)
+- [`codemesh machine register [workspace-root] [--name name] [--json]`](commands/machine-register.md)
+- [`codemesh machine status [--json]`](commands/machine-status.md)
 - [`codemesh agent prepare <project> [--base branch] [--profile name] [--partial-clone] [--sparse path] [--env-provider fake] [--allow-env-scope scope] [--json]`](commands/agent-prepare.md)
 - [`codemesh agent run <run-id> --label label [--timeout duration] -- <command...>`](commands/agent-run.md)
 - [`codemesh runs`](commands/runs.md)
@@ -60,6 +61,7 @@ git clone --bare "$seed" "$remote"
 git clone "$remote" "$workspace/demo-project"
 
 codemesh init "$workspace"
+codemesh machine register "$workspace" --name "Demo Machine"
 codemesh add "$workspace/demo-project" --alias demo-project
 codemesh tree
 codemesh tree --json

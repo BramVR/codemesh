@@ -4,6 +4,8 @@
 
 Target next patch: `v0.1.1`.
 
+- Added named machine registration plus `codemesh machine status` so local placement facts include display name, CodeMesh home, workspace root, and persisted troubleshooting output: https://github.com/BramVR/codemesh/issues/134
+
 ## v0.1.0 - 2026-07-08
 
 First CodeMesh MVP source release.

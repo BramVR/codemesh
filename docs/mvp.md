@@ -368,7 +368,7 @@ Initial tables:
 7. `init`, `add`, `scan`, `tree`, `status`.
 8. Agent Prep, `agent prepare`, `runs`, `clean`.
 9. `hydrate`.
-10. Machine Registry and `machine register`.
+10. Machine Registry, `machine register`, and `machine status`.
 11. Doctor preflight and strict warning failure.
 12. Fake-provider Env Binding and agent-scoped env bundle metadata.
 13. Toolchain readiness declaration, doctor reporting, and Agent Run Contract status metadata.

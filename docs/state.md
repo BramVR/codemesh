@@ -65,19 +65,21 @@ Presence is derived from the filesystem when reading the registry. The MVP does 
 
 ## Machine Registry
 
-`codemesh machine register [workspace-root]` creates or reuses one persistent local machine ID in the State Store.
+`codemesh machine register [workspace-root] [--name name]` creates or reuses one persistent local machine ID in the State Store.
 
 Stored fields:
 
 - `machine_id`: locally minted stable machine identity.
+- `name`: user-facing display name. New registrations default to hostname when omitted; re-registration without `--name` preserves the existing display name.
 - `hostname`: current host name.
 - `os`: Go runtime OS name.
 - `architecture`: Go runtime architecture name.
+- `codemesh_home`: local CodeMesh home for this machine.
 - `workspace_root`: local workspace root for this machine.
 - `registered_at`: first registration timestamp.
 - `updated_at`: latest registration timestamp.
 
-Re-running registration updates mutable facts without changing `machine_id` or `registered_at`.
+Re-running registration updates mutable facts without changing `machine_id` or `registered_at`. `codemesh machine status [--json]` reads these persisted facts for troubleshooting. Machine status does not store readiness, freshness, dirty state, or env readiness; those remain derived when registry/readiness commands run.
 
 Machine rows are local observed state. They are not exported to shared topology by default.
 

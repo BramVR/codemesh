@@ -249,6 +249,60 @@ func TestMachineRegisterJSONOutput(t *testing.T) {
 	}
 }
 
+func TestMachineRegisterNameAndStatusExposePersistedPlacement(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"machine", "register", workspace, "--name", "Build Laptop"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("machine register --name exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	registerOutput := stdout.String()
+	for _, want := range []string{"name: Build Laptop", "codemesh_home: " + home, "workspace_root: " + workspace} {
+		if !strings.Contains(registerOutput, want) {
+			t.Fatalf("machine register output missing %q:\n%s", want, registerOutput)
+		}
+	}
+	firstID := valueAfterPrefix(t, registerOutput, "id: ")
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"machine", "status", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("machine status --json exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	var statusPayload struct {
+		ID            string `json:"id"`
+		Name          string `json:"name"`
+		Hostname      string `json:"hostname"`
+		OS            string `json:"os"`
+		Architecture  string `json:"architecture"`
+		CodeMeshHome  string `json:"codemesh_home"`
+		WorkspaceRoot string `json:"workspace_root"`
+		RegisteredAt  string `json:"registered_at"`
+		UpdatedAt     string `json:"updated_at"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &statusPayload); err != nil {
+		t.Fatalf("machine status JSON did not parse: %v\n%s", err, stdout.String())
+	}
+	if statusPayload.ID != firstID || statusPayload.Name != "Build Laptop" || statusPayload.CodeMeshHome != home || statusPayload.WorkspaceRoot != workspace || statusPayload.RegisteredAt == "" || statusPayload.UpdatedAt == "" {
+		t.Fatalf("machine status payload = %#v", statusPayload)
+	}
+	if statusPayload.Hostname == "" || statusPayload.OS == "" || statusPayload.Architecture == "" {
+		t.Fatalf("machine status missing host facts: %#v", statusPayload)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestBootstrapPlansThenAppliesTopologyWithoutProjectDirectories(t *testing.T) {
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, "codemesh-home")
@@ -429,6 +483,7 @@ func TestTargetExportJSONIncludesTopologyMachineAndScopedEnvRefs(t *testing.T) {
 		Hostname:      "local-fake-host",
 		OS:            "linux",
 		Architecture:  "amd64",
+		CodeMeshHome:  home,
 		WorkspaceRoot: workspace,
 	})
 	if err != nil {
