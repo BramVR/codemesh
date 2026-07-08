@@ -17,14 +17,15 @@ Release `v0.1.0` after Bram explicitly authorizes release execution and chooses 
 - Go CLI source release for the current command catalog: init, add, scan, tree, status, doctor, hydrate, bootstrap, target export, env bind, machine register, agent prepare, agent run, runs, and clean.
 - Local SQLite state, Project Registry, Readiness, Env Readiness, Env Binding fake provider, Machine Registry, Workspace Manifest, Reconciliation dry-run planning, and Workspace Target Export.
 - Agent handoff MVP with Agent Run Contract v1, checkout provenance, handoff docs metadata, toolchain readiness reporting, clone strategy metadata, and secret-free env-bundle metadata.
-- Public docs site, north-star Vision, reimagined docs-site hero, command references, install/quickstart docs, trust/state/MVP docs, and e2e proof docs.
+- Public docs site, north-star Vision, untrusted-comment agent guidance, reimagined docs-site hero, command references, install/quickstart docs, trust/state/MVP docs, and e2e proof docs.
 - Test/proof lanes: unit tests, offline e2e, packaged e2e, live skip-by-default e2e, public GitHub live smoke, desktop smoke, two-machine smoke, owned-host proof, cross-OS CI, and Crabbox-style PR proof.
 
 ## Current State
 
-- Candidate base: `origin/main` at `5889f0cd0a30bb1eb34b101d0d3a886b58605170`.
-- Latest landed PR: https://github.com/BramVR/codemesh/pull/145, updating `VISION.md` for the Dropbox-for-developers north star and first implementation slice.
-- Previous main change: direct push `docs: reimagine docs site hero`, with fresh `ci` run 28874863261 and `pages` run 28874863305 green.
+- Candidate base: `origin/main` at `40bd20ed7f4b13a29976148ab2b7eeaf67a7f982`.
+- Latest main change: direct push `docs: guard agents from untrusted comments`, with fresh `ci` run 28930263542 and `pages` run 28930263359 green.
+- Previous landed PR: https://github.com/BramVR/codemesh/pull/145, updating `VISION.md` for the Dropbox-for-developers north star and first implementation slice.
+- Previous main change: direct push `docs: reimagine docs site hero`, with `ci` run 28874863261 and `pages` run 28874863305 green.
 - Prior landed PRs: https://github.com/BramVR/codemesh/pull/131, and https://github.com/BramVR/codemesh/pull/130 closing https://github.com/BramVR/codemesh/issues/129.
 - Open PR queue: this release proposal PR only; no other open PR is a release blocker.
 - Open ready-for-agent issue: https://github.com/BramVR/codemesh/issues/70, broad roadmap backlog; not a release blocker.
