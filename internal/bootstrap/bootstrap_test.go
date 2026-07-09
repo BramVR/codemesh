@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,12 +15,14 @@ import (
 	"github.com/BramVR/codemesh/internal/workspacemanifest"
 )
 
-func TestApplyCreatesParentsAndRegistryRowsWithoutProjectDirectories(t *testing.T) {
+func TestApplyClonesMissingManifestProjectsThroughHydrationPlan(t *testing.T) {
 	workspace := filepath.Join(t.TempDir(), "workspace")
 	store := newMemoryStore(machine(workspace))
+	alphaRemote := createBareRemote(t, "alpha")
+	betaRemote := createBareRemote(t, "beta")
 	entries := []workspacemanifest.Entry{
-		manifestEntry("https://github.com/BramVR/alpha", "alpha", "tools/alpha"),
-		manifestEntry("https://github.com/BramVR/beta", "beta", "beta"),
+		manifestEntry("https://example.invalid/bram/alpha", "alpha", "tools/alpha", alphaRemote),
+		manifestEntry("https://example.invalid/bram/beta", "beta", "beta", betaRemote),
 	}
 
 	result, err := Bootstrapper{Store: store}.Apply(context.Background(), entries)
@@ -39,24 +42,59 @@ func TestApplyCreatesParentsAndRegistryRowsWithoutProjectDirectories(t *testing.
 		}
 	}
 	for _, path := range []string{filepath.Join(workspace, "tools", "alpha"), filepath.Join(workspace, "beta")} {
-		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("project path %s was created or stat failed unexpectedly: %v", path, err)
+		if _, err := os.Stat(filepath.Join(path, "README.md")); err != nil {
+			t.Fatalf("project checkout %s missing README: %v", path, err)
 		}
+	}
+	if len(result.Applied.ClonedProjects) != 2 {
+		t.Fatalf("cloned projects = %#v, want alpha and beta", result.Applied.ClonedProjects)
 	}
 	if len(store.projects) != 2 {
 		t.Fatalf("project rows = %#v, want two missing registry rows", store.projects)
 	}
-	if store.projects[0].Alias != "alpha" || store.projects[0].LocalPath != filepath.Join(workspace, "tools", "alpha") {
+	if store.projects[0].Alias != "alpha" || store.projects[0].LocalPath != filepath.Join(workspace, "tools", "alpha") || store.projects[0].CloneURL != alphaRemote {
 		t.Fatalf("first project row = %#v", store.projects[0])
 	}
-	if store.projects[1].Alias != "beta" || store.projects[1].LocalPath != filepath.Join(workspace, "beta") {
+	if store.projects[1].Alias != "beta" || store.projects[1].LocalPath != filepath.Join(workspace, "beta") || store.projects[1].CloneURL != betaRemote {
 		t.Fatalf("second project row = %#v", store.projects[1])
+	}
+}
+
+func TestApplyReplansAfterImportToUsePreservedRegistryCloneURL(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	target := filepath.Join(workspace, "tools", "alpha")
+	remote := createBareRemote(t, "preserved-alpha")
+	store := newMemoryStore(machine(workspace))
+	store.projects = []state.Project{{
+		ID:               1,
+		Alias:            "alpha",
+		NormalizedRemote: "https://example.invalid/bram/alpha",
+		CloneURL:         remote,
+		LocalPath:        target,
+		CanonicalPath:    target,
+		Source:           "canonical",
+	}}
+	store.nextID = 2
+
+	result, err := Bootstrapper{Store: store}.Apply(context.Background(), []workspacemanifest.Entry{
+		manifestEntryWithoutCloneURL("https://example.invalid/bram/alpha", "alpha", "tools/alpha"),
+	})
+	if err != nil {
+		t.Fatalf("Apply error = %v", err)
+	}
+
+	if len(result.Applied.ClonedProjects) != 1 || result.Applied.ClonedProjects[0].Path != target {
+		t.Fatalf("cloned projects = %#v, want alpha at %s", result.Applied.ClonedProjects, target)
+	}
+	if _, err := os.Stat(filepath.Join(target, "README.md")); err != nil {
+		t.Fatalf("preserved clone URL was not used to hydrate target: %v", err)
 	}
 }
 
 func TestApplyCreatesWorkspaceRootForRootDesiredPath(t *testing.T) {
 	temp := t.TempDir()
 	workspace := filepath.Join(temp, "workspace")
+	rootRemote := createBareRemote(t, "root")
 	parentMarker := filepath.Join(temp, "parent-marker")
 	if err := os.WriteFile(parentMarker, []byte("keep\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -64,7 +102,7 @@ func TestApplyCreatesWorkspaceRootForRootDesiredPath(t *testing.T) {
 	store := newMemoryStore(machine(workspace))
 
 	result, err := Bootstrapper{Store: store}.Apply(context.Background(), []workspacemanifest.Entry{
-		manifestEntry("https://github.com/BramVR/root", "root", "."),
+		manifestEntry("https://example.invalid/bram/root", "root", ".", rootRemote),
 	})
 	if err != nil {
 		t.Fatalf("Apply error = %v", err)
@@ -79,8 +117,8 @@ func TestApplyCreatesWorkspaceRootForRootDesiredPath(t *testing.T) {
 	if info, err := os.Stat(workspace); err != nil || !info.IsDir() {
 		t.Fatalf("workspace root missing or not directory: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(workspace, "root")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("bootstrap created project placeholder under root desired path: %v", err)
+	if _, err := os.Stat(filepath.Join(workspace, "README.md")); err != nil {
+		t.Fatalf("bootstrap root checkout missing README: %v", err)
 	}
 	if got, err := os.ReadFile(parentMarker); err != nil || string(got) != "keep\n" {
 		t.Fatalf("parent marker changed or missing: got %q err %v", got, err)
@@ -103,7 +141,7 @@ func TestApplyRefusesPathConflictWithoutMutation(t *testing.T) {
 	store := newMemoryStore(machine(workspace))
 
 	result, err := Bootstrapper{Store: store}.Apply(context.Background(), []workspacemanifest.Entry{
-		manifestEntry("https://github.com/BramVR/alpha", "alpha", "tools/alpha"),
+		manifestEntry("https://github.com/BramVR/alpha", "alpha", "tools/alpha", "https://github.com/BramVR/alpha.git"),
 	})
 	if err == nil {
 		t.Fatal("Apply error = nil, want blocker")
@@ -128,8 +166,8 @@ func TestApplyRefusesNestedProjectPathsWithoutCreatingPlaceholderParent(t *testi
 	store := newMemoryStore(machine(workspace))
 
 	result, err := Bootstrapper{Store: store}.Apply(context.Background(), []workspacemanifest.Entry{
-		manifestEntry("https://github.com/BramVR/parent", "parent", "tools/parent"),
-		manifestEntry("https://github.com/BramVR/nested", "nested", "tools/parent/nested"),
+		manifestEntry("https://github.com/BramVR/parent", "parent", "tools/parent", "https://github.com/BramVR/parent.git"),
+		manifestEntry("https://github.com/BramVR/nested", "nested", "tools/parent/nested", "https://github.com/BramVR/nested.git"),
 	})
 	if err == nil {
 		t.Fatal("Apply error = nil, want nested path blocker")
@@ -153,17 +191,19 @@ func TestApplyUpdatesAliasBeforeAddingManifestRowThatReusesOldAlias(t *testing.T
 	workspace := filepath.Join(t.TempDir(), "workspace")
 	oldPath := filepath.Join(workspace, "tools", "alpha")
 	store := newMemoryStore(machine(workspace))
+	oldAlphaRemote := createBareRemote(t, "old-alpha")
+	alphaRemote := createBareRemote(t, "alpha")
 	store.projects = []state.Project{{
 		ID:               10,
 		Alias:            "old-alpha",
 		NormalizedRemote: "https://github.com/BramVR/alpha",
-		CloneURL:         "https://github.com/BramVR/alpha.git",
+		CloneURL:         alphaRemote,
 		LocalPath:        oldPath,
 	}}
 	store.nextID = 11
 	entries := []workspacemanifest.Entry{
-		manifestEntry("https://github.com/BramVR/old-alpha", "old-alpha", "tools/old-alpha"),
-		manifestEntry("https://github.com/BramVR/alpha", "alpha", "tools/alpha"),
+		manifestEntry("https://github.com/BramVR/old-alpha", "old-alpha", "tools/old-alpha", oldAlphaRemote),
+		manifestEntry("https://github.com/BramVR/alpha", "alpha", "tools/alpha", alphaRemote),
 	}
 
 	result, err := Bootstrapper{Store: store}.Apply(context.Background(), entries)
@@ -184,28 +224,30 @@ func TestApplyUpdatesAliasBeforeAddingManifestRowThatReusesOldAlias(t *testing.T
 
 func TestApplySwapsExistingAliasesWithoutUniqueConstraintFailure(t *testing.T) {
 	workspace := filepath.Join(t.TempDir(), "workspace")
+	alphaRemote := createBareRemote(t, "swap-alpha")
+	betaRemote := createBareRemote(t, "swap-beta")
 	store := newMemoryStore(machine(workspace))
 	store.projects = []state.Project{
 		{
 			ID:               1,
 			Alias:            "alpha",
 			NormalizedRemote: "https://github.com/BramVR/alpha",
-			CloneURL:         "https://github.com/BramVR/alpha.git",
+			CloneURL:         alphaRemote,
 			LocalPath:        filepath.Join(workspace, "alpha"),
 		},
 		{
 			ID:               2,
 			Alias:            "beta",
 			NormalizedRemote: "https://github.com/BramVR/beta",
-			CloneURL:         "https://github.com/BramVR/beta.git",
+			CloneURL:         betaRemote,
 			LocalPath:        filepath.Join(workspace, "beta"),
 		},
 	}
 	store.nextID = 3
 
 	result, err := Bootstrapper{Store: store}.Apply(context.Background(), []workspacemanifest.Entry{
-		manifestEntry("https://github.com/BramVR/alpha", "beta", "alpha"),
-		manifestEntry("https://github.com/BramVR/beta", "alpha", "beta"),
+		manifestEntry("https://github.com/BramVR/alpha", "beta", "alpha", alphaRemote),
+		manifestEntry("https://github.com/BramVR/beta", "alpha", "beta", betaRemote),
 	})
 	if err != nil {
 		t.Fatalf("Apply error = %v", err)
@@ -221,19 +263,27 @@ func TestApplySwapsExistingAliasesWithoutUniqueConstraintFailure(t *testing.T) {
 
 func TestPlanRequiresRegisteredMachineWorkspaceRoot(t *testing.T) {
 	_, err := Bootstrapper{Store: newMemoryStore()}.Plan(context.Background(), []workspacemanifest.Entry{
-		manifestEntry("https://github.com/BramVR/alpha", "alpha", "alpha"),
+		manifestEntry("https://github.com/BramVR/alpha", "alpha", "alpha", "https://github.com/BramVR/alpha.git"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "registered machine") {
 		t.Fatalf("Plan error = %v, want registered machine requirement", err)
 	}
 }
 
-func manifestEntry(identity, alias, desiredPath string) workspacemanifest.Entry {
+func manifestEntry(identity, alias, desiredPath, cloneURL string) workspacemanifest.Entry {
 	return workspacemanifest.NewEntry(workspacemanifest.ProjectEntry{
 		Identity:    identity,
 		Alias:       alias,
 		DesiredPath: desiredPath,
-		CloneHints:  workspacemanifest.CloneHints{URL: identity + ".git"},
+		CloneHints:  workspacemanifest.CloneHints{URL: cloneURL},
+	})
+}
+
+func manifestEntryWithoutCloneURL(identity, alias, desiredPath string) workspacemanifest.Entry {
+	return workspacemanifest.NewEntry(workspacemanifest.ProjectEntry{
+		Identity:    identity,
+		Alias:       alias,
+		DesiredPath: desiredPath,
 	})
 }
 
@@ -319,4 +369,29 @@ func hasAppliedParent(result Result, path string) bool {
 		}
 	}
 	return false
+}
+
+func createBareRemote(t *testing.T, name string) string {
+	t.Helper()
+	root := t.TempDir()
+	seed := filepath.Join(root, name+"-seed")
+	remote := filepath.Join(root, name+".git")
+	runGit(t, root, "init", "-b", "main", seed)
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("# "+name+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, seed, "add", "README.md")
+	runGit(t, seed, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Initial commit")
+	runGit(t, root, "clone", "--bare", seed, remote)
+	return remote
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(output))
+	}
 }

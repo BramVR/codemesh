@@ -341,7 +341,7 @@ The GitHub Actions workflow is `crabbox-pr-proof`. Reviewers find the proof on t
 - `mutating-flow-before-after.svg`
 - matching `.txt` command-output companions and `commands/*.txt` transcripts
 
-The visuals show canonical workspace tree/status output, manifest import/export placement, per-machine placement and presence, planned bootstrap and hydration actions, and before/after state for bootstrap apply plus selected hydration. Paths are sanitized to isolated fixture placeholders before upload.
+The visuals show canonical workspace tree/status output, manifest import/export placement, per-machine placement and presence, planned bootstrap/hydration actions, and before/after state for bootstrap apply plus idempotent hydrate. Paths are sanitized to isolated fixture placeholders before upload.
 
 ## Owned-Host Crabbox Proof
 

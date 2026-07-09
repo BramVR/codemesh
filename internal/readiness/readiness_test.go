@@ -535,6 +535,21 @@ func TestEvaluateProjectReportsOriginMismatchAsBlocker(t *testing.T) {
 	}
 }
 
+func TestEvaluateProjectAcceptsRegisteredCloneURLAsUsableOrigin(t *testing.T) {
+	project := createReadinessFixture(t, "clone-url-origin")
+	project.CloneURL = project.NormalizedRemote
+	project.NormalizedRemote = "https://example.invalid/bram/clone-url-origin"
+
+	report := evaluateFixture(t, project, Options{BaseBranch: "main", CheckRemote: true})
+
+	if report.State != StatePresent {
+		t.Fatalf("state = %s, want %s; blockers=%v warnings=%v", report.State, StatePresent, report.Blockers, report.Warnings)
+	}
+	if hasDiagnostic(report.Blockers, "remote-mismatch") {
+		t.Fatalf("blockers = %v, want no remote-mismatch", report.Blockers)
+	}
+}
+
 func TestEvaluateProjectReportsMissingBaseAsBlocker(t *testing.T) {
 	project := createReadinessFixture(t, "missing-base")
 

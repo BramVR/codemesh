@@ -9,6 +9,8 @@ import (
 	"sort"
 
 	"github.com/BramVR/codemesh/internal/clonestrategy"
+	"github.com/BramVR/codemesh/internal/gitops"
+	"github.com/BramVR/codemesh/internal/hydrationexecutor"
 	"github.com/BramVR/codemesh/internal/hydrationplanner"
 	"github.com/BramVR/codemesh/internal/reconciliation"
 	"github.com/BramVR/codemesh/internal/state"
@@ -25,6 +27,7 @@ type Store interface {
 
 type Bootstrapper struct {
 	Store Store
+	Git   gitops.Client
 }
 
 type Result struct {
@@ -34,9 +37,10 @@ type Result struct {
 }
 
 type Applied struct {
-	ParentDirectories []string        `json:"parent_directories"`
-	AddedProjects     []state.Project `json:"added_projects"`
-	UpdatedProjects   []state.Project `json:"updated_projects"`
+	ParentDirectories []string                          `json:"parent_directories"`
+	AddedProjects     []state.Project                   `json:"added_projects"`
+	UpdatedProjects   []state.Project                   `json:"updated_projects"`
+	ClonedProjects    []hydrationexecutor.ClonedProject `json:"cloned_projects"`
 }
 
 type BlockedError struct {
@@ -45,6 +49,14 @@ type BlockedError struct {
 
 func (e BlockedError) Error() string {
 	return fmt.Sprintf("bootstrap blocked by %d plan blocker(s)", len(e.Blockers))
+}
+
+type HydrationBlockedError struct {
+	Actions []hydrationplanner.Action
+}
+
+func (e HydrationBlockedError) Error() string {
+	return fmt.Sprintf("bootstrap blocked by %d hydration refusal(s)", len(e.Actions))
 }
 
 func (b Bootstrapper) Plan(ctx context.Context, entries []workspacemanifest.Entry) (reconciliation.DriftPlan, error) {
@@ -68,6 +80,37 @@ func (b Bootstrapper) PlanResult(ctx context.Context, entries []workspacemanifes
 	return result, nil
 }
 
+func (b Bootstrapper) PlanRegistry(ctx context.Context, aliases []string, all bool) (Result, error) {
+	if b.Store == nil {
+		return Result{}, errors.New("bootstrap store is required")
+	}
+	planner := hydrationplanner.New(b.Store)
+	if all {
+		hydrationPlan, err := planner.PlanAll(ctx, clonestrategy.Options{})
+		return Result{HydrationPlan: hydrationPlan}, err
+	}
+	result := Result{}
+	seen := map[string]bool{}
+	for _, alias := range aliases {
+		if seen[alias] {
+			continue
+		}
+		seen[alias] = true
+		plan, err := planner.PlanProject(ctx, alias, clonestrategy.Options{})
+		if err != nil {
+			return result, err
+		}
+		if result.HydrationPlan.WorkspaceRoot == "" {
+			result.HydrationPlan.WorkspaceRoot = plan.WorkspaceRoot
+		}
+		if plan.Blocked {
+			result.HydrationPlan.Blocked = true
+		}
+		result.HydrationPlan.Actions = append(result.HydrationPlan.Actions, plan.Actions...)
+	}
+	return result, nil
+}
+
 func (b Bootstrapper) Apply(ctx context.Context, entries []workspacemanifest.Entry) (Result, error) {
 	result, err := b.PlanResult(ctx, entries)
 	if err != nil {
@@ -75,6 +118,9 @@ func (b Bootstrapper) Apply(ctx context.Context, entries []workspacemanifest.Ent
 	}
 	if result.Plan.Blocked {
 		return result, BlockedError{Blockers: result.Plan.Blockers}
+	}
+	if result.HydrationPlan.Blocked {
+		return result, HydrationBlockedError{Actions: refusalActions(result.HydrationPlan.Actions)}
 	}
 	projects, err := b.Store.ListProjects(ctx)
 	if err != nil {
@@ -104,7 +150,138 @@ func (b Bootstrapper) Apply(ctx context.Context, entries []workspacemanifest.Ent
 	}
 	result.Applied.UpdatedProjects = append(result.Applied.UpdatedProjects, importResult.UpdatedProjects...)
 	result.Applied.AddedProjects = append(result.Applied.AddedProjects, importResult.AddedProjects...)
+	updatedHydrationPlan, err := b.planImportedEntries(ctx, entries)
+	if err != nil {
+		return result, err
+	}
+	result.HydrationPlan = updatedHydrationPlan
+	if result.HydrationPlan.Blocked {
+		return result, HydrationBlockedError{Actions: refusalActions(result.HydrationPlan.Actions)}
+	}
+	cloneResult, err := hydrationexecutor.New(b.git()).Execute(ctx, result.HydrationPlan, clonestrategy.Options{})
+	if err != nil {
+		if action, ok := actionFromExecutionError(err); ok {
+			result.HydrationPlan.Blocked = true
+			result.HydrationPlan.Actions = append(result.HydrationPlan.Actions, action)
+			return result, HydrationBlockedError{Actions: []hydrationplanner.Action{action}}
+		}
+		return result, err
+	}
+	result.Applied.ClonedProjects = append(result.Applied.ClonedProjects, cloneResult.ClonedProjects...)
+	updatedProjects, err := b.persistClonedCanonicalPlacements(ctx, result.HydrationPlan)
+	if err != nil {
+		return result, err
+	}
+	result.Applied.UpdatedProjects = append(result.Applied.UpdatedProjects, updatedProjects...)
 	return result, nil
+}
+
+func (b Bootstrapper) planImportedEntries(ctx context.Context, entries []workspacemanifest.Entry) (hydrationplanner.Plan, error) {
+	planner := hydrationplanner.New(b.Store)
+	seen := map[string]bool{}
+	combined := hydrationplanner.Plan{}
+	for _, entry := range entries {
+		alias := entry.Project.Alias
+		if seen[alias] {
+			continue
+		}
+		seen[alias] = true
+		plan, err := planner.PlanProject(ctx, alias, clonestrategy.Options{})
+		if err != nil {
+			return combined, err
+		}
+		if combined.WorkspaceRoot == "" {
+			combined.WorkspaceRoot = plan.WorkspaceRoot
+		}
+		if plan.Blocked {
+			combined.Blocked = true
+		}
+		combined.Actions = append(combined.Actions, plan.Actions...)
+	}
+	return combined, nil
+}
+
+func (b Bootstrapper) ApplyRegistry(ctx context.Context, aliases []string, all bool) (Result, error) {
+	result, err := b.PlanRegistry(ctx, aliases, all)
+	if err != nil {
+		return result, err
+	}
+	if result.HydrationPlan.Blocked {
+		return result, HydrationBlockedError{Actions: refusalActions(result.HydrationPlan.Actions)}
+	}
+	cloneResult, err := hydrationexecutor.New(b.git()).Execute(ctx, result.HydrationPlan, clonestrategy.Options{})
+	if err != nil {
+		if action, ok := actionFromExecutionError(err); ok {
+			result.HydrationPlan.Blocked = true
+			result.HydrationPlan.Actions = append(result.HydrationPlan.Actions, action)
+			return result, HydrationBlockedError{Actions: []hydrationplanner.Action{action}}
+		}
+		return result, err
+	}
+	result.Applied.ClonedProjects = append(result.Applied.ClonedProjects, cloneResult.ClonedProjects...)
+	updatedProjects, err := b.persistClonedCanonicalPlacements(ctx, result.HydrationPlan)
+	if err != nil {
+		return result, err
+	}
+	result.Applied.UpdatedProjects = append(result.Applied.UpdatedProjects, updatedProjects...)
+	return result, nil
+}
+
+func (b Bootstrapper) persistClonedCanonicalPlacements(ctx context.Context, plan hydrationplanner.Plan) ([]state.Project, error) {
+	updated := make([]state.Project, 0)
+	for _, action := range plan.Actions {
+		if action.Action != hydrationplanner.ActionClone || action.ProjectID == 0 || action.ProjectRow.Source != "canonical" || action.ObservedPath == "" || action.ObservedPath == action.Path {
+			continue
+		}
+		project := action.ProjectRow
+		project.LocalPath = action.Path
+		project.CanonicalPath = action.Path
+		stored, err := b.Store.UpdateProject(ctx, action.ProjectID, project)
+		if err != nil {
+			return updated, err
+		}
+		updated = append(updated, stored)
+	}
+	return updated, nil
+}
+
+func actionFromExecutionError(err error) (hydrationplanner.Action, bool) {
+	var conflict hydrationexecutor.PathConflictError
+	if errors.As(err, &conflict) {
+		return hydrationplanner.Action{
+			Path:   conflict.Path,
+			State:  hydrationplanner.StatePathConflict,
+			Action: hydrationplanner.ActionRefuse,
+			Reason: conflict.Reason,
+		}, true
+	}
+	var unsafe hydrationexecutor.UnsafePathError
+	if errors.As(err, &unsafe) {
+		return hydrationplanner.Action{
+			Path:   unsafe.Path,
+			State:  hydrationplanner.StateUnsafePath,
+			Action: hydrationplanner.ActionRefuse,
+			Reason: unsafe.Reason,
+		}, true
+	}
+	return hydrationplanner.Action{}, false
+}
+
+func (b Bootstrapper) git() gitops.Client {
+	if b.Git == (gitops.Client{}) {
+		return gitops.Process()
+	}
+	return b.Git
+}
+
+func refusalActions(actions []hydrationplanner.Action) []hydrationplanner.Action {
+	refusals := make([]hydrationplanner.Action, 0)
+	for _, action := range actions {
+		if action.Action == hydrationplanner.ActionRefuse {
+			refusals = append(refusals, action)
+		}
+	}
+	return refusals
 }
 
 func parentDirectories(plan reconciliation.DriftPlan) []string {

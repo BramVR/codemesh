@@ -283,8 +283,12 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	if !strings.Contains(bootstrapPlan.stdout, "missing: mesh-target") || !strings.Contains(bootstrapPlan.stdout, "apply: false") || !strings.Contains(bootstrapPlan.stdout, "clone: mesh-target") {
 		return errors.New("bootstrap dry-run proof did not include planned missing clone actions")
 	}
-	if _, err := r.runCodeMesh("machine B bootstrap apply", machineB, "bootstrap", legacyDir, "--apply"); err != nil {
+	bootstrapApply, err := r.runCodeMesh("machine B bootstrap apply", machineB, "bootstrap", legacyDir, "--apply")
+	if err != nil {
 		return err
+	}
+	if !strings.Contains(bootstrapApply.stdout, "cloned: mesh-target") || !strings.Contains(bootstrapApply.stdout, "cloned: mesh-unrelated") {
+		return errors.New("bootstrap apply proof did not report cloned projects")
 	}
 	treeAfterBootstrap, err := r.runCodeMesh("machine B tree after bootstrap", machineB, "tree")
 	if err != nil {
@@ -294,8 +298,8 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	if err != nil {
 		return err
 	}
-	if !strings.Contains(hydrate.stdout, "clone: mesh-target") || !strings.Contains(hydrate.stdout, "hydrated") {
-		return errors.New("hydrate proof did not report planned clone and hydrated project")
+	if !strings.Contains(hydrate.stdout, "project already present: mesh-target") {
+		return errors.New("hydrate proof did not report already-present project after bootstrap")
 	}
 	treeAfterHydrate, err := r.runCodeMesh("machine B tree after hydrate", machineB, "tree")
 	if err != nil {
@@ -327,9 +331,9 @@ func runProof(bin, outDir, fixtureRoot string) error {
 		"mesh-target: " + sanitizePath(targetA, r.replacements) + " present",
 		"mesh-unrelated: " + sanitizePath(unrelatedA, r.replacements) + " present",
 		"",
-		"Machine B placement/presence after bootstrap + selected hydration",
+		"Machine B placement/presence after bootstrap apply",
 		"mesh-target: " + sanitizePath(targetB, r.replacements) + " present",
-		"mesh-unrelated: " + sanitizePath(unrelatedB, r.replacements) + " missing",
+		"mesh-unrelated: " + sanitizePath(unrelatedB, r.replacements) + " present",
 		"",
 		"Machine C placement/presence after manifest import",
 		"mesh-target: " + sanitizePath(targetC, r.replacements) + " missing",
@@ -344,7 +348,9 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	planLines := append([]string{"Manifest import", ""}, linesFromText(manifestImport.stdout)...)
 	planLines = append(planLines, "", "Bootstrap dry-run", "")
 	planLines = append(planLines, linesFromText(bootstrapPlan.stdout)...)
-	planLines = append(planLines, "", "Hydration action", "")
+	planLines = append(planLines, "", "Bootstrap apply", "")
+	planLines = append(planLines, linesFromText(bootstrapApply.stdout)...)
+	planLines = append(planLines, "", "Hydration idempotence", "")
 	planLines = append(planLines, linesFromText(hydrate.stdout)...)
 	if err := writeText(filepath.Join(outAbs, "bootstrap-hydration-plan.txt"), strings.Join(planLines, "\n")+"\n"); err != nil {
 		return err
@@ -356,7 +362,7 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	flowLines = append(flowLines, linesFromText(treeBefore.stdout)...)
 	flowLines = append(flowLines, "", "After bootstrap apply", "")
 	flowLines = append(flowLines, linesFromText(treeAfterBootstrap.stdout)...)
-	flowLines = append(flowLines, "", "After selected hydrate", "")
+	flowLines = append(flowLines, "", "After idempotent hydrate", "")
 	flowLines = append(flowLines, linesFromText(treeAfterHydrate.stdout)...)
 	flowLines = append(flowLines, "", "Manifest import machine state", "")
 	flowLines = append(flowLines, linesFromText(treeAfterImport.stdout)...)
@@ -733,7 +739,7 @@ func writeSummary(outDir string, manifest proofManifest) error {
 		"- canonical workspace tree",
 		"- per-machine placement and presence",
 		"- planned bootstrap and hydration actions",
-		"- before and after state for bootstrap apply and selected hydrate",
+		"- before and after state for bootstrap apply plus idempotent hydrate",
 		"",
 		"## Confidentiality",
 		"",

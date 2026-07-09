@@ -885,17 +885,17 @@ func (h *harness) runOwnedHostLocalWorkspaceFlow(target ownedHostTarget, bundleP
 	if plan := h.ownedHostCommand(target, hostReport, bundlePath, "bootstrap dry-run plan", "bootstrap_dry_run", machineB, h.bin, "bootstrap", manifest); plan.Status != "PASS" || !resultContainsAll(plan, "bootstrap plan", "apply: false", "missing: owned-target "+targetPathB, "missing: owned-unrelated "+unrelatedPathB, "clone: owned-target "+targetPathB, "clone: owned-unrelated "+unrelatedPathB) {
 		return false
 	}
-	if apply := h.ownedHostCommand(target, hostReport, bundlePath, "bootstrap apply topology", "bootstrap_apply", machineB, h.bin, "bootstrap", manifest, "--apply"); apply.Status != "PASS" || !resultContainsAll(apply, "apply: true", "added: owned-target "+targetPathB, "added: owned-unrelated "+unrelatedPathB) {
+	if apply := h.ownedHostCommand(target, hostReport, bundlePath, "bootstrap apply topology", "bootstrap_apply", machineB, h.bin, "bootstrap", manifest, "--apply"); apply.Status != "PASS" || !resultContainsAll(apply, "apply: true", "added: owned-target "+targetPathB, "added: owned-unrelated "+unrelatedPathB, "cloned: owned-target "+targetPathB, "cloned: owned-unrelated "+unrelatedPathB) {
 		return false
 	}
-	if !h.expectPathMissingResult("owned-host "+target.Name+" bootstrap no default selected checkout", targetPathB) || !h.expectPathMissingResult("owned-host "+target.Name+" bootstrap no default unrelated checkout", unrelatedPathB) {
+	if !h.expectGitCheckoutAtBase("owned-host "+target.Name+" bootstrap selected checkout branch", targetPathB, "main") || !h.expectGitCheckoutAtBase("owned-host "+target.Name+" bootstrap unrelated checkout branch", unrelatedPathB, "main") {
 		return false
 	}
 	hydrate := h.ownedHostCommand(target, hostReport, bundlePath, "hydrate selected project", "hydrate", machineB, h.bin, "hydrate", "owned-target", "--json")
-	if hydrate.Status != "PASS" || !h.expectTwoMachineHydrateJSON("owned-host "+target.Name+" hydrate metadata", hydrate, "owned-target", normalizedTargetIdentity, targetPathB) {
+	if hydrate.Status != "PASS" || !h.expectHydrateOutcomeJSON("owned-host "+target.Name+" hydrate metadata", hydrate, "success", "owned-target", "already-present", targetPathB, true) {
 		return false
 	}
-	if !h.expectGitCheckoutAtBase("owned-host "+target.Name+" hydrated checkout branch", targetPathB, "main") || !h.expectPathMissingResult("owned-host "+target.Name+" selected hydrate no unrelated checkout", unrelatedPathB) {
+	if !h.expectGitCheckoutAtBase("owned-host "+target.Name+" hydrated checkout branch", targetPathB, "main") {
 		return false
 	}
 	prepare := h.ownedHostCommand(target, hostReport, bundlePath, "agent prepare selected project", "agent_prepare", machineB, h.bin, "agent", "prepare", "owned-target", "--base", "main", "--profile", "codex", "--json")
@@ -3088,11 +3088,21 @@ func (h *harness) caseBootstrapTopologyWorkflow() {
 	manifest := filepath.Join(s.fixtures.Root, "manifest")
 	alphaPath := filepath.Join(workspace, "tools", "alpha")
 	betaPath := filepath.Join(workspace, "beta")
-	if err := writeE2EManifestEntry(manifest, "alpha.json", "https://example.invalid/bram/alpha", "alpha", "tools/alpha"); err != nil {
+	alpha, err := h.createClonedFixture(s.fixtures, "bootstrap-alpha", nil)
+	if err != nil {
+		h.record(result{Name: "bootstrap topology alpha remote", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	beta, err := h.createClonedFixture(s.fixtures, "bootstrap-beta", nil)
+	if err != nil {
+		h.record(result{Name: "bootstrap topology beta remote", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := writeE2EManifestEntryWithCloneURL(manifest, "alpha.json", "https://example.invalid/bram/bootstrap-alpha", "alpha", "tools/alpha", alpha.Remote); err != nil {
 		h.record(result{Name: "bootstrap topology manifest alpha", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
-	if err := writeE2EManifestEntry(manifest, "beta.json", "https://example.invalid/bram/beta", "beta", "beta"); err != nil {
+	if err := writeE2EManifestEntryWithCloneURL(manifest, "beta.json", "https://example.invalid/bram/bootstrap-beta", "beta", "beta", beta.Remote); err != nil {
 		h.record(result{Name: "bootstrap topology manifest beta", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
@@ -3115,27 +3125,27 @@ func (h *harness) caseBootstrapTopologyWorkflow() {
 	}
 
 	apply := s.command("bootstrap topology apply", "bootstrap", manifest, "--apply")
-	if apply.Status != "PASS" || !s.expectOutput(apply, "bootstrap plan", "applied", "parent: "+workspace, "parent: "+filepath.Join(workspace, "tools"), "added: alpha "+alphaPath, "added: beta "+betaPath) {
+	if apply.Status != "PASS" || !s.expectOutput(apply, "bootstrap plan", "applied", "parent: "+workspace, "parent: "+filepath.Join(workspace, "tools"), "added: alpha "+alphaPath, "added: beta "+betaPath, "cloned: alpha "+alphaPath, "cloned: beta "+betaPath) {
 		return
 	}
 	if !s.expectPathExists("bootstrap topology parent exists", filepath.Join(workspace, "tools")) {
 		return
 	}
-	if !s.expectPathMissing("bootstrap topology alpha remains missing", alphaPath) || !s.expectPathMissing("bootstrap topology beta remains missing", betaPath) {
+	if !s.expectPathExists("bootstrap topology alpha checkout", filepath.Join(alphaPath, "README.md")) || !s.expectPathExists("bootstrap topology beta checkout", filepath.Join(betaPath, "README.md")) {
 		return
 	}
 	if !s.expectProjectRowsRaw("bootstrap topology rows",
-		projectRow{Alias: "alpha", NormalizedRemote: "https://example.invalid/bram/alpha", CloneURL: "https://example.invalid/bram/alpha.git", LocalPath: alphaPath, CanonicalPath: alphaPath, Source: "canonical"},
-		projectRow{Alias: "beta", NormalizedRemote: "https://example.invalid/bram/beta", CloneURL: "https://example.invalid/bram/beta.git", LocalPath: betaPath, CanonicalPath: betaPath, Source: "canonical"},
+		projectRow{Alias: "alpha", NormalizedRemote: "https://example.invalid/bram/bootstrap-alpha", CloneURL: alpha.Remote, LocalPath: alphaPath, CanonicalPath: alphaPath, Source: "canonical"},
+		projectRow{Alias: "beta", NormalizedRemote: "https://example.invalid/bram/bootstrap-beta", CloneURL: beta.Remote, LocalPath: betaPath, CanonicalPath: betaPath, Source: "canonical"},
 	) {
 		return
 	}
-	tree := s.command("bootstrap topology tree missing projects", "tree")
-	if tree.Status != "PASS" || !s.expectOutput(tree, "alpha missing "+alphaPath, "beta missing "+betaPath) {
+	tree := s.command("bootstrap topology tree present projects", "tree")
+	if tree.Status != "PASS" || !s.expectOutput(tree, "alpha present "+alphaPath, "beta present "+betaPath) {
 		return
 	}
-	status := s.command("bootstrap topology status missing project", "status", "alpha", "--json")
-	if status.Status != "PASS" || !s.expectOutput(status, `"exit_class":"readiness-blocked"`, `"state":"missing"`, `"path_present":false`) {
+	hydrate := s.command("bootstrap topology hydrate present project", "hydrate", "alpha", "--json")
+	if hydrate.Status != "PASS" || !s.h.expectHydrateOutcomeJSON("bootstrap topology hydrate already present metadata", hydrate, "success", "alpha", "already-present", alphaPath, true) {
 		return
 	}
 	bindTargetEnv := s.command("workspace target bind fake env", "env", "bind", "alpha", "CODEMESH_E2E_TARGET_TOKEN", "--provider", "fake", "--ref", "fake://e2e-target-token", "--scope", "codex")
@@ -3660,10 +3670,10 @@ func (h *harness) caseTwoMachineManifestBootstrapReconcileSmoke() {
 	}
 
 	apply := h.twoMachineCommand("two-machine bootstrap apply topology", machineB, h.bin, "bootstrap", manifest, "--apply")
-	if apply.Status != "PASS" || !resultContainsAll(apply, "apply: true", "applied", "added: mesh-target "+targetPathB, "added: mesh-unrelated "+unrelatedPathB) {
+	if apply.Status != "PASS" || !resultContainsAll(apply, "apply: true", "applied", "added: mesh-target "+targetPathB, "added: mesh-unrelated "+unrelatedPathB, "cloned: mesh-target "+targetPathB, "cloned: mesh-unrelated "+unrelatedPathB) {
 		if apply.Status == "PASS" {
 			apply.Status = "FAIL"
-			apply.Error = "bootstrap apply did not report both registry additions"
+			apply.Error = "bootstrap apply did not report both registry additions and clones"
 			h.updateResultByName(apply)
 		}
 		return
@@ -3674,21 +3684,27 @@ func (h *harness) caseTwoMachineManifestBootstrapReconcileSmoke() {
 	) {
 		return
 	}
-	if !h.expectPathMissingResult("two-machine bootstrap apply no selected checkout", targetPathB) || !h.expectPathMissingResult("two-machine bootstrap apply no unrelated checkout", unrelatedPathB) {
+	if !h.expectGitCheckoutAtBase("two-machine bootstrap selected checkout branch", targetPathB, "main") {
+		return
+	}
+	if !h.expectGitOrigin("two-machine bootstrap selected checkout origin", targetPathB, targetRemote) {
+		return
+	}
+	if !h.expectGitCheckoutAtBase("two-machine bootstrap unrelated checkout branch", unrelatedPathB, "main") {
+		return
+	}
+	if !h.expectGitOrigin("two-machine bootstrap unrelated checkout origin", unrelatedPathB, unrelatedRemote) {
 		return
 	}
 
 	hydrate := h.twoMachineCommand("two-machine hydrate selected project", machineB, h.bin, "hydrate", "mesh-target", "--json")
-	if hydrate.Status != "PASS" || !h.expectTwoMachineHydrateJSON("two-machine hydrate selected project metadata", hydrate, "mesh-target", targetRowA.NormalizedRemote, targetPathB) {
+	if hydrate.Status != "PASS" || !h.expectHydrateOutcomeJSON("two-machine hydrate selected already present metadata", hydrate, "success", "mesh-target", "already-present", targetPathB, true) {
 		return
 	}
 	if !h.expectGitCheckoutAtBase("two-machine hydrated checkout branch", targetPathB, "main") {
 		return
 	}
 	if !h.expectGitOrigin("two-machine hydrated checkout origin", targetPathB, targetRemote) {
-		return
-	}
-	if !h.expectPathMissingResult("two-machine selected hydrate no unrelated checkout", unrelatedPathB) {
 		return
 	}
 	if inside, err := pathInside(machineA.WorkspaceRoot, targetPathB); err != nil || inside || targetPathB == targetSourceA {
@@ -5436,6 +5452,31 @@ func (h *harness) expectTwoMachineHydrateJSON(name string, r result, alias, remo
 	got := payload.Payload
 	if payload.Command != "hydrate" || payload.ExitClass != "success" || got.Project != alias || got.Outcome != "hydrated" || got.Path != path || !got.PathPresent || got.Remote != remote {
 		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("hydrate payload = %#v", payload), ExitCode: -1})
+		return false
+	}
+	h.record(result{Name: name, Status: "PASS", ExitCode: 0})
+	return true
+}
+
+func (h *harness) expectHydrateOutcomeJSON(name string, r result, exitClass, alias, outcome, path string, pathPresent bool) bool {
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Project     string `json:"project"`
+			Outcome     string `json:"outcome"`
+			Path        string `json:"path"`
+			PathPresent bool   `json:"path_present"`
+			Remote      string `json:"remote"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
+		h.record(result{Name: name, Status: "FAIL", Error: "stdout was not JSON: " + err.Error(), ExitCode: -1})
+		return false
+	}
+	got := payload.Payload
+	if payload.Command != "hydrate" || payload.ExitClass != exitClass || got.Project != alias || got.Outcome != outcome || got.Path != path || got.PathPresent != pathPresent || got.Remote == "" {
+		h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("hydrate JSON payload = %#v", payload), ExitCode: -1})
 		return false
 	}
 	h.record(result{Name: name, Status: "PASS", ExitCode: 0})

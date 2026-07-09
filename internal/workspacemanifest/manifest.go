@@ -1063,7 +1063,20 @@ func validateCloneHint(cloneURL string) error {
 
 func sanitizedCloneHint(cloneURL string) (string, error) {
 	if isLocalCloneURL(cloneURL) {
-		return "", errors.New("workspace manifest clone hint must not be a machine-local path")
+		parsed, err := url.Parse(cloneURL)
+		if err == nil && strings.EqualFold(parsed.Scheme, "file") {
+			if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+				return "", errors.New("workspace manifest clone hint must not contain credentials, query strings, or fragments")
+			}
+			return cloneURL, nil
+		}
+		if strings.ContainsAny(cloneURL, "?#") {
+			return "", errors.New("workspace manifest clone hint must not contain query strings or fragments")
+		}
+		if !filepath.IsAbs(cloneURL) && !isWindowsDrivePath(cloneURL) {
+			return "", errors.New("workspace manifest clone hint must be an absolute local path or URL")
+		}
+		return cloneURL, nil
 	}
 	parsed, err := url.Parse(cloneURL)
 	if err == nil && parsed.Scheme != "" {

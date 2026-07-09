@@ -11,6 +11,7 @@ import (
 
 	"github.com/BramVR/codemesh/internal/clonestrategy"
 	"github.com/BramVR/codemesh/internal/gitops"
+	"github.com/BramVR/codemesh/internal/hydrationexecutor"
 	"github.com/BramVR/codemesh/internal/hydrationplanner"
 	"github.com/BramVR/codemesh/internal/state"
 )
@@ -255,12 +256,22 @@ func (r *Registry) Hydrate(ctx context.Context, alias string, opts ...clonestrat
 		result.CloneStrategy = clonestrategy.FullCloneSelection()
 		return result, nil
 	case hydrationplanner.StateMissing:
-		alreadyPresent, strategy, err := hydrateProject(ctx, r.git, hydrationProject, options)
-		result.CloneStrategy = strategy
+		cloneResult, err := hydrationexecutor.New(r.git).Execute(ctx, hydrationplanner.Plan{WorkspaceRoot: plan.WorkspaceRoot, Actions: []hydrationplanner.Action{action}}, options)
+		if len(cloneResult.ClonedProjects) != 0 {
+			result.CloneStrategy = cloneResult.ClonedProjects[0].CloneStrategy
+		}
 		if err != nil {
+			var unsafe hydrationexecutor.UnsafePathError
+			if errors.As(err, &unsafe) {
+				return result, UnsafePathError{Path: unsafe.Path, Reason: unsafe.Reason}
+			}
+			var conflict hydrationexecutor.PathConflictError
+			if errors.As(err, &conflict) {
+				return result, PathConflictError{Path: conflict.Path, Reason: conflict.Reason}
+			}
 			return result, err
 		}
-		result.AlreadyPresent = alreadyPresent
+		result.AlreadyPresent = false
 		if hydrationProject.Source == "canonical" && action.ObservedPath != "" && action.ObservedPath != hydrationProject.LocalPath {
 			if updater, ok := r.store.(projectUpdater); ok {
 				updated, err := updater.UpdateProject(ctx, action.ProjectID, hydrationProject)
@@ -349,7 +360,19 @@ func gitCheckoutMatches(ctx context.Context, git gitops.Client, project state.Pr
 	if err != nil {
 		return false
 	}
-	return normalized == project.NormalizedRemote
+	return remoteMatchesProjectSource(normalized, project)
+}
+
+func remoteMatchesProjectSource(normalized string, project state.Project) bool {
+	if normalized == project.NormalizedRemote {
+		return true
+	}
+	cloneURL := strings.TrimSpace(project.CloneURL)
+	if cloneURL == "" {
+		return false
+	}
+	cloneIdentity, err := NormalizeRemoteFrom(cloneURL, project.LocalPath)
+	return err == nil && normalized == cloneIdentity
 }
 
 func cloneURLFor(remote, baseDir string) string {
