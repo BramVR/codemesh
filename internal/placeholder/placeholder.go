@@ -201,7 +201,7 @@ func validate(metadata Metadata) error {
 	if metadata.SchemaVersion != Schema || metadata.Kind != Kind {
 		return errors.New("invalid CodeMesh placeholder metadata")
 	}
-	if strings.TrimSpace(metadata.Project) == "" || strings.TrimSpace(metadata.Identity) == "" {
+	if strings.TrimSpace(metadata.Project) == "" || strings.TrimSpace(metadata.Identity) == "" || strings.TrimSpace(metadata.CanonicalPath) == "" {
 		return errors.New("incomplete CodeMesh placeholder metadata")
 	}
 	return nil
