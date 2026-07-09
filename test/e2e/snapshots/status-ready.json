@@ -24,14 +24,19 @@
         {
           "alias": "clean-repo",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/clean-repo",
+          "canonical_path_present": true,
           "diagnostics": {
             "blockers": [],
             "warnings": []
           },
+          "machine_path": "<FIXTURE_SOURCES>/clean-repo",
+          "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/clean-repo",
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/clean-repo.git",
-          "state": "present"
+          "state": "present",
+          "workspace_source": "local-only"
         }
       ]
     }

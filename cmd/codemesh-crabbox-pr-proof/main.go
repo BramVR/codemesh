@@ -255,6 +255,13 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	if err != nil {
 		return err
 	}
+	statusAfterImport, err := r.runCodeMesh("machine C status after manifest import", machineC, "status", "--json")
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(statusAfterImport.stdout, `"workspace_source":"canonical"`) || !strings.Contains(statusAfterImport.stdout, `"state":"missing"`) {
+		return errors.New("manifest import status proof did not show canonical missing projects")
+	}
 	if err := sanitizeFile(manifestPath, r.replacements); err != nil {
 		return err
 	}
@@ -305,10 +312,14 @@ func runProof(bin, outDir, fixtureRoot string) error {
 		return nil
 	}
 
-	if err := writeText(filepath.Join(outAbs, "canonical-workspace-tree.txt"), treeA.stdout); err != nil {
+	canonicalLines := []string{"Machine A canonical tree", ""}
+	canonicalLines = append(canonicalLines, linesFromText(treeA.stdout)...)
+	canonicalLines = append(canonicalLines, "", "Machine C canonical status after manifest import", "")
+	canonicalLines = append(canonicalLines, linesFromText(statusAfterImport.stdout)...)
+	if err := writeText(filepath.Join(outAbs, "canonical-workspace-tree.txt"), strings.Join(canonicalLines, "\n")+"\n"); err != nil {
 		return err
 	}
-	if err := writeSVG(filepath.Join(outAbs, "canonical-workspace-tree.svg"), "Canonical workspace tree", linesFromText(treeA.stdout)); err != nil {
+	if err := writeSVG(filepath.Join(outAbs, "canonical-workspace-tree.svg"), "Canonical workspace tree/status", canonicalLines); err != nil {
 		return err
 	}
 	placementLines := []string{
@@ -349,6 +360,8 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	flowLines = append(flowLines, linesFromText(treeAfterHydrate.stdout)...)
 	flowLines = append(flowLines, "", "Manifest import machine state", "")
 	flowLines = append(flowLines, linesFromText(treeAfterImport.stdout)...)
+	flowLines = append(flowLines, "", "Manifest import status", "")
+	flowLines = append(flowLines, linesFromText(statusAfterImport.stdout)...)
 	if err := writeText(filepath.Join(outAbs, "mutating-flow-before-after.txt"), strings.Join(flowLines, "\n")+"\n"); err != nil {
 		return err
 	}

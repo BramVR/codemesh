@@ -24,6 +24,8 @@
         {
           "alias": "contract-fetch-failure",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/contract-fetch-failure",
+          "canonical_path_present": true,
           "diagnostics": {
             "blockers": [
               {
@@ -33,10 +35,13 @@
             ],
             "warnings": []
           },
+          "machine_path": "<FIXTURE_SOURCES>/contract-fetch-failure",
+          "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/contract-fetch-failure",
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/missing-contract-fetch-remote.git",
-          "state": "stale"
+          "state": "stale",
+          "workspace_source": "local-only"
         }
       ]
     }

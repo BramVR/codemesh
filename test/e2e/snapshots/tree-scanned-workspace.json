@@ -20,18 +20,25 @@
         {
           "alias": "clean-repo",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/clean-repo",
+          "canonical_path_present": true,
           "diagnostics": {
             "blockers": [],
             "warnings": []
           },
+          "machine_path": "<FIXTURE_SOURCES>/clean-repo",
+          "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/clean-repo",
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/clean-repo.git",
-          "state": "present"
+          "state": "present",
+          "workspace_source": "local-only"
         },
         {
           "alias": "dirty-source",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/dirty-source",
+          "canonical_path_present": true,
           "diagnostics": {
             "blockers": [],
             "warnings": [
@@ -41,50 +48,70 @@
               }
             ]
           },
+          "machine_path": "<FIXTURE_SOURCES>/dirty-source",
+          "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/dirty-source",
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/dirty-source.git",
-          "state": "dirty"
+          "state": "dirty",
+          "workspace_source": "local-only"
         },
         {
           "alias": "missing-base-branch",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/missing-base-branch",
+          "canonical_path_present": true,
           "diagnostics": {
             "blockers": [],
             "warnings": []
           },
+          "machine_path": "<FIXTURE_SOURCES>/missing-base-branch",
+          "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/missing-base-branch",
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/missing-base-branch.git",
-          "state": "present"
+          "state": "present",
+          "workspace_source": "local-only"
         },
         {
           "alias": "policy-docs",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/policy-docs",
+          "canonical_path_present": true,
           "diagnostics": {
             "blockers": [],
             "warnings": []
           },
+          "machine_path": "<FIXTURE_SOURCES>/policy-docs",
+          "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/policy-docs",
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/policy-docs.git",
-          "state": "present"
+          "state": "present",
+          "workspace_source": "local-only"
         },
         {
           "alias": "remote-default-dev",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/remote-default-dev",
+          "canonical_path_present": true,
           "diagnostics": {
             "blockers": [],
             "warnings": []
           },
+          "machine_path": "<FIXTURE_SOURCES>/remote-default-dev",
+          "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/remote-default-dev",
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/remote-default-dev.git",
-          "state": "present"
+          "state": "present",
+          "workspace_source": "local-only"
         },
         {
           "alias": "required-env-bound",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/required-env-bound",
+          "canonical_path_present": true,
           "diagnostics": {
             "blockers": [
               {
@@ -94,14 +121,19 @@
             ],
             "warnings": []
           },
+          "machine_path": "<FIXTURE_SOURCES>/required-env-bound",
+          "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/required-env-bound",
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/required-env-bound.git",
-          "state": "blocked"
+          "state": "blocked",
+          "workspace_source": "local-only"
         },
         {
           "alias": "required-env-missing",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/required-env-missing",
+          "canonical_path_present": true,
           "diagnostics": {
             "blockers": [
               {
@@ -115,14 +147,19 @@
             ],
             "warnings": []
           },
+          "machine_path": "<FIXTURE_SOURCES>/required-env-missing",
+          "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/required-env-missing",
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/required-env-missing.git",
-          "state": "blocked"
+          "state": "blocked",
+          "workspace_source": "local-only"
         },
         {
           "alias": "required-env-present",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/required-env-present",
+          "canonical_path_present": true,
           "diagnostics": {
             "blockers": [
               {
@@ -132,14 +169,19 @@
             ],
             "warnings": []
           },
+          "machine_path": "<FIXTURE_SOURCES>/required-env-present",
+          "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/required-env-present",
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/required-env-present.git",
-          "state": "blocked"
+          "state": "blocked",
+          "workspace_source": "local-only"
         },
         {
           "alias": "required-env-warn",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/required-env-warn",
+          "canonical_path_present": true,
           "diagnostics": {
             "blockers": [],
             "warnings": [
@@ -153,10 +195,13 @@
               }
             ]
           },
+          "machine_path": "<FIXTURE_SOURCES>/required-env-warn",
+          "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/required-env-warn",
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/required-env-warn.git",
-          "state": "present"
+          "state": "present",
+          "workspace_source": "local-only"
         }
       ]
     }

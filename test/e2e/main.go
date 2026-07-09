@@ -2687,12 +2687,30 @@ func (h *harness) caseManifestExportImportWorkflow() {
 		return
 	}
 	if !h.expectProjectRowsAt("manifest export/import machine B rows", machineB.CodeMeshHome,
-		projectRow{Alias: "alpha", NormalizedRemote: "https://github.com/BramVR/alpha", CloneURL: "git@github.com:BramVR/alpha.git", LocalPath: alphaPathB},
-		projectRow{Alias: "beta", NormalizedRemote: "https://github.com/BramVR/beta", CloneURL: "https://github.com/BramVR/beta.git", LocalPath: betaPathB},
+		projectRow{Alias: "alpha", NormalizedRemote: "https://github.com/BramVR/alpha", CloneURL: "git@github.com:BramVR/alpha.git", LocalPath: alphaPathB, CanonicalPath: alphaPathB, Source: "canonical"},
+		projectRow{Alias: "beta", NormalizedRemote: "https://github.com/BramVR/beta", CloneURL: "https://github.com/BramVR/beta.git", LocalPath: betaPathB, CanonicalPath: betaPathB, Source: "canonical"},
 	) {
 		return
 	}
 	if !h.expectPathMissingResult("manifest export/import alpha remains unhydrated", alphaPathB) || !h.expectPathMissingResult("manifest export/import beta remains unhydrated", betaPathB) {
+		return
+	}
+	tree := h.twoMachineCommand("manifest export/import tree shows canonical missing projects", machineB, h.bin, "tree", "--json")
+	if tree.Status != "PASS" || !resultContainsAll(tree, `"workspace_source":"canonical"`, `"canonical_path":"`+alphaPathB+`"`, `"canonical_path_present":false`, `"machine_path_present":false`, `"state":"missing"`) {
+		if tree.Status == "PASS" {
+			tree.Status = "FAIL"
+			tree.Error = "tree JSON did not show canonical missing placement"
+			h.updateResultByName(tree)
+		}
+		return
+	}
+	status := h.twoMachineCommand("manifest export/import status distinguishes canonical missing project", machineB, h.bin, "status", "alpha", "--json")
+	if status.Status != "PASS" || !resultContainsAll(status, `"workspace_source":"canonical"`, `"canonical_path":"`+alphaPathB+`"`, `"canonical_path_present":false`, `"machine_path_present":false`, `"state":"missing"`) {
+		if status.Status == "PASS" {
+			status.Status = "FAIL"
+			status.Error = "status JSON did not distinguish canonical missing project"
+			h.updateResultByName(status)
+		}
 		return
 	}
 }
@@ -2842,7 +2860,7 @@ func (h *harness) caseProjectRegistryAliasPathStateWorkflow() {
 	) {
 		return
 	}
-	if !s.expectProjectSchemaNoPresenceColumns("project registry presence derived state schema") {
+	if !s.expectProjectSchemaHasPlacementColumns("project registry placement state schema") {
 		return
 	}
 }
@@ -3107,8 +3125,8 @@ func (h *harness) caseBootstrapTopologyWorkflow() {
 		return
 	}
 	if !s.expectProjectRowsRaw("bootstrap topology rows",
-		projectRow{Alias: "alpha", NormalizedRemote: "https://example.invalid/bram/alpha", CloneURL: "https://example.invalid/bram/alpha.git", LocalPath: alphaPath},
-		projectRow{Alias: "beta", NormalizedRemote: "https://example.invalid/bram/beta", CloneURL: "https://example.invalid/bram/beta.git", LocalPath: betaPath},
+		projectRow{Alias: "alpha", NormalizedRemote: "https://example.invalid/bram/alpha", CloneURL: "https://example.invalid/bram/alpha.git", LocalPath: alphaPath, CanonicalPath: alphaPath, Source: "canonical"},
+		projectRow{Alias: "beta", NormalizedRemote: "https://example.invalid/bram/beta", CloneURL: "https://example.invalid/bram/beta.git", LocalPath: betaPath, CanonicalPath: betaPath, Source: "canonical"},
 	) {
 		return
 	}
@@ -3651,8 +3669,8 @@ func (h *harness) caseTwoMachineManifestBootstrapReconcileSmoke() {
 		return
 	}
 	if !h.expectProjectRowsAt("two-machine machine B bootstrapped registry", machineB.CodeMeshHome,
-		projectRow{Alias: "mesh-target", NormalizedRemote: targetRowA.NormalizedRemote, CloneURL: targetRemote, LocalPath: targetPathB},
-		projectRow{Alias: "mesh-unrelated", NormalizedRemote: unrelatedRowA.NormalizedRemote, CloneURL: unrelatedRemote, LocalPath: unrelatedPathB},
+		projectRow{Alias: "mesh-target", NormalizedRemote: targetRowA.NormalizedRemote, CloneURL: targetRemote, LocalPath: targetPathB, CanonicalPath: targetPathB, Source: "canonical"},
+		projectRow{Alias: "mesh-unrelated", NormalizedRemote: unrelatedRowA.NormalizedRemote, CloneURL: unrelatedRemote, LocalPath: unrelatedPathB, CanonicalPath: unrelatedPathB, Source: "canonical"},
 	) {
 		return
 	}
@@ -3700,8 +3718,8 @@ func (h *harness) caseTwoMachineManifestBootstrapReconcileSmoke() {
 		return
 	}
 	if !h.expectProjectRowsAt("two-machine reconcile dry-run registry unchanged", machineB.CodeMeshHome,
-		projectRow{Alias: "mesh-target", NormalizedRemote: targetRowA.NormalizedRemote, CloneURL: targetRemote, LocalPath: targetPathB},
-		projectRow{Alias: "mesh-unrelated", NormalizedRemote: unrelatedRowA.NormalizedRemote, CloneURL: unrelatedRemote, LocalPath: unrelatedPathB},
+		projectRow{Alias: "mesh-target", NormalizedRemote: targetRowA.NormalizedRemote, CloneURL: targetRemote, LocalPath: targetPathB, CanonicalPath: targetPathB, Source: "canonical"},
+		projectRow{Alias: "mesh-unrelated", NormalizedRemote: unrelatedRowA.NormalizedRemote, CloneURL: unrelatedRemote, LocalPath: unrelatedPathB, CanonicalPath: unrelatedPathB, Source: "canonical"},
 	) {
 		return
 	}
@@ -5380,7 +5398,8 @@ func (h *harness) expectProjectRowsAt(name, codemeshHome string, want ...project
 		return false
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		wantRow := normalizeProjectRow(want[i])
+		if got[i] != wantRow {
 			h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row %d = %#v, want %#v", i, got[i], want[i]), ExitCode: -1})
 			return false
 		}
@@ -5754,12 +5773,17 @@ func (s *scenario) expectTreeJSON(r result, exitClass string, states map[string]
 		ExitClass string `json:"exit_class"`
 		Payload   struct {
 			Projects []struct {
-				Alias       string `json:"alias"`
-				State       string `json:"state"`
-				Path        string `json:"path"`
-				PathPresent bool   `json:"path_present"`
-				Remote      string `json:"remote"`
-				Base        string `json:"base"`
+				Alias                string `json:"alias"`
+				WorkspaceSource      string `json:"workspace_source"`
+				State                string `json:"state"`
+				Path                 string `json:"path"`
+				PathPresent          bool   `json:"path_present"`
+				CanonicalPath        string `json:"canonical_path"`
+				CanonicalPathPresent bool   `json:"canonical_path_present"`
+				MachinePath          string `json:"machine_path"`
+				MachinePathPresent   bool   `json:"machine_path_present"`
+				Remote               string `json:"remote"`
+				Base                 string `json:"base"`
 			} `json:"projects"`
 		} `json:"payload"`
 	}
@@ -5773,8 +5797,12 @@ func (s *scenario) expectTreeJSON(r result, exitClass string, states map[string]
 	}
 	seen := make(map[string]string, len(payload.Payload.Projects))
 	for _, project := range payload.Payload.Projects {
-		if project.Path == "" || project.Remote == "" || project.Base == "" {
-			s.failCommandAssertion(r, fmt.Sprintf("tree project missing canonical fields: %#v", project))
+		if project.Path == "" || project.Remote == "" || project.Base == "" || project.WorkspaceSource == "" || project.CanonicalPath == "" || project.MachinePath == "" {
+			s.failCommandAssertion(r, fmt.Sprintf("tree project missing placement fields: %#v", project))
+			return false
+		}
+		if project.PathPresent != project.MachinePathPresent || project.Path != project.MachinePath {
+			s.failCommandAssertion(r, fmt.Sprintf("tree project path compatibility fields disagree: %#v", project))
 			return false
 		}
 		seen[project.Alias] = project.State
@@ -6634,7 +6662,8 @@ func (s *scenario) expectProjectRows(name string, want ...projectRow) bool {
 		return false
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		wantRow := normalizeProjectRow(want[i])
+		if got[i] != wantRow {
 			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row %d = %#v, want %#v", i, got[i], want[i]), ExitCode: -1})
 			return false
 		}
@@ -6653,7 +6682,8 @@ func (s *scenario) expectProjectRowsRaw(name string, want ...projectRow) bool {
 		return false
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		wantRow := normalizeProjectRow(want[i])
+		if got[i] != wantRow {
 			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row %d = %#v, want %#v", i, got[i], want[i]), ExitCode: -1})
 			return false
 		}
@@ -6672,6 +6702,7 @@ func (s *scenario) expectProjectRowsAreIsolated(name string, rows []projectRow) 
 			"normalized_remote": row.NormalizedRemote,
 			"clone_url":         row.CloneURL,
 			"local_path":        row.LocalPath,
+			"canonical_path":    row.CanonicalPath,
 		} {
 			inside, err := pathInside(s.h.tmp, path)
 			if err != nil {
@@ -6687,15 +6718,15 @@ func (s *scenario) expectProjectRowsAreIsolated(name string, rows []projectRow) 
 	return true
 }
 
-func (s *scenario) expectProjectSchemaNoPresenceColumns(name string) bool {
+func (s *scenario) expectProjectSchemaHasPlacementColumns(name string) bool {
 	columns, err := projectColumns(filepath.Join(s.codemeshHome, "codemesh.db"))
 	if err != nil {
 		s.h.record(result{Name: name, Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return false
 	}
-	want := []string{"id", "alias", "normalized_remote", "local_path", "created_at", "updated_at", "clone_url"}
+	want := []string{"id", "alias", "normalized_remote", "local_path", "created_at", "updated_at", "clone_url", "canonical_path", "source"}
 	if !stringSlicesEqual(columns, want) {
-		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("projects columns = %v, want metadata-only schema %v", columns, want), ExitCode: -1})
+		s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("projects columns = %v, want placement-aware schema %v", columns, want), ExitCode: -1})
 		return false
 	}
 	return true
@@ -6804,6 +6835,18 @@ type projectRow struct {
 	NormalizedRemote string
 	CloneURL         string
 	LocalPath        string
+	CanonicalPath    string
+	Source           string
+}
+
+func normalizeProjectRow(row projectRow) projectRow {
+	if strings.TrimSpace(row.CanonicalPath) == "" {
+		row.CanonicalPath = row.LocalPath
+	}
+	if strings.TrimSpace(row.Source) == "" {
+		row.Source = "local-only"
+	}
+	return row
 }
 
 type machineRow struct {
@@ -6884,7 +6927,7 @@ func readProjectRowsFromStore(dbPath string) ([]projectRow, error) {
 		return nil, err
 	}
 	defer db.Close()
-	rows, err := db.Query(`select alias, normalized_remote, clone_url, local_path from projects order by alias`)
+	rows, err := db.Query(`select alias, normalized_remote, clone_url, local_path, canonical_path, source from projects order by alias`)
 	if err != nil {
 		return nil, err
 	}
@@ -6892,9 +6935,10 @@ func readProjectRowsFromStore(dbPath string) ([]projectRow, error) {
 	var projects []projectRow
 	for rows.Next() {
 		var project projectRow
-		if err := rows.Scan(&project.Alias, &project.NormalizedRemote, &project.CloneURL, &project.LocalPath); err != nil {
+		if err := rows.Scan(&project.Alias, &project.NormalizedRemote, &project.CloneURL, &project.LocalPath, &project.CanonicalPath, &project.Source); err != nil {
 			return nil, err
 		}
+		project = normalizeProjectRow(project)
 		projects = append(projects, project)
 	}
 	if err := rows.Err(); err != nil {

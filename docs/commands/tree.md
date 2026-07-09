@@ -17,9 +17,9 @@ codemesh tree [--json]
 
 ## Purpose
 
-Print the known canonical workspace from the local Project Registry, including each project's readiness state and local path.
+Print the known canonical workspace from the local Project Registry, including each project's readiness state, canonical path, and current-machine presence.
 
-Use `--json` to emit the stable Command Result shape with `command`, `exit_class`, `diagnostics`, and `payload.projects`. Each project includes alias, normalized state, local path, path presence, remote, base, and readiness diagnostics. Human output is unchanged when `--json` is omitted.
+Use `--json` to emit the stable Command Result shape with `command`, `exit_class`, `diagnostics`, and `payload.projects`. Each project includes alias, `workspace_source` (`canonical` or `local-only`), normalized state, compatibility `path` and `path_present`, `canonical_path`, `canonical_path_present`, `machine_path`, `machine_path_present`, remote, base, and readiness diagnostics.
 
 ## Safe Example
 
@@ -47,7 +47,8 @@ codemesh tree --json
 ## Current Limitations
 
 - Reads local registry state only.
-- Does not create directories, placeholders, mounts, or clones.
+- Shows missing imported manifest Projects as metadata; it does not create placeholder project directories.
+- Does not create directories, mounts, or clones.
 - Does not check remote freshness; use [`codemesh status`](status.md) for readiness details.
 
 Back to [Command Catalog](../commands.md).

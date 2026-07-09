@@ -54,6 +54,8 @@ type Project struct {
 	NormalizedRemote string
 	CloneURL         string
 	LocalPath        string
+	CanonicalPath    string
+	Source           string
 }
 
 type AgentRun struct {
@@ -235,6 +237,9 @@ create table if not exists schema_migrations (
 	if _, err := applyMigration(ctx, tx, 6, migration6); err != nil {
 		return err
 	}
+	if _, err := applyMigration(ctx, tx, 7, migration7); err != nil {
+		return err
+	}
 	if err := backfillMachineCodeMeshHome(ctx, tx, s.home); err != nil {
 		return err
 	}
@@ -402,6 +407,7 @@ func (s *SQLiteStore) AddProject(ctx context.Context, project Project) (Project,
 	if project.LocalPath == "" {
 		return Project{}, errors.New("project local path is required")
 	}
+	project = withProjectPlacementDefaults(project)
 
 	var existingID int64
 	err := s.db.QueryRowContext(ctx, `select id from projects where alias = ?`, project.Alias).Scan(&existingID)
@@ -422,9 +428,9 @@ func (s *SQLiteStore) AddProject(ctx context.Context, project Project) (Project,
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := s.db.ExecContext(ctx, `
-insert into projects(alias, normalized_remote, clone_url, local_path, created_at, updated_at)
-values(?, ?, ?, ?, ?, ?)
-`, project.Alias, project.NormalizedRemote, project.CloneURL, project.LocalPath, now, now)
+insert into projects(alias, normalized_remote, clone_url, local_path, canonical_path, source, created_at, updated_at)
+values(?, ?, ?, ?, ?, ?, ?, ?)
+`, project.Alias, project.NormalizedRemote, project.CloneURL, project.LocalPath, project.CanonicalPath, project.Source, now, now)
 	if err != nil {
 		return Project{}, fmt.Errorf("add project %q: %w", project.Alias, err)
 	}
@@ -449,28 +455,40 @@ func (s *SQLiteStore) UpsertProject(ctx context.Context, project Project) (Proje
 	if project.LocalPath == "" {
 		return Project{}, "", errors.New("project local path is required")
 	}
+	project = withProjectPlacementDefaults(project)
 
 	var existing Project
 	err := s.db.QueryRowContext(ctx, `
-select id, alias, normalized_remote, clone_url, local_path
+select id, alias, normalized_remote, clone_url, local_path, canonical_path, source
 from projects
 where normalized_remote = ?
 order by id
 limit 1
-`, project.NormalizedRemote).Scan(&existing.ID, &existing.Alias, &existing.NormalizedRemote, &existing.CloneURL, &existing.LocalPath)
+`, project.NormalizedRemote).Scan(&existing.ID, &existing.Alias, &existing.NormalizedRemote, &existing.CloneURL, &existing.LocalPath, &existing.CanonicalPath, &existing.Source)
 	if err == nil {
-		if existing.LocalPath == project.LocalPath && existing.CloneURL == project.CloneURL {
+		existing = withProjectPlacementDefaults(existing)
+		desiredCloneURL := project.CloneURL
+		desiredCanonicalPath := project.CanonicalPath
+		desiredSource := project.Source
+		if existing.Source == "canonical" {
+			desiredCloneURL = existing.CloneURL
+			desiredCanonicalPath = existing.CanonicalPath
+			desiredSource = existing.Source
+		}
+		if existing.LocalPath == project.LocalPath && existing.CloneURL == desiredCloneURL && existing.CanonicalPath == desiredCanonicalPath && existing.Source == desiredSource {
 			return existing, ProjectUpsertUnchanged, nil
 		}
 		if _, err := s.db.ExecContext(ctx, `
 update projects
-set clone_url = ?, local_path = ?, updated_at = ?
+set clone_url = ?, local_path = ?, canonical_path = ?, source = ?, updated_at = ?
 where id = ?
-`, project.CloneURL, project.LocalPath, time.Now().UTC().Format(time.RFC3339), existing.ID); err != nil {
+`, desiredCloneURL, project.LocalPath, desiredCanonicalPath, desiredSource, time.Now().UTC().Format(time.RFC3339), existing.ID); err != nil {
 			return Project{}, "", fmt.Errorf("update project %q path: %w", existing.Alias, err)
 		}
-		existing.CloneURL = project.CloneURL
+		existing.CloneURL = desiredCloneURL
 		existing.LocalPath = project.LocalPath
+		existing.CanonicalPath = desiredCanonicalPath
+		existing.Source = desiredSource
 		return existing, ProjectUpsertUpdated, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -500,6 +518,7 @@ func (s *SQLiteStore) UpdateProject(ctx context.Context, id int64, project Proje
 	if project.LocalPath == "" {
 		return Project{}, errors.New("project local path is required")
 	}
+	project = withProjectPlacementDefaults(project)
 
 	var existingID int64
 	err := s.db.QueryRowContext(ctx, `select id from projects where alias = ? and id != ?`, project.Alias, id).Scan(&existingID)
@@ -519,9 +538,9 @@ func (s *SQLiteStore) UpdateProject(ctx context.Context, id int64, project Proje
 
 	result, err := s.db.ExecContext(ctx, `
 update projects
-set alias = ?, normalized_remote = ?, clone_url = ?, local_path = ?, updated_at = ?
+set alias = ?, normalized_remote = ?, clone_url = ?, local_path = ?, canonical_path = ?, source = ?, updated_at = ?
 where id = ?
-`, project.Alias, project.NormalizedRemote, project.CloneURL, project.LocalPath, time.Now().UTC().Format(time.RFC3339), id)
+`, project.Alias, project.NormalizedRemote, project.CloneURL, project.LocalPath, project.CanonicalPath, project.Source, time.Now().UTC().Format(time.RFC3339), id)
 	if err != nil {
 		return Project{}, fmt.Errorf("update project %q topology: %w", project.Alias, err)
 	}
@@ -556,7 +575,7 @@ func (s *SQLiteStore) DeleteProject(ctx context.Context, id int64) error {
 
 func (s *SQLiteStore) ListProjects(ctx context.Context) ([]Project, error) {
 	rows, err := s.db.QueryContext(ctx, `
-select id, alias, normalized_remote, clone_url, local_path
+select id, alias, normalized_remote, clone_url, local_path, canonical_path, source
 from projects
 order by alias
 `)
@@ -568,15 +587,29 @@ order by alias
 	var projects []Project
 	for rows.Next() {
 		var project Project
-		if err := rows.Scan(&project.ID, &project.Alias, &project.NormalizedRemote, &project.CloneURL, &project.LocalPath); err != nil {
+		if err := rows.Scan(&project.ID, &project.Alias, &project.NormalizedRemote, &project.CloneURL, &project.LocalPath, &project.CanonicalPath, &project.Source); err != nil {
 			return nil, fmt.Errorf("scan project: %w", err)
 		}
+		project = withProjectPlacementDefaults(project)
 		projects = append(projects, project)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate projects: %w", err)
 	}
 	return projects, nil
+}
+
+func withProjectPlacementDefaults(project Project) Project {
+	if strings.TrimSpace(project.CanonicalPath) == "" {
+		project.CanonicalPath = project.LocalPath
+	}
+	switch strings.TrimSpace(project.Source) {
+	case "canonical":
+		project.Source = "canonical"
+	default:
+		project.Source = "local-only"
+	}
+	return project
 }
 
 func (s *SQLiteStore) RegisterMachine(ctx context.Context, facts MachineFacts) (Machine, error) {
@@ -1071,4 +1104,10 @@ var migration5 = []string{
 
 var migration6 = []string{
 	`alter table machines add column codemesh_home text not null default ''`,
+}
+
+var migration7 = []string{
+	`alter table projects add column canonical_path text not null default ''`,
+	`alter table projects add column source text not null default 'local-only'`,
+	`update projects set canonical_path = local_path where canonical_path = ''`,
 }

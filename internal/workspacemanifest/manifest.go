@@ -79,6 +79,7 @@ type ImportChange struct {
 	Alias          string        `json:"alias"`
 	DesiredPath    string        `json:"desired_path"`
 	LocalPath      string        `json:"local_path"`
+	CanonicalPath  string        `json:"canonical_path"`
 	CloneURL       string        `json:"clone_url"`
 	Fields         []FieldChange `json:"fields"`
 	ConflictReason string        `json:"conflict_reason,omitempty"`
@@ -336,7 +337,8 @@ func ExportProjects(projects []state.Project, workspaceRoot string) ([]Entry, er
 	}
 	entries := make([]Entry, 0, len(projects))
 	for _, project := range projects {
-		desiredPath, err := relativeDesiredPath(root, project.LocalPath)
+		projectPath := projectCanonicalPath(project)
+		desiredPath, err := relativeDesiredPath(root, projectPath)
 		if err != nil {
 			return nil, fmt.Errorf("export project %q: %w", project.Alias, err)
 		}
@@ -359,6 +361,13 @@ func ExportProjects(projects []state.Project, workspaceRoot string) ([]Entry, er
 		return entries[i].Project.DesiredPath < entries[j].Project.DesiredPath
 	})
 	return entries, nil
+}
+
+func projectCanonicalPath(project state.Project) string {
+	if strings.TrimSpace(project.CanonicalPath) != "" {
+		return project.CanonicalPath
+	}
+	return project.LocalPath
 }
 
 func normalizeWorkspaceManifest(manifest WorkspaceManifest) WorkspaceManifest {
@@ -407,7 +416,12 @@ func PlanImport(entries []Entry, projects []state.Project, workspaceRoot string)
 	aliasOwner := make(map[string]string, len(projects))
 	for _, project := range projects {
 		byIdentity[project.NormalizedRemote] = project
-		if strings.TrimSpace(project.LocalPath) != "" {
+		projectInManifest := desiredIdentity[project.NormalizedRemote]
+		projectPath := projectCanonicalPath(project)
+		if !projectInManifest && strings.TrimSpace(projectPath) != "" {
+			byPath[canonicalPathForComparison(projectPath)] = project
+		}
+		if strings.TrimSpace(project.LocalPath) != "" && (!projectInManifest || pathExistsOrUnknown(project.LocalPath)) {
 			byPath[canonicalPathForComparison(project.LocalPath)] = project
 		}
 		if desiredAlias, ok := desiredAliasByIdentity[project.NormalizedRemote]; ok && desiredAlias != project.Alias {
@@ -420,10 +434,15 @@ func PlanImport(entries []Entry, projects []state.Project, workspaceRoot string)
 	seenManifestIdentities := map[string]bool{}
 	seenDesiredPaths := map[string]string{}
 	for _, project := range projects {
-		if desiredIdentity[project.NormalizedRemote] || strings.TrimSpace(project.LocalPath) == "" {
+		projectInManifest := desiredIdentity[project.NormalizedRemote]
+		if strings.TrimSpace(project.LocalPath) != "" && (!projectInManifest || pathExistsOrUnknown(project.LocalPath)) {
+			seenDesiredPaths[canonicalPathForComparison(project.LocalPath)] = project.NormalizedRemote
+		}
+		projectPath := projectCanonicalPath(project)
+		if projectInManifest || strings.TrimSpace(projectPath) == "" {
 			continue
 		}
-		seenDesiredPaths[canonicalPathForComparison(project.LocalPath)] = project.NormalizedRemote
+		seenDesiredPaths[canonicalPathForComparison(projectPath)] = project.NormalizedRemote
 	}
 	for _, entry := range normalizedEntries {
 		desiredLocalPath := filepath.Join(root, filepath.FromSlash(entry.Project.DesiredPath))
@@ -434,11 +453,12 @@ func PlanImport(entries []Entry, projects []state.Project, workspaceRoot string)
 			desiredCloneURL = entry.Project.Identity
 		}
 		change := ImportChange{
-			Identity:    entry.Project.Identity,
-			Alias:       entry.Project.Alias,
-			DesiredPath: entry.Project.DesiredPath,
-			LocalPath:   desiredLocalPath,
-			CloneURL:    desiredCloneURL,
+			Identity:      entry.Project.Identity,
+			Alias:         entry.Project.Alias,
+			DesiredPath:   entry.Project.DesiredPath,
+			LocalPath:     desiredLocalPath,
+			CanonicalPath: desiredLocalPath,
+			CloneURL:      desiredCloneURL,
 		}
 		if seenManifestIdentities[entry.Project.Identity] {
 			change.Action = ChangeConflict
@@ -495,13 +515,18 @@ func PlanImport(entries []Entry, projects []state.Project, workspaceRoot string)
 			continue
 		}
 		change.ProjectID = project.ID
+		change.LocalPath = project.LocalPath
+		if project.Source == "canonical" && project.LocalPath == projectCanonicalPath(project) && pathIsMissing(project.LocalPath) {
+			change.LocalPath = desiredLocalPath
+		}
 		if entry.Project.CloneHints.URL == "" {
 			change.CloneURL = project.CloneURL
 		}
 		if project.Alias != entry.Project.Alias {
 			change.Fields = append(change.Fields, FieldChange{Field: "alias", Current: project.Alias, Desired: entry.Project.Alias})
 		}
-		observedComparePath := canonicalPathForComparison(project.LocalPath)
+		observedComparePath := canonicalPathForComparison(projectCanonicalPath(project))
+		localComparePath := canonicalPathForComparison(project.LocalPath)
 		if observedComparePath != desiredComparePath {
 			if owner, ok := byPath[desiredComparePath]; ok && owner.NormalizedRemote != entry.Project.Identity {
 				change.Action = ChangeConflict
@@ -509,15 +534,23 @@ func PlanImport(entries []Entry, projects []state.Project, workspaceRoot string)
 				plan.Changes = append(plan.Changes, change)
 				continue
 			}
-			if reason, blocked := pathConflictReason(desiredLocalPath, root); blocked {
-				change.Action = ChangeConflict
-				change.ConflictReason = reason
-				plan.Changes = append(plan.Changes, change)
-				continue
+			if localComparePath != desiredComparePath {
+				if reason, blocked := pathConflictReason(desiredLocalPath, root); blocked {
+					change.Action = ChangeConflict
+					change.ConflictReason = reason
+					plan.Changes = append(plan.Changes, change)
+					continue
+				}
 			}
-			change.Fields = append(change.Fields, FieldChange{Field: "local_path", Current: project.LocalPath, Desired: desiredLocalPath})
+			change.Fields = append(change.Fields, FieldChange{Field: "canonical_path", Current: projectCanonicalPath(project), Desired: desiredLocalPath})
 		} else {
-			change.LocalPath = project.LocalPath
+			change.CanonicalPath = projectCanonicalPath(project)
+		}
+		if project.Source == "local-only" {
+			change.Fields = append(change.Fields, FieldChange{Field: "source", Current: project.Source, Desired: "canonical"})
+		}
+		if project.LocalPath != change.LocalPath {
+			change.Fields = append(change.Fields, FieldChange{Field: "local_path", Current: project.LocalPath, Desired: change.LocalPath})
 		}
 		if entry.Project.CloneHints.URL != "" && project.CloneURL != entry.Project.CloneHints.URL {
 			change.Fields = append(change.Fields, FieldChange{Field: "clone_url", Current: cloneURLForPlan(project.CloneURL), Desired: entry.Project.CloneHints.URL})
@@ -726,6 +759,8 @@ func projectFromImportChange(change ImportChange) state.Project {
 		NormalizedRemote: change.Identity,
 		CloneURL:         change.CloneURL,
 		LocalPath:        change.LocalPath,
+		CanonicalPath:    change.CanonicalPath,
+		Source:           "canonical",
 	}
 }
 
@@ -882,6 +917,16 @@ func pathIsAncestor(parent, child string) bool {
 
 func PathConflictReason(path string) (string, bool) {
 	return pathConflictReason(path, "")
+}
+
+func pathIsMissing(path string) bool {
+	_, err := os.Lstat(path)
+	return errors.Is(err, os.ErrNotExist)
+}
+
+func pathExistsOrUnknown(path string) bool {
+	_, err := os.Lstat(path)
+	return !errors.Is(err, os.ErrNotExist)
 }
 
 func pathConflictReason(path, workspaceRoot string) (string, bool) {

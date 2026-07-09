@@ -20,6 +20,10 @@ type Store interface {
 	ListProjects(context.Context) ([]state.Project, error)
 }
 
+type projectUpdater interface {
+	UpdateProject(context.Context, int64, state.Project) (state.Project, error)
+}
+
 type Registry struct {
 	store Store
 	git   gitops.Client
@@ -201,13 +205,31 @@ func (r *Registry) Hydrate(ctx context.Context, alias string, opts ...clonestrat
 		if project.Alias != alias {
 			continue
 		}
-		alreadyPresent, strategy, err := hydrateProject(ctx, r.git, project, options)
+		hydrationProject := project
+		hydrationProject.LocalPath = hydrationPath(project)
+		alreadyPresent, strategy, err := hydrateProject(ctx, r.git, hydrationProject, options)
 		if err != nil {
-			return HydrateResult{Project: project, CloneStrategy: strategy}, err
+			return HydrateResult{Project: hydrationProject, CloneStrategy: strategy}, err
 		}
-		return HydrateResult{Project: project, AlreadyPresent: alreadyPresent, CloneStrategy: strategy}, nil
+		if hydrationProject.Source == "canonical" && project.LocalPath != hydrationProject.LocalPath {
+			if updater, ok := r.store.(projectUpdater); ok {
+				updated, err := updater.UpdateProject(ctx, project.ID, hydrationProject)
+				if err != nil {
+					return HydrateResult{Project: hydrationProject, CloneStrategy: strategy}, err
+				}
+				hydrationProject = updated
+			}
+		}
+		return HydrateResult{Project: hydrationProject, AlreadyPresent: alreadyPresent, CloneStrategy: strategy}, nil
 	}
 	return HydrateResult{}, fmt.Errorf("unknown project: %s", alias)
+}
+
+func hydrationPath(project state.Project) string {
+	if project.Source == "canonical" && strings.TrimSpace(project.CanonicalPath) != "" {
+		return project.CanonicalPath
+	}
+	return project.LocalPath
 }
 
 func hydrateProject(ctx context.Context, git gitops.Client, project state.Project, options clonestrategy.Options) (bool, clonestrategy.Selection, error) {

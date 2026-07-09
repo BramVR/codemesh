@@ -573,6 +573,223 @@ func TestManifestExportImportMovesCanonicalWorkspaceBetweenMachines(t *testing.T
 	}
 }
 
+func TestManifestImportedWorkspaceTreeAndStatusShowCanonicalPlacementPresence(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	manifestPath := filepath.Join(tmp, "workspace-manifest.json")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	workspace, err = filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, []byte(`{
+  "manifest_version": 1,
+  "projects": [
+    {
+      "identity": "https://github.com/BramVR/alpha",
+      "alias": "alpha",
+      "desired_path": "tools/alpha",
+      "clone_hints": {},
+      "groups": []
+    },
+    {
+      "identity": "https://github.com/BramVR/beta",
+      "alias": "beta",
+      "desired_path": "apps/beta",
+      "clone_hints": {},
+      "groups": []
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	if code := run([]string{"manifest", "import", manifestPath}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("manifest import exit code = %d, want 0", code)
+	}
+	alphaMoved := createGitRepoAt(t, filepath.Join(workspace, "moved", "alpha"), "https://github.com/BramVR/alpha.git")
+	betaDesired := createGitRepoAt(t, filepath.Join(workspace, "apps", "beta"), "https://github.com/BramVR/beta.git")
+	localOnly := createGitRepoAt(t, filepath.Join(workspace, "scratch", "local-only"), "https://github.com/BramVR/local-only.git")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"scan", workspace}, &stdout, &stderr); code != 0 {
+		t.Fatalf("scan exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	storedProjects := listProjectsForTest(t, home)
+	storedByAlias := map[string]state.Project{}
+	for _, project := range storedProjects {
+		storedByAlias[project.Alias] = project
+	}
+	if alpha := storedByAlias["alpha"]; alpha.CloneURL != "https://github.com/BramVR/alpha" || alpha.CanonicalPath != filepath.Join(workspace, "tools", "alpha") || alpha.LocalPath != alphaMoved || alpha.Source != "canonical" {
+		t.Fatalf("alpha placement after scan = %#v", alpha)
+	}
+	if local := storedByAlias["local-only"]; local.Source != "local-only" || local.CanonicalPath != local.LocalPath {
+		t.Fatalf("local-only placement after scan = %#v", local)
+	}
+	updatedManifestPath := filepath.Join(tmp, "workspace-manifest-with-clone-hints.json")
+	if err := os.WriteFile(updatedManifestPath, []byte(`{
+  "manifest_version": 1,
+  "projects": [
+    {
+      "identity": "https://github.com/BramVR/alpha",
+      "alias": "alpha",
+      "desired_path": "tools/alpha",
+      "clone_hints": {
+        "url": "https://github.com/BramVR/alpha.git"
+      },
+      "groups": []
+    },
+    {
+      "identity": "https://github.com/BramVR/beta",
+      "alias": "beta",
+      "desired_path": "apps/beta",
+      "clone_hints": {},
+      "groups": []
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"manifest", "import", updatedManifestPath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("second manifest import exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	storedProjects = listProjectsForTest(t, home)
+	storedByAlias = map[string]state.Project{}
+	for _, project := range storedProjects {
+		storedByAlias[project.Alias] = project
+	}
+	if alpha := storedByAlias["alpha"]; alpha.CloneURL != "https://github.com/BramVR/alpha.git" || alpha.CanonicalPath != filepath.Join(workspace, "tools", "alpha") || alpha.LocalPath != alphaMoved || alpha.Source != "canonical" {
+		t.Fatalf("alpha placement after manifest update = %#v", alpha)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := run([]string{"tree", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("tree --json exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	treeProjects := decodeWorkspaceProjects(t, stdout.Bytes())
+	assertWorkspaceProject(t, treeProjects["alpha"], workspaceProjectWant{
+		Alias:                "alpha",
+		WorkspaceSource:      "canonical",
+		State:                "present",
+		CanonicalPath:        filepath.Join(workspace, "tools", "alpha"),
+		CanonicalPathPresent: false,
+		MachinePath:          alphaMoved,
+		MachinePathPresent:   true,
+	})
+	assertWorkspaceProject(t, treeProjects["beta"], workspaceProjectWant{
+		Alias:                "beta",
+		WorkspaceSource:      "canonical",
+		State:                "present",
+		CanonicalPath:        betaDesired,
+		CanonicalPathPresent: true,
+		MachinePath:          betaDesired,
+		MachinePathPresent:   true,
+	})
+	assertWorkspaceProject(t, treeProjects["local-only"], workspaceProjectWant{
+		Alias:                "local-only",
+		WorkspaceSource:      "local-only",
+		State:                "present",
+		CanonicalPath:        localOnly,
+		CanonicalPathPresent: true,
+		MachinePath:          localOnly,
+		MachinePathPresent:   true,
+	})
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"status", "--base", "main", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("status --json exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	statusProjects := decodeWorkspaceProjects(t, stdout.Bytes())
+	assertWorkspaceProject(t, statusProjects["alpha"], workspaceProjectWant{
+		Alias:                "alpha",
+		WorkspaceSource:      "canonical",
+		State:                "stale",
+		CanonicalPath:        filepath.Join(workspace, "tools", "alpha"),
+		CanonicalPathPresent: false,
+		MachinePath:          alphaMoved,
+		MachinePathPresent:   true,
+	})
+	assertWorkspaceProject(t, statusProjects["local-only"], workspaceProjectWant{
+		Alias:                "local-only",
+		WorkspaceSource:      "local-only",
+		State:                "stale",
+		CanonicalPath:        localOnly,
+		CanonicalPathPresent: true,
+		MachinePath:          localOnly,
+		MachinePathPresent:   true,
+	})
+}
+
+func TestHydrateCanonicalProjectPersistsDesiredMachinePath(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	canonicalPath := filepath.Join(workspace, "tools", "canonical-hydrate")
+	observedPath := createCommittedLocalRemoteClone(t, "canonical-hydrate")
+	remote := strings.TrimSpace(runGitOutput(t, observedPath, "remote", "get-url", "origin"))
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddProject(context.Background(), state.Project{
+		Alias:            "canonical-hydrate",
+		NormalizedRemote: "https://example.invalid/bram/canonical-hydrate",
+		CloneURL:         remote,
+		LocalPath:        observedPath,
+		CanonicalPath:    canonicalPath,
+		Source:           "canonical",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(canonicalPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canonical path exists before hydrate or stat failed unexpectedly: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"hydrate", "canonical-hydrate", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("hydrate canonical exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if err := assertHydrateJSON(stdout.Bytes(), "success", "canonical-hydrate", "hydrated", canonicalPath, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(canonicalPath, "README.md")); err != nil {
+		t.Fatalf("hydrated canonical checkout missing README: %v", err)
+	}
+	projects := listProjectsForTest(t, home)
+	if len(projects) != 1 || projects[0].LocalPath != canonicalPath || projects[0].CanonicalPath != canonicalPath || projects[0].Source != "canonical" {
+		t.Fatalf("project placement after hydrate = %#v", projects)
+	}
+}
+
 func TestManifestExportRejectsEmptyOutputPath(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
@@ -954,6 +1171,60 @@ func TestTreeJSONReportsCanonicalWorkspace(t *testing.T) {
 	}
 	if got := byAlias["tree-missing"]; got.State != "missing" || got.Path != missing || got.PathPresent || got.Blockers != 1 {
 		t.Fatalf("missing tree project = %#v", got)
+	}
+}
+
+type workspaceProjectPayload struct {
+	Alias                string `json:"alias"`
+	WorkspaceSource      string `json:"workspace_source"`
+	State                string `json:"state"`
+	Path                 string `json:"path"`
+	PathPresent          bool   `json:"path_present"`
+	CanonicalPath        string `json:"canonical_path"`
+	CanonicalPathPresent bool   `json:"canonical_path_present"`
+	MachinePath          string `json:"machine_path"`
+	MachinePathPresent   bool   `json:"machine_path_present"`
+	Remote               string `json:"remote"`
+	Base                 string `json:"base"`
+}
+
+type workspaceProjectWant struct {
+	Alias                string
+	WorkspaceSource      string
+	State                string
+	CanonicalPath        string
+	CanonicalPathPresent bool
+	MachinePath          string
+	MachinePathPresent   bool
+}
+
+func decodeWorkspaceProjects(t *testing.T, data []byte) map[string]workspaceProjectPayload {
+	t.Helper()
+	var payload struct {
+		Payload struct {
+			Projects []workspaceProjectPayload `json:"projects"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("workspace command stdout was not JSON: %v\nstdout:\n%s", err, data)
+	}
+	projects := make(map[string]workspaceProjectPayload, len(payload.Payload.Projects))
+	for _, project := range payload.Payload.Projects {
+		projects[project.Alias] = project
+	}
+	return projects
+}
+
+func assertWorkspaceProject(t *testing.T, got workspaceProjectPayload, want workspaceProjectWant) {
+	t.Helper()
+	if got.Alias != want.Alias ||
+		got.WorkspaceSource != want.WorkspaceSource ||
+		got.State != want.State ||
+		got.CanonicalPath != want.CanonicalPath ||
+		got.CanonicalPathPresent != want.CanonicalPathPresent ||
+		got.MachinePath != want.MachinePath ||
+		got.MachinePathPresent != want.MachinePathPresent {
+		t.Fatalf("workspace project = %#v, want %#v", got, want)
 	}
 }
 

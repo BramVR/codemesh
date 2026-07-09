@@ -383,7 +383,7 @@ func TestImportPlanReportsRegistryChangesWithoutMutating(t *testing.T) {
 		t.Fatalf("first change = %#v, want update for existing project", plan.Changes[0])
 	}
 	if !hasFieldChange(plan.Changes[0], "alias", "old-codemesh", "codemesh") ||
-		!hasFieldChange(plan.Changes[0], "local_path", "/workspace/codemesh", "/workspace/tools/codemesh") ||
+		!hasFieldChange(plan.Changes[0], "canonical_path", "/workspace/codemesh", "/workspace/tools/codemesh") ||
 		!hasFieldChange(plan.Changes[0], "clone_url", "https://github.com/BramVR/codemesh.git", "git@github.com:BramVR/codemesh.git") {
 		t.Fatalf("update fields = %#v, want alias/path/clone URL changes", plan.Changes[0].Fields)
 	}
@@ -606,6 +606,203 @@ func TestImportPlanComparesCanonicalWorkspacePathsWithoutRewritingLocalPlacement
 	}
 	if len(plan.Changes) != 1 || plan.Changes[0].Action != ChangeUnchanged {
 		t.Fatalf("changes = %#v, want unchanged through symlinked workspace root", plan.Changes)
+	}
+}
+
+func TestImportPlanCanPromoteObservedCanonicalProjectPath(t *testing.T) {
+	tmp := t.TempDir()
+	workspace := filepath.Join(tmp, "workspace")
+	observedPath := filepath.Join(workspace, "moved", "alpha")
+	if err := os.MkdirAll(observedPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanImport([]Entry{
+		NewEntry(ProjectEntry{
+			Identity:    "https://github.com/BramVR/alpha",
+			Alias:       "alpha",
+			DesiredPath: "moved/alpha",
+			CloneHints:  CloneHints{URL: "https://github.com/BramVR/alpha.git"},
+		}),
+	}, []state.Project{{
+		ID:               1,
+		Alias:            "alpha",
+		NormalizedRemote: "https://github.com/BramVR/alpha",
+		CloneURL:         "https://github.com/BramVR/alpha.git",
+		LocalPath:        observedPath,
+		CanonicalPath:    filepath.Join(workspace, "apps", "alpha"),
+		Source:           "canonical",
+	}}, workspace)
+	if err != nil {
+		t.Fatalf("PlanImport error = %v", err)
+	}
+	if len(plan.Changes) != 1 || plan.Changes[0].Action != ChangeUpdate {
+		t.Fatalf("changes = %#v, want update for existing canonical project", plan.Changes)
+	}
+	if !hasFieldChange(plan.Changes[0], "canonical_path", filepath.Join(workspace, "apps", "alpha"), observedPath) {
+		t.Fatalf("fields = %#v, want canonical_path promoted to observed path", plan.Changes[0].Fields)
+	}
+	if hasAnyFieldChange(plan.Changes[0], "local_path") {
+		t.Fatalf("fields = %#v, local_path should remain the current Machine placement", plan.Changes[0].Fields)
+	}
+}
+
+func TestImportPlanPreservesExistingCanonicalCheckoutWhenDesiredPathChanges(t *testing.T) {
+	tmp := t.TempDir()
+	workspace := filepath.Join(tmp, "workspace")
+	oldPath := filepath.Join(workspace, "apps", "alpha")
+	newPath := filepath.Join(workspace, "tools", "alpha")
+	if err := os.MkdirAll(oldPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanImport([]Entry{
+		NewEntry(ProjectEntry{
+			Identity:    "https://github.com/BramVR/alpha",
+			Alias:       "alpha",
+			DesiredPath: "tools/alpha",
+		}),
+	}, []state.Project{{
+		ID:               1,
+		Alias:            "alpha",
+		NormalizedRemote: "https://github.com/BramVR/alpha",
+		CloneURL:         "https://github.com/BramVR/alpha.git",
+		LocalPath:        oldPath,
+		CanonicalPath:    oldPath,
+		Source:           "canonical",
+	}}, workspace)
+	if err != nil {
+		t.Fatalf("PlanImport error = %v", err)
+	}
+	if len(plan.Changes) != 1 || plan.Changes[0].Action != ChangeUpdate {
+		t.Fatalf("changes = %#v, want canonical path update", plan.Changes)
+	}
+	if !hasFieldChange(plan.Changes[0], "canonical_path", oldPath, newPath) {
+		t.Fatalf("fields = %#v, want canonical_path update", plan.Changes[0].Fields)
+	}
+	if hasAnyFieldChange(plan.Changes[0], "local_path") {
+		t.Fatalf("fields = %#v, local_path should keep the observed checkout", plan.Changes[0].Fields)
+	}
+	if plan.Changes[0].LocalPath != oldPath {
+		t.Fatalf("local path = %q, want observed checkout %q", plan.Changes[0].LocalPath, oldPath)
+	}
+}
+
+func TestImportPlanRejectsNestedPathUnderObservedCanonicalProjectPath(t *testing.T) {
+	tmp := t.TempDir()
+	workspace := filepath.Join(tmp, "workspace")
+	observedPath := filepath.Join(workspace, "moved", "alpha")
+	if err := os.MkdirAll(observedPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanImport([]Entry{
+		NewEntry(ProjectEntry{
+			Identity:    "https://github.com/BramVR/beta",
+			Alias:       "beta",
+			DesiredPath: "moved/alpha/vendor",
+		}),
+	}, []state.Project{{
+		ID:               1,
+		Alias:            "alpha",
+		NormalizedRemote: "https://github.com/BramVR/alpha",
+		CloneURL:         "https://github.com/BramVR/alpha.git",
+		LocalPath:        observedPath,
+		CanonicalPath:    filepath.Join(workspace, "apps", "alpha"),
+		Source:           "canonical",
+	}}, workspace)
+	if err != nil {
+		t.Fatalf("PlanImport error = %v", err)
+	}
+	if len(plan.Changes) != 1 || plan.Changes[0].Action != ChangeConflict {
+		t.Fatalf("changes = %#v, want nested path conflict", plan.Changes)
+	}
+	if !strings.Contains(plan.Changes[0].ConflictReason, "nests") {
+		t.Fatalf("conflict reason = %q, want nested path conflict", plan.Changes[0].ConflictReason)
+	}
+}
+
+func TestImportPlanRejectsNestedPathUnderManifestProjectMachinePath(t *testing.T) {
+	tmp := t.TempDir()
+	workspace := filepath.Join(tmp, "workspace")
+	observedPath := filepath.Join(workspace, "moved", "alpha")
+	if err := os.MkdirAll(observedPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanImport([]Entry{
+		NewEntry(ProjectEntry{
+			Identity:    "https://github.com/BramVR/alpha",
+			Alias:       "alpha",
+			DesiredPath: "apps/alpha",
+		}),
+		NewEntry(ProjectEntry{
+			Identity:    "https://github.com/BramVR/beta",
+			Alias:       "beta",
+			DesiredPath: "moved/alpha/vendor",
+		}),
+	}, []state.Project{{
+		ID:               1,
+		Alias:            "alpha",
+		NormalizedRemote: "https://github.com/BramVR/alpha",
+		CloneURL:         "https://github.com/BramVR/alpha.git",
+		LocalPath:        observedPath,
+		CanonicalPath:    filepath.Join(workspace, "tools", "alpha"),
+		Source:           "canonical",
+	}}, workspace)
+	if err != nil {
+		t.Fatalf("PlanImport error = %v", err)
+	}
+	if len(plan.Changes) != 2 {
+		t.Fatalf("changes = %#v, want two planned entries", plan.Changes)
+	}
+	if plan.Changes[1].Action != ChangeConflict {
+		t.Fatalf("second change = %#v, want nested path conflict", plan.Changes[1])
+	}
+	if !strings.Contains(plan.Changes[1].ConflictReason, "nests") {
+		t.Fatalf("conflict reason = %q, want nested path conflict", plan.Changes[1].ConflictReason)
+	}
+}
+
+func TestImportPlanCanReuseStaleCanonicalPathReleasedBySameManifest(t *testing.T) {
+	tmp := t.TempDir()
+	workspace := filepath.Join(tmp, "workspace")
+	observedPath := filepath.Join(workspace, "moved", "alpha")
+	if err := os.MkdirAll(observedPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := PlanImport([]Entry{
+		NewEntry(ProjectEntry{
+			Identity:    "https://github.com/BramVR/alpha",
+			Alias:       "alpha",
+			DesiredPath: "tools/alpha",
+		}),
+		NewEntry(ProjectEntry{
+			Identity:    "https://github.com/BramVR/beta",
+			Alias:       "beta",
+			DesiredPath: "apps/alpha",
+		}),
+	}, []state.Project{{
+		ID:               1,
+		Alias:            "alpha",
+		NormalizedRemote: "https://github.com/BramVR/alpha",
+		CloneURL:         "https://github.com/BramVR/alpha.git",
+		LocalPath:        observedPath,
+		CanonicalPath:    filepath.Join(workspace, "apps", "alpha"),
+		Source:           "canonical",
+	}}, workspace)
+	if err != nil {
+		t.Fatalf("PlanImport error = %v", err)
+	}
+	if len(plan.Changes) != 2 {
+		t.Fatalf("changes = %#v, want two planned entries", plan.Changes)
+	}
+	if plan.Changes[0].Action != ChangeUpdate {
+		t.Fatalf("first change = %#v, want alpha canonical path update", plan.Changes[0])
+	}
+	if plan.Changes[1].Action != ChangeAdd {
+		t.Fatalf("second change = %#v, want beta added at released canonical path", plan.Changes[1])
 	}
 }
 
@@ -1017,6 +1214,15 @@ func TestImportPlanRejectsCredentialBearingCloneHintWithoutEchoingIt(t *testing.
 func hasFieldChange(change ImportChange, field, current, desired string) bool {
 	for _, candidate := range change.Fields {
 		if candidate.Field == field && candidate.Current == current && candidate.Desired == desired {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAnyFieldChange(change ImportChange, field string) bool {
+	for _, candidate := range change.Fields {
+		if candidate.Field == field {
 			return true
 		}
 	}

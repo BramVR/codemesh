@@ -1959,13 +1959,18 @@ func buildTreeResult(ctx context.Context, projects []state.Project) (commandresu
 		warnings += len(diagnostics.Warnings)
 		blockers += len(diagnostics.Blockers)
 		treeProjects = append(treeProjects, statusProject{
-			Alias:       report.Project.Alias,
-			State:       string(report.State),
-			Path:        report.Project.LocalPath,
-			PathPresent: report.LocalPathPresent,
-			Remote:      report.Project.NormalizedRemote,
-			Base:        report.BaseBranch,
-			Diagnostics: diagnostics,
+			Alias:                report.Project.Alias,
+			WorkspaceSource:      report.Project.Source,
+			State:                string(report.State),
+			Path:                 report.Project.LocalPath,
+			PathPresent:          report.LocalPathPresent,
+			CanonicalPath:        report.Project.CanonicalPath,
+			CanonicalPathPresent: pathPresent(report.Project.CanonicalPath),
+			MachinePath:          report.Project.LocalPath,
+			MachinePathPresent:   report.LocalPathPresent,
+			Remote:               report.Project.NormalizedRemote,
+			Base:                 report.BaseBranch,
+			Diagnostics:          diagnostics,
 		})
 	}
 	return commandresult.New("tree", commandresult.ReadinessExitClass(warnings, blockers), commandresult.Diagnostics{}, treePayload{Projects: treeProjects}), nil
@@ -1978,7 +1983,7 @@ func renderTreePayloadHuman(w io.Writer, payload treePayload) error {
 		return nil
 	}
 	for _, project := range payload.Projects {
-		fmt.Fprintf(w, "- %s %s %s\n", project.Alias, project.State, project.Path)
+		fmt.Fprintf(w, "- %s %s %s workspace_source=%s canonical_present=%t machine_path=%s machine_present=%t\n", project.Alias, project.State, project.CanonicalPath, project.WorkspaceSource, project.CanonicalPathPresent, project.MachinePath, project.MachinePathPresent)
 	}
 	return nil
 }
@@ -2089,13 +2094,18 @@ type statusPayload struct {
 }
 
 type statusProject struct {
-	Alias       string                    `json:"alias"`
-	State       string                    `json:"state"`
-	Path        string                    `json:"path"`
-	PathPresent bool                      `json:"path_present"`
-	Remote      string                    `json:"remote"`
-	Base        string                    `json:"base"`
-	Diagnostics commandresult.Diagnostics `json:"diagnostics"`
+	Alias                string                    `json:"alias"`
+	WorkspaceSource      string                    `json:"workspace_source"`
+	State                string                    `json:"state"`
+	Path                 string                    `json:"path"`
+	PathPresent          bool                      `json:"path_present"`
+	CanonicalPath        string                    `json:"canonical_path"`
+	CanonicalPathPresent bool                      `json:"canonical_path_present"`
+	MachinePath          string                    `json:"machine_path"`
+	MachinePathPresent   bool                      `json:"machine_path_present"`
+	Remote               string                    `json:"remote"`
+	Base                 string                    `json:"base"`
+	Diagnostics          commandresult.Diagnostics `json:"diagnostics"`
 }
 
 func buildStatusSummaryResult(ctx context.Context, stderr io.Writer, projects []state.Project, base string) commandresult.Result[statusPayload] {
@@ -2131,19 +2141,29 @@ func newStatusResult(projectName string, reports []readiness.ProjectReport, comm
 		warnings += len(projectDiagnostics.Warnings)
 		blockers += len(projectDiagnostics.Blockers)
 		projects = append(projects, statusProject{
-			Alias:       report.Project.Alias,
-			State:       string(report.State),
-			Path:        report.Project.LocalPath,
-			PathPresent: report.LocalPathPresent,
-			Remote:      report.Project.NormalizedRemote,
-			Base:        report.BaseBranch,
-			Diagnostics: projectDiagnostics,
+			Alias:                report.Project.Alias,
+			WorkspaceSource:      report.Project.Source,
+			State:                string(report.State),
+			Path:                 report.Project.LocalPath,
+			PathPresent:          report.LocalPathPresent,
+			CanonicalPath:        report.Project.CanonicalPath,
+			CanonicalPathPresent: pathPresent(report.Project.CanonicalPath),
+			MachinePath:          report.Project.LocalPath,
+			MachinePathPresent:   report.LocalPathPresent,
+			Remote:               report.Project.NormalizedRemote,
+			Base:                 report.BaseBranch,
+			Diagnostics:          projectDiagnostics,
 		})
 	}
 	return commandresult.New("status", commandresult.ReadinessExitClass(warnings, blockers), commandDiagnostics, statusPayload{
 		Project:  projectName,
 		Projects: projects,
 	})
+}
+
+func pathPresent(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 func statusDiagnostics(report readiness.ProjectReport) commandresult.Diagnostics {
@@ -2174,7 +2194,7 @@ func renderStatusPayloadHuman(w io.Writer, payload statusPayload) error {
 			return nil
 		}
 		for _, project := range payload.Projects {
-			fmt.Fprintf(w, "- %s state=%s path_present=%t warnings=%d blockers=%d path=%s\n", project.Alias, project.State, project.PathPresent, len(project.Diagnostics.Warnings), len(project.Diagnostics.Blockers), project.Path)
+			fmt.Fprintf(w, "- %s state=%s workspace_source=%s path_present=%t canonical_present=%t warnings=%d blockers=%d path=%s canonical_path=%s machine_path=%s\n", project.Alias, project.State, project.WorkspaceSource, project.PathPresent, project.CanonicalPathPresent, len(project.Diagnostics.Warnings), len(project.Diagnostics.Blockers), project.Path, project.CanonicalPath, project.MachinePath)
 		}
 		return nil
 	}
@@ -2188,8 +2208,13 @@ func renderStatusPayloadHuman(w io.Writer, payload statusPayload) error {
 func printProjectStatus(w io.Writer, project statusProject) {
 	fmt.Fprintf(w, "project: %s\n", project.Alias)
 	fmt.Fprintf(w, "state: %s\n", project.State)
+	fmt.Fprintf(w, "workspace_source: %s\n", project.WorkspaceSource)
 	fmt.Fprintf(w, "path: %s\n", project.Path)
 	fmt.Fprintf(w, "path_present: %t\n", project.PathPresent)
+	fmt.Fprintf(w, "canonical_path: %s\n", project.CanonicalPath)
+	fmt.Fprintf(w, "canonical_path_present: %t\n", project.CanonicalPathPresent)
+	fmt.Fprintf(w, "machine_path: %s\n", project.MachinePath)
+	fmt.Fprintf(w, "machine_path_present: %t\n", project.MachinePathPresent)
 	fmt.Fprintf(w, "remote: %s\n", project.Remote)
 	fmt.Fprintf(w, "base: %s\n", project.Base)
 	printCommandDiagnostics(w, project.Diagnostics)
