@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+Target next patch: `v0.2.1`.
+
 ## v0.2.0 - 2026-07-09
 
 ### Highlights
