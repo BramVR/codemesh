@@ -363,7 +363,10 @@ func preflightPlaceholderMaterialization(plan hydrationplanner.Plan) ([]state.Pr
 }
 
 func placeholderProjectForAction(action hydrationplanner.Action) (state.Project, bool) {
-	if action.Action != hydrationplanner.ActionClone && action.State != hydrationplanner.StatePlaceholder {
+	if action.Action != hydrationplanner.ActionClone {
+		return state.Project{}, false
+	}
+	if action.State != hydrationplanner.StateMissing && action.State != hydrationplanner.StatePlaceholder {
 		return state.Project{}, false
 	}
 	project := action.ProjectRow

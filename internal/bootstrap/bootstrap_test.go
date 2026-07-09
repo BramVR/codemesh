@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BramVR/codemesh/internal/hydrationexecutor"
+	"github.com/BramVR/codemesh/internal/hydrationplanner"
 	"github.com/BramVR/codemesh/internal/reconciliation"
 	"github.com/BramVR/codemesh/internal/state"
 	"github.com/BramVR/codemesh/internal/workspacemanifest"
@@ -317,6 +318,66 @@ func TestPlaceholdersRegistryPersistsCanonicalPlacement(t *testing.T) {
 	}
 	if _, err := os.Stat(observedPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("observed path mutated unexpectedly: %v", err)
+	}
+}
+
+func TestPlaceholderProjectForActionRequiresCloneForMissingOrPlaceholder(t *testing.T) {
+	project := state.Project{
+		Alias:            "alpha",
+		NormalizedRemote: "https://example.invalid/bram/alpha",
+		LocalPath:        "/workspace/alpha",
+		CanonicalPath:    "/workspace/alpha",
+	}
+	tests := []struct {
+		name   string
+		action hydrationplanner.Action
+		want   bool
+	}{
+		{
+			name: "missing clone",
+			action: hydrationplanner.Action{
+				State:      hydrationplanner.StateMissing,
+				Action:     hydrationplanner.ActionClone,
+				ProjectRow: project,
+			},
+			want: true,
+		},
+		{
+			name: "placeholder clone",
+			action: hydrationplanner.Action{
+				State:      hydrationplanner.StatePlaceholder,
+				Action:     hydrationplanner.ActionClone,
+				ProjectRow: project,
+			},
+			want: true,
+		},
+		{
+			name: "present clone is not a placeholder candidate",
+			action: hydrationplanner.Action{
+				State:      hydrationplanner.StatePresent,
+				Action:     hydrationplanner.ActionClone,
+				ProjectRow: project,
+			},
+			want: false,
+		},
+		{
+			name: "placeholder none is not a placeholder candidate",
+			action: hydrationplanner.Action{
+				State:      hydrationplanner.StatePlaceholder,
+				Action:     hydrationplanner.ActionNone,
+				ProjectRow: project,
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, got := placeholderProjectForAction(tt.action)
+			if got != tt.want {
+				t.Fatalf("placeholderProjectForAction ok = %t, want %t", got, tt.want)
+			}
+		})
 	}
 }
 
