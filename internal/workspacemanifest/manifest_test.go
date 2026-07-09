@@ -1186,6 +1186,8 @@ func TestImportPlanRejectsCredentialBearingCloneHintWithoutEchoingIt(t *testing.
 	for _, secretURL := range []string{
 		"https://user:leak-marker@example.invalid/org/repo.git?marker=leak-marker-value#piece",
 		"git@example.invalid:org/repo.git?marker=leak-marker-value#piece",
+		"file://user:leak-marker@example.invalid/repo.git?marker=leak-marker-value#piece",
+		"repo.git?marker=leak-marker-value#piece",
 		"repo.git",
 	} {
 		t.Run(secretURL, func(t *testing.T) {
@@ -1208,6 +1210,27 @@ func TestImportPlanRejectsCredentialBearingCloneHintWithoutEchoingIt(t *testing.
 				t.Fatalf("PlanImport error leaked clone hint: %v", err)
 			}
 		})
+	}
+}
+
+func TestImportPlanAllowsSecretFreeLocalCloneHint(t *testing.T) {
+	plan, err := PlanImport([]Entry{
+		{
+			ManifestVersion: ManifestVersion,
+			Project: ProjectEntry{
+				Identity:    "https://example.invalid/org/repo",
+				Alias:       "repo",
+				DesiredPath: "repo",
+				CloneHints:  CloneHints{URL: "/tmp/codemesh-fixtures/repo.git"},
+				Groups:      []string{},
+			},
+		},
+	}, nil, "/workspace")
+	if err != nil {
+		t.Fatalf("PlanImport error = %v", err)
+	}
+	if len(plan.Changes) != 1 || plan.Changes[0].CloneURL != "/tmp/codemesh-fixtures/repo.git" {
+		t.Fatalf("plan changes = %#v, want local clone hint preserved", plan.Changes)
 	}
 }
 

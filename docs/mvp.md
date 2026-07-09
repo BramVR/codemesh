@@ -301,15 +301,15 @@ Clones a missing project into its desired local path through the selected Clone 
 
 Does not create placeholders.
 
-### `codemesh bootstrap <manifest-path>`
+### `codemesh bootstrap [--all | project... | <manifest-path>]`
 
-Reads Workspace Manifest JSON entries, compares them against the registered local machine workspace root and Project Registry, and prints a plan with planned clone/refusal actions from the same Hydration Planner used by `hydrate`. `--dry-run` is explicit preview mode. `--apply` creates parent directories and local registry rows for desired topology only.
+Reads registered Projects or Workspace Manifest JSON entries, compares them against the registered local machine workspace root and Project Registry, and prints a plan with planned clone/refusal actions from the same Hydration Planner used by `hydrate`. `--dry-run` is explicit preview mode. `--apply` refuses blockers before Git, creates needed parent directories and registry rows when a manifest is supplied, then clones planned missing Projects.
 
 Rules:
 
 - requires local machine registration
 - blocks path conflicts before mutation
-- does not clone project content by default
+- clones only explicit planned missing Projects on `--apply`
 - does not create project placeholder directories
 
 ### `codemesh manifest export [--output path]`
@@ -425,7 +425,7 @@ Initial tables:
 11. Doctor preflight and strict warning failure.
 12. Fake-provider Env Binding and agent-scoped env bundle metadata.
 13. Toolchain readiness declaration, doctor reporting, and Agent Run Contract status metadata.
-14. Bootstrap topology without cloning.
+14. Bootstrap topology and clone execution.
 
 ## Planned Later
 

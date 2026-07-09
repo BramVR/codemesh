@@ -22,6 +22,7 @@ import (
 	"github.com/BramVR/codemesh/internal/commandresult"
 	"github.com/BramVR/codemesh/internal/config"
 	"github.com/BramVR/codemesh/internal/envbinding"
+	"github.com/BramVR/codemesh/internal/hydrationexecutor"
 	"github.com/BramVR/codemesh/internal/hydrationplanner"
 	"github.com/BramVR/codemesh/internal/machineregistry"
 	"github.com/BramVR/codemesh/internal/presentation"
@@ -1166,11 +1167,6 @@ func runBootstrap(args []string, stdout, stderr io.Writer) int {
 		printBootstrapHelp(stderr)
 		return 2
 	}
-	entries, err := workspacemanifest.LoadEntries(bootstrapArgs.ManifestPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "read workspace manifest: %v\n", err)
-		return 1
-	}
 	store, err := openMigratedStore()
 	if err != nil {
 		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
@@ -1179,15 +1175,44 @@ func runBootstrap(args []string, stdout, stderr io.Writer) int {
 	defer store.Close()
 
 	ctx := context.Background()
-	var result bootstrap.Result
 	if bootstrapArgs.Apply {
-		result, err = bootstrap.Bootstrapper{Store: store}.Apply(ctx, entries)
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, hydrateTimeout)
+		defer cancel()
+	}
+	bootstrapArgs = resolveBootstrapBareTarget(ctx, store, bootstrapArgs)
+	var result bootstrap.Result
+	bootstrapper := bootstrap.Bootstrapper{Store: store}
+	if bootstrapArgs.RegistryMode {
+		if bootstrapArgs.Apply {
+			result, err = bootstrapper.ApplyRegistry(ctx, bootstrapArgs.Projects, bootstrapArgs.All)
+		} else {
+			result, err = bootstrapper.PlanRegistry(ctx, bootstrapArgs.Projects, bootstrapArgs.All)
+		}
 	} else {
-		result, err = bootstrap.Bootstrapper{Store: store}.PlanResult(ctx, entries)
+		entries, err := workspacemanifest.LoadEntries(bootstrapArgs.ManifestPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "read workspace manifest: %v\n", err)
+			return 1
+		}
+		if bootstrapArgs.Apply {
+			result, err = bootstrapper.Apply(ctx, entries)
+		} else {
+			result, err = bootstrapper.PlanResult(ctx, entries)
+		}
 	}
 	if err != nil {
 		var blocked bootstrap.BlockedError
-		if !errors.As(err, &blocked) {
+		var hydrationBlocked bootstrap.HydrationBlockedError
+		if !errors.As(err, &blocked) && !errors.As(err, &hydrationBlocked) {
+			if bootstrapArgs.JSON {
+				commandResult := newBootstrapErrorResult(bootstrapArgs, result, err)
+				if err := presentation.RenderJSON(stdout, commandResult); err != nil {
+					fmt.Fprintf(stderr, "encode bootstrap result: %v\n", err)
+					return commandresult.ExitInternalError.Code()
+				}
+				return bootstrapExitCode(commandResult)
+			}
 			fmt.Fprintf(stderr, "bootstrap workspace: %v\n", err)
 			return 1
 		}
@@ -1222,9 +1247,12 @@ func runBootstrap(args []string, stdout, stderr io.Writer) int {
 
 type parsedBootstrapArgs struct {
 	ManifestPath string
+	Projects     []string
+	All          bool
 	Apply        bool
 	DryRun       bool
 	JSON         bool
+	RegistryMode bool
 }
 
 func parseBootstrapArgs(args []string, stderr io.Writer) (parsedBootstrapArgs, bool) {
@@ -1232,6 +1260,7 @@ func parseBootstrapArgs(args []string, stderr io.Writer) (parsedBootstrapArgs, b
 	var apply bool
 	var dryRun bool
 	var jsonOutput bool
+	var all bool
 	for _, arg := range args {
 		switch arg {
 		case "--apply":
@@ -1240,19 +1269,84 @@ func parseBootstrapArgs(args []string, stderr io.Writer) (parsedBootstrapArgs, b
 			dryRun = true
 		case "--json":
 			jsonOutput = true
+		case "--all":
+			all = true
 		default:
 			manifestPaths = append(manifestPaths, arg)
 		}
 	}
-	if len(manifestPaths) != 1 {
-		fmt.Fprint(stderr, "bootstrap requires exactly one workspace manifest path\n\n")
+	if all && len(manifestPaths) != 0 {
+		fmt.Fprint(stderr, "bootstrap --all does not accept project names or manifest paths\n\n")
+		return parsedBootstrapArgs{}, false
+	}
+	if len(manifestPaths) == 0 && !all {
+		fmt.Fprint(stderr, "bootstrap requires --all, project names, or one workspace manifest path\n\n")
 		return parsedBootstrapArgs{}, false
 	}
 	if apply && dryRun {
 		fmt.Fprint(stderr, "bootstrap accepts only one of --apply or --dry-run\n\n")
 		return parsedBootstrapArgs{}, false
 	}
-	return parsedBootstrapArgs{ManifestPath: manifestPaths[0], Apply: apply, DryRun: dryRun, JSON: jsonOutput}, true
+	parsed := parsedBootstrapArgs{Apply: apply, DryRun: dryRun, JSON: jsonOutput, All: all}
+	switch {
+	case all:
+		parsed.RegistryMode = true
+	case len(manifestPaths) == 1 && looksLikeManifestPath(manifestPaths[0]):
+		parsed.ManifestPath = manifestPaths[0]
+	default:
+		parsed.RegistryMode = true
+		parsed.Projects = append([]string(nil), manifestPaths...)
+	}
+	return parsed, true
+}
+
+func looksLikeManifestPath(value string) bool {
+	if strings.ContainsAny(value, `/\`) || strings.HasSuffix(value, ".json") {
+		return true
+	}
+	return false
+}
+
+func resolveBootstrapBareTarget(ctx context.Context, store interface {
+	ListProjects(context.Context) ([]state.Project, error)
+}, args parsedBootstrapArgs) parsedBootstrapArgs {
+	if !args.RegistryMode && args.ManifestPath != "" && !strings.ContainsAny(args.ManifestPath, `/\`) && aliasRegistered(ctx, store, args.ManifestPath) {
+		args.RegistryMode = true
+		args.Projects = []string{args.ManifestPath}
+		args.ManifestPath = ""
+		return args
+	}
+	if !args.RegistryMode || args.All || len(args.Projects) != 1 {
+		return args
+	}
+	target := args.Projects[0]
+	if strings.ContainsAny(target, `/\`) || strings.HasSuffix(target, ".json") {
+		return args
+	}
+	if aliasRegistered(ctx, store, target) {
+		return args
+	}
+	if _, err := os.Stat(target); err == nil {
+		args.RegistryMode = false
+		args.ManifestPath = target
+		args.Projects = nil
+	}
+	return args
+}
+
+func aliasRegistered(ctx context.Context, store interface {
+	ListProjects(context.Context) ([]state.Project, error)
+}, alias string) bool {
+	projects, err := store.ListProjects(ctx)
+	if err != nil {
+		return false
+	}
+	for _, project := range projects {
+		if project.Alias == alias {
+			return true
+		}
+	}
+	return false
 }
 
 type bootstrapPayload struct {
@@ -1266,6 +1360,7 @@ type bootstrapAppliedPayload struct {
 	ParentDirectories []string                  `json:"parent_directories"`
 	AddedProjects     []bootstrapProjectPayload `json:"added_projects"`
 	UpdatedProjects   []bootstrapProjectPayload `json:"updated_projects"`
+	ClonedProjects    []bootstrapProjectPayload `json:"cloned_projects"`
 }
 
 type bootstrapProjectPayload struct {
@@ -1276,7 +1371,7 @@ type bootstrapProjectPayload struct {
 }
 
 func newBootstrapResult(args parsedBootstrapArgs, result bootstrap.Result) commandresult.Result[bootstrapPayload] {
-	diagnostics := bootstrapDiagnostics(result.Plan.Blockers)
+	diagnostics := bootstrapDiagnostics(result.Plan.Blockers, result.HydrationPlan.Actions)
 	exitClass := commandresult.ExitSuccess
 	if len(diagnostics.Blockers) != 0 {
 		exitClass = commandresult.ExitReadinessBlocked
@@ -1289,11 +1384,22 @@ func newBootstrapResult(args parsedBootstrapArgs, result bootstrap.Result) comma
 	})
 }
 
+func newBootstrapErrorResult(args parsedBootstrapArgs, result bootstrap.Result, err error) commandresult.Result[bootstrapPayload] {
+	commandResult := newBootstrapResult(args, result)
+	diagnostics := commandResult.Diagnostics
+	diagnostics.Blockers = append(diagnostics.Blockers, commandresult.Diagnostic{
+		Code:    "bootstrap-failed",
+		Message: err.Error(),
+	})
+	return commandresult.New("bootstrap", commandresult.ExitInternalError, diagnostics, commandResult.Payload)
+}
+
 func bootstrapApplied(applied bootstrap.Applied) bootstrapAppliedPayload {
 	return bootstrapAppliedPayload{
 		ParentDirectories: append([]string(nil), applied.ParentDirectories...),
 		AddedProjects:     bootstrapProjects(applied.AddedProjects),
 		UpdatedProjects:   bootstrapProjects(applied.UpdatedProjects),
+		ClonedProjects:    bootstrapClonedProjects(applied.ClonedProjects),
 	}
 }
 
@@ -1313,16 +1419,57 @@ func bootstrapProjects(projects []state.Project) []bootstrapProjectPayload {
 	return payloads
 }
 
-func bootstrapDiagnostics(blockers []reconciliation.Blocker) commandresult.Diagnostics {
+func bootstrapClonedProjects(projects []hydrationexecutor.ClonedProject) []bootstrapProjectPayload {
+	if projects == nil {
+		return []bootstrapProjectPayload{}
+	}
+	payloads := make([]bootstrapProjectPayload, 0, len(projects))
+	for _, project := range projects {
+		payloads = append(payloads, bootstrapProjectPayload{
+			Alias:    project.Project,
+			Remote:   project.Remote,
+			CloneURL: project.CloneURL,
+			Path:     project.Path,
+		})
+	}
+	return payloads
+}
+
+func bootstrapDiagnostics(blockers []reconciliation.Blocker, actions []hydrationplanner.Action) commandresult.Diagnostics {
 	diagnostics := commandresult.Diagnostics{}
+	seen := map[string]bool{}
 	for _, blocker := range blockers {
 		target := blocker.Path
 		if target == "" {
 			target = blocker.Alias
 		}
+		key := string(blocker.Kind) + "\x00" + target
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		diagnostics.Blockers = append(diagnostics.Blockers, commandresult.Diagnostic{
 			Code:    string(blocker.Kind),
 			Message: blocker.Reason,
+			Target:  target,
+		})
+	}
+	for _, action := range actions {
+		if action.Action != hydrationplanner.ActionRefuse {
+			continue
+		}
+		target := action.Path
+		if target == "" {
+			target = action.Project
+		}
+		key := string(action.State) + "\x00" + target
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		diagnostics.Blockers = append(diagnostics.Blockers, commandresult.Diagnostic{
+			Code:    string(action.State),
+			Message: action.Reason,
 			Target:  target,
 		})
 	}
@@ -1337,10 +1484,15 @@ func bootstrapExitCode(result commandresult.Result[bootstrapPayload]) int {
 }
 
 func renderBootstrapPayloadHuman(w io.Writer, payload bootstrapPayload) error {
+	workspaceRoot := payload.Plan.WorkspaceRoot
+	if workspaceRoot == "" {
+		workspaceRoot = payload.HydrationPlan.WorkspaceRoot
+	}
+	blocked := payload.Plan.Blocked || payload.HydrationPlan.Blocked
 	fmt.Fprintln(w, "bootstrap plan")
-	fmt.Fprintf(w, "workspace_root: %s\n", payload.Plan.WorkspaceRoot)
+	fmt.Fprintf(w, "workspace_root: %s\n", workspaceRoot)
 	fmt.Fprintf(w, "apply: %t\n", payload.Apply)
-	fmt.Fprintf(w, "blocked: %t\n", payload.Plan.Blocked)
+	fmt.Fprintf(w, "blocked: %t\n", blocked)
 	if len(payload.Plan.Drifts) == 0 {
 		fmt.Fprintln(w, "drifts: none")
 	}
@@ -1353,7 +1505,7 @@ func renderBootstrapPayloadHuman(w io.Writer, payload bootstrapPayload) error {
 	for _, action := range payload.HydrationPlan.Actions {
 		renderHydrationAction(w, action)
 	}
-	if !payload.Apply || payload.Plan.Blocked {
+	if !payload.Apply || payload.Plan.Blocked || payload.HydrationPlan.Blocked {
 		return nil
 	}
 	fmt.Fprintln(w, "applied")
@@ -1376,6 +1528,13 @@ func renderBootstrapPayloadHuman(w io.Writer, payload bootstrapPayload) error {
 	} else {
 		for _, project := range payload.Applied.UpdatedProjects {
 			fmt.Fprintf(w, "updated: %s %s\n", project.Alias, project.Path)
+		}
+	}
+	if len(payload.Applied.ClonedProjects) == 0 {
+		fmt.Fprintln(w, "cloned: none")
+	} else {
+		for _, project := range payload.Applied.ClonedProjects {
+			fmt.Fprintf(w, "cloned: %s %s\n", project.Alias, project.Path)
 		}
 	}
 	return nil
@@ -2362,7 +2521,7 @@ Usage:
   codemesh status [project] [--base branch] [--json]
   codemesh doctor <project> [--base branch] [--strict] [--json]
   codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]
-  codemesh bootstrap <manifest-path> [--dry-run|--apply] [--json]
+  codemesh bootstrap [--all | project... | <manifest-path>] [--dry-run|--apply] [--json]
   codemesh manifest export [--output path]
   codemesh manifest import <path>
   codemesh target export <target-name> --scope scope [--kind kind] [--workspace-root path] [--json]
@@ -2382,7 +2541,7 @@ Commands:
   status     report project readiness
   doctor     preflight agent handoff readiness without creating a run
   hydrate    clone a missing project into its desired path
-  bootstrap  plan or apply workspace topology without cloning
+  bootstrap  plan or clone missing registered projects
   manifest   export or import portable workspace manifests
   target     export target-ready workspace specs
   env        manage private env bindings
@@ -2521,15 +2680,16 @@ Use --json for the stable command result shape.
 }
 
 func printBootstrapHelp(w io.Writer) {
-	fmt.Fprint(w, `Bootstrap workspace topology from a Workspace Manifest.
+	fmt.Fprint(w, `Bootstrap missing workspace projects.
 
 Usage:
-  codemesh bootstrap <manifest-path> [--dry-run|--apply] [--json]
+  codemesh bootstrap [--all | project... | <manifest-path>] [--dry-run|--apply] [--json]
 
-Reads one manifest entry file or a directory of JSON entries.
+With --all or project names, reads registered Projects from the local Project Registry.
+With a manifest path, reads one manifest entry file or a directory of JSON entries first.
 Default mode and --dry-run report the plan only, including clone/refusal actions.
---apply creates parent directories and local Project Registry rows.
-Bootstrap does not clone project content or create project placeholders.
+--apply refuses blockers before Git, then clones missing planned Projects.
+Bootstrap does not create placeholders, start a daemon, mount a filesystem, or sync arbitrary files.
 Use --json for the stable command result shape.
 `)
 }

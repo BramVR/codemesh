@@ -456,6 +456,72 @@ func TestBootstrapJSONReportsPathConflictWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestBootstrapJSONReportsCloneFailureAsInternalError(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	target := filepath.Join(workspace, "alpha")
+	missingRemote := filepath.Join(tmp, "missing.git")
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddProject(context.Background(), state.Project{
+		Alias:            "alpha",
+		NormalizedRemote: "https://example.invalid/bram/alpha",
+		CloneURL:         missingRemote,
+		LocalPath:        target,
+		CanonicalPath:    target,
+		Source:           "canonical",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", "--all", "--apply", "--json"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("bootstrap clone failure exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("bootstrap clone failure stderr = %q, want empty", stderr.String())
+	}
+	var payload struct {
+		Command     string `json:"command"`
+		ExitClass   string `json:"exit_class"`
+		Diagnostics struct {
+			Blockers []struct {
+				Code string `json:"code"`
+			} `json:"blockers"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("bootstrap clone failure stdout was not JSON: %v\n%s", err, stdout.String())
+	}
+	if payload.Command != "bootstrap" || payload.ExitClass != "internal-error" {
+		t.Fatalf("bootstrap clone failure metadata = %#v", payload)
+	}
+	if len(payload.Diagnostics.Blockers) != 1 || payload.Diagnostics.Blockers[0].Code != "bootstrap-failed" {
+		t.Fatalf("bootstrap clone failure diagnostics = %#v", payload.Diagnostics)
+	}
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bootstrap failed clone left target or stat failed unexpectedly: %v", err)
+	}
+}
+
 func TestBootstrapDryRunJSONCarriesSharedHydrationPlan(t *testing.T) {
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, "codemesh-home")
@@ -504,6 +570,552 @@ func TestBootstrapDryRunJSONCarriesSharedHydrationPlan(t *testing.T) {
 		t.Fatalf("dry-run bootstrap created workspace or stat failed unexpectedly: %v", err)
 	}
 	assertProjectRows(t, home, 0)
+}
+
+func TestBootstrapAllClonesRegisteredMissingProjects(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	alphaPath := filepath.Join(workspace, "tools", "alpha")
+	betaPath := filepath.Join(workspace, "beta")
+	alphaObserved := createCommittedLocalRemoteClone(t, "bootstrap-alpha")
+	betaObserved := createCommittedLocalRemoteClone(t, "bootstrap-beta")
+	alphaRemote := strings.TrimSpace(runGitOutput(t, alphaObserved, "remote", "get-url", "origin"))
+	betaRemote := strings.TrimSpace(runGitOutput(t, betaObserved, "remote", "get-url", "origin"))
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, project := range []state.Project{
+		{Alias: "alpha", NormalizedRemote: "https://example.invalid/bram/alpha", CloneURL: alphaRemote, LocalPath: alphaPath, CanonicalPath: alphaPath, Source: "canonical"},
+		{Alias: "beta", NormalizedRemote: "https://example.invalid/bram/beta", CloneURL: betaRemote, LocalPath: betaPath, CanonicalPath: betaPath, Source: "canonical"},
+	} {
+		if _, err := store.AddProject(context.Background(), project); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", "--all", "--apply"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("bootstrap --all exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{"bootstrap plan", "apply: true", "clone: alpha " + alphaPath, "clone: beta " + betaPath, "cloned: alpha " + alphaPath, "cloned: beta " + betaPath} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("bootstrap --all output missing %q:\n%s", want, stdout.String())
+		}
+	}
+	for _, path := range []string{alphaPath, betaPath} {
+		if _, err := os.Stat(filepath.Join(path, "README.md")); err != nil {
+			t.Fatalf("bootstrap clone missing README at %s: %v", path, err)
+		}
+	}
+	if got := strings.TrimSpace(runGitOutput(t, alphaPath, "remote", "get-url", "origin")); got != alphaRemote {
+		t.Fatalf("alpha origin = %q, want clone URL %q", got, alphaRemote)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"hydrate", "alpha", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("hydrate alpha after bootstrap exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if err := assertHydrateJSON(stdout.Bytes(), "success", "alpha", "already-present", alphaPath, true, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBootstrapProjectJSONRefusesUnknownProject(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", "ghost-project", "--apply", "--json"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("bootstrap unknown exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("bootstrap unknown stderr = %q, want empty", stderr.String())
+	}
+	var payload struct {
+		Command     string `json:"command"`
+		ExitClass   string `json:"exit_class"`
+		Diagnostics struct {
+			Blockers []struct {
+				Code   string `json:"code"`
+				Target string `json:"target"`
+			} `json:"blockers"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("bootstrap unknown stdout was not JSON: %v\n%s", err, stdout.String())
+	}
+	if payload.Command != "bootstrap" || payload.ExitClass != "readiness-blocked" {
+		t.Fatalf("bootstrap unknown payload = %#v", payload)
+	}
+	if len(payload.Diagnostics.Blockers) != 1 || payload.Diagnostics.Blockers[0].Code != "unknown-project" || payload.Diagnostics.Blockers[0].Target != "ghost-project" {
+		t.Fatalf("bootstrap unknown diagnostics = %#v", payload.Diagnostics)
+	}
+	if _, err := os.Stat(workspace); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unknown bootstrap created workspace or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestBootstrapUnknownProjectHumanDoesNotPrintApplied(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", "ghost-project", "--apply"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("bootstrap unknown exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("bootstrap unknown stderr = %q, want empty", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "refusal: unknown-project ghost-project") {
+		t.Fatalf("bootstrap unknown output missing refusal:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "blocked: true") {
+		t.Fatalf("bootstrap unknown output did not report blocked plan:\n%s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "applied") {
+		t.Fatalf("bootstrap unknown output claimed apply:\n%s", stdout.String())
+	}
+}
+
+func TestBootstrapProjectAliasWinsOverExistingCwdPath(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	target := filepath.Join(workspace, "registered-docs")
+	remoteSource := createCommittedLocalRemoteClone(t, "bootstrap-docs")
+	remote := strings.TrimSpace(runGitOutput(t, remoteSource, "remote", "get-url", "origin"))
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddProject(context.Background(), state.Project{
+		Alias:            "docs",
+		NormalizedRemote: "https://example.invalid/bram/docs",
+		CloneURL:         remote,
+		LocalPath:        target,
+		CanonicalPath:    target,
+		Source:           "canonical",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", "docs", "--apply"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("bootstrap docs exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "cloned: docs "+target) {
+		t.Fatalf("bootstrap docs output missing cloned project:\n%s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(target, "README.md")); err != nil {
+		t.Fatalf("bootstrap docs did not clone registered alias: %v", err)
+	}
+}
+
+func TestBootstrapProjectAliasEndingJSONWinsOverBareManifestHeuristic(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	target := filepath.Join(workspace, "docs-json")
+	remoteSource := createCommittedLocalRemoteClone(t, "bootstrap-docs-json")
+	remote := strings.TrimSpace(runGitOutput(t, remoteSource, "remote", "get-url", "origin"))
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddProject(context.Background(), state.Project{
+		Alias:            "docs.json",
+		NormalizedRemote: "https://example.invalid/bram/docs-json",
+		CloneURL:         remote,
+		LocalPath:        target,
+		CanonicalPath:    target,
+		Source:           "canonical",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", "docs.json", "--apply"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("bootstrap docs.json exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "cloned: docs.json "+target) {
+		t.Fatalf("bootstrap docs.json output missing cloned project:\n%s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(target, "README.md")); err != nil {
+		t.Fatalf("bootstrap docs.json did not clone registered alias: %v", err)
+	}
+}
+
+func TestBootstrapDuplicateProjectTargetClonesOnce(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	target := filepath.Join(workspace, "alpha")
+	remoteSource := createCommittedLocalRemoteClone(t, "bootstrap-duplicate-alpha")
+	remote := strings.TrimSpace(runGitOutput(t, remoteSource, "remote", "get-url", "origin"))
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddProject(context.Background(), state.Project{
+		Alias:            "alpha",
+		NormalizedRemote: "https://example.invalid/bram/alpha",
+		CloneURL:         remote,
+		LocalPath:        target,
+		CanonicalPath:    target,
+		Source:           "canonical",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", "alpha", "alpha", "--apply"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("bootstrap duplicate exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if strings.Count(stdout.String(), "cloned: alpha "+target) != 1 {
+		t.Fatalf("bootstrap duplicate output =\n%s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(target, "README.md")); err != nil {
+		t.Fatalf("bootstrap duplicate did not clone target: %v", err)
+	}
+}
+
+func TestBootstrapAllPersistsCanonicalPlacementAfterClone(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	staleObserved := filepath.Join(tmp, "old", "alpha")
+	target := filepath.Join(workspace, "alpha")
+	remoteSource := createCommittedLocalRemoteClone(t, "bootstrap-placement-alpha")
+	remote := strings.TrimSpace(runGitOutput(t, remoteSource, "remote", "get-url", "origin"))
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddProject(context.Background(), state.Project{
+		Alias:            "alpha",
+		NormalizedRemote: "https://example.invalid/bram/alpha",
+		CloneURL:         remote,
+		LocalPath:        staleObserved,
+		CanonicalPath:    target,
+		Source:           "canonical",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", "--all", "--apply"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("bootstrap placement exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	projects := listProjectsForTest(t, home)
+	if len(projects) != 1 || projects[0].LocalPath != target || projects[0].CanonicalPath != target || projects[0].Source != "canonical" {
+		t.Fatalf("project placement after bootstrap = %#v, want local_path persisted to canonical target", projects)
+	}
+}
+
+func TestBootstrapAllRefusesPresentCheckoutWithWrongRemote(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	target := filepath.Join(workspace, "alpha")
+	registeredRemote := createBareRemoteForTest(t, "registered-alpha")
+	wrongRemote := createBareRemoteForTest(t, "wrong-alpha")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, filepath.Dir(target), "clone", wrongRemote, target)
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddProject(context.Background(), state.Project{
+		Alias:            "alpha",
+		NormalizedRemote: filepath.Clean(registeredRemote),
+		CloneURL:         registeredRemote,
+		LocalPath:        target,
+		CanonicalPath:    target,
+		Source:           "canonical",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", "--all", "--apply", "--json"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("bootstrap wrong checkout exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("bootstrap wrong checkout stderr = %q, want empty", stderr.String())
+	}
+	var payload struct {
+		ExitClass   string `json:"exit_class"`
+		Diagnostics struct {
+			Blockers []struct {
+				Code   string `json:"code"`
+				Target string `json:"target"`
+			} `json:"blockers"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("bootstrap wrong checkout stdout was not JSON: %v\n%s", err, stdout.String())
+	}
+	if payload.ExitClass != "readiness-blocked" || len(payload.Diagnostics.Blockers) != 1 || payload.Diagnostics.Blockers[0].Code != "path-conflict" || payload.Diagnostics.Blockers[0].Target != target {
+		t.Fatalf("bootstrap wrong checkout payload = %#v", payload)
+	}
+}
+
+func TestBootstrapAllRefusesSymlinkedParentOutsideWorkspace(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	outside := filepath.Join(tmp, "outside")
+	link := filepath.Join(workspace, "link")
+	target := filepath.Join(link, "sub", "alpha")
+	remote := createBareRemoteForTest(t, "symlink-alpha")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddProject(context.Background(), state.Project{
+		Alias:            "alpha",
+		NormalizedRemote: "https://example.invalid/bram/alpha",
+		CloneURL:         remote,
+		LocalPath:        target,
+		CanonicalPath:    target,
+		Source:           "canonical",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", "--all", "--apply"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("bootstrap symlink exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String()+stderr.String(), "outside workspace root") {
+		t.Fatalf("bootstrap symlink output missing unsafe path\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(outside, "sub")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bootstrap cloned through symlink or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestBootstrapFailedCloneKeepsPreexistingEmptyDestination(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	target := filepath.Join(workspace, "alpha")
+	missingRemote := filepath.Join(tmp, "missing.git")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddProject(context.Background(), state.Project{
+		Alias:            "alpha",
+		NormalizedRemote: "https://example.invalid/bram/alpha",
+		CloneURL:         missingRemote,
+		LocalPath:        target,
+		CanonicalPath:    target,
+		Source:           "canonical",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", "--all", "--apply"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("bootstrap missing remote exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	info, err := os.Stat(target)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("bootstrap removed pre-existing target or stat failed: %v", err)
+	}
+	if entries, err := os.ReadDir(target); err != nil || len(entries) != 0 {
+		t.Fatalf("pre-existing target entries = %#v err=%v, want empty dir preserved", entries, err)
+	}
+}
+
+func TestBootstrapBareExistingPathFallsBackToManifestWhenNoAliasMatches(t *testing.T) {
+	tmp := t.TempDir()
+	t.Chdir(tmp)
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	target := filepath.Join(workspace, "tools", "alpha")
+	remoteSource := createCommittedLocalRemoteClone(t, "bootstrap-bare-manifest")
+	remote := strings.TrimSpace(runGitOutput(t, remoteSource, "remote", "get-url", "origin"))
+	manifestDir := filepath.Join(tmp, "manifest")
+	writeManifestEntryWithCloneURL(t, manifestDir, "alpha.json", "https://example.invalid/bram/alpha", "alpha", "tools/alpha", remote)
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", "manifest", "--apply"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("bootstrap manifest exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "cloned: alpha "+target) {
+		t.Fatalf("bootstrap manifest output missing cloned project:\n%s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(target, "README.md")); err != nil {
+		t.Fatalf("bootstrap manifest did not clone target: %v", err)
+	}
+	if got := strings.TrimSpace(runGitOutput(t, target, "remote", "get-url", "origin")); got != remote {
+		t.Fatalf("manifest bootstrap origin = %q, want clone URL %q", got, remote)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"hydrate", "alpha", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("hydrate manifest project after bootstrap exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if err := assertHydrateJSON(stdout.Bytes(), "success", "alpha", "already-present", target, true, nil); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestManifestExportImportMovesCanonicalWorkspaceBetweenMachines(t *testing.T) {
@@ -837,6 +1449,68 @@ func TestHydrateCanonicalProjectPersistsDesiredMachinePath(t *testing.T) {
 	projects := listProjectsForTest(t, home)
 	if len(projects) != 1 || projects[0].LocalPath != canonicalPath || projects[0].CanonicalPath != canonicalPath || projects[0].Source != "canonical" {
 		t.Fatalf("project placement after hydrate = %#v", projects)
+	}
+}
+
+func TestHydrateRefusesSymlinkedParentOutsideWorkspace(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	outside := filepath.Join(tmp, "outside")
+	link := filepath.Join(workspace, "link")
+	target := filepath.Join(link, "sub", "alpha")
+	remote := createBareRemoteForTest(t, "hydrate-symlink-alpha")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+	if _, err := state.Initialize(context.Background(), home, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddProject(context.Background(), state.Project{
+		Alias:            "alpha",
+		NormalizedRemote: "https://example.invalid/bram/alpha",
+		CloneURL:         remote,
+		LocalPath:        target,
+		CanonicalPath:    target,
+		Source:           "canonical",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"hydrate", "alpha", "--json"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("hydrate symlink exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if err := assertHydrateJSON(stdout.Bytes(), "readiness-blocked", "alpha", "unsafe-path", target, false, []string{"unsafe-path"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "outside workspace root") {
+		t.Fatalf("hydrate symlink output missing unsafe path:\n%s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(outside, "sub")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("hydrate cloned through symlink or stat failed unexpectedly: %v", err)
 	}
 }
 
@@ -2053,11 +2727,15 @@ func TestHydrateJSONReportsCloneFailureAsInternalError(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("hydrate clone failure --json exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
 	}
-	if err := assertHydrateJSON(stdout.Bytes(), "internal-error", "hydrate-clone-failure", "failed", source, false, []string{"hydrate-failed"}); err != nil {
+	if err := assertHydrateJSON(stdout.Bytes(), "internal-error", "hydrate-clone-failure", "failed", source, true, []string{"hydrate-failed"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, statErr := os.Stat(source); !os.IsNotExist(statErr) {
-		t.Fatalf("hydrate clone failure left target path or stat failed: %v", statErr)
+	info, statErr := os.Stat(source)
+	if statErr != nil || !info.IsDir() {
+		t.Fatalf("hydrate clone failure removed pre-existing target or stat failed: %v", statErr)
+	}
+	if entries, err := os.ReadDir(source); err != nil || len(entries) != 0 {
+		t.Fatalf("hydrate clone failure target entries = %#v err=%v, want empty dir preserved", entries, err)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("hydrate clone failure --json stderr = %q, want empty", stderr.String())
@@ -2844,6 +3522,11 @@ func assertHydrateJSON(data []byte, exitClass, alias, outcome, path string, path
 
 func writeManifestEntry(t *testing.T, dir, name, identity, alias, desiredPath string) {
 	t.Helper()
+	writeManifestEntryWithCloneURL(t, dir, name, identity, alias, desiredPath, identity+".git")
+}
+
+func writeManifestEntryWithCloneURL(t *testing.T, dir, name, identity, alias, desiredPath, cloneURL string) {
+	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -2851,7 +3534,7 @@ func writeManifestEntry(t *testing.T, dir, name, identity, alias, desiredPath st
 		Identity:    identity,
 		Alias:       alias,
 		DesiredPath: desiredPath,
-		CloneHints:  workspacemanifest.CloneHints{URL: identity + ".git"},
+		CloneHints:  workspacemanifest.CloneHints{URL: cloneURL},
 	})
 	data, err := workspacemanifest.EncodeEntry(entry)
 	if err != nil {
@@ -3099,6 +3782,21 @@ func runGit(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, output)
 	}
+}
+
+func createBareRemoteForTest(t *testing.T, name string) string {
+	t.Helper()
+	root := t.TempDir()
+	seed := filepath.Join(root, name+"-seed")
+	remote := filepath.Join(root, name+".git")
+	runGit(t, root, "init", "-b", "main", seed)
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("# "+name+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, seed, "add", "README.md")
+	runGit(t, seed, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Initial commit")
+	runGit(t, root, "clone", "--bare", seed, remote)
+	return remote
 }
 
 func runGitOutput(t *testing.T, dir string, args ...string) string {
