@@ -449,6 +449,7 @@ func (h *harness) run() int {
 	h.caseInitHelpSmoke()
 	h.caseInitSmoke()
 	h.caseMachineRegisterWorkflow()
+	h.caseManifestExportImportWorkflow()
 	h.caseOfflineGitFixtureSmoke()
 	h.caseNegativeCLIWorkflow()
 	h.caseProjectRegistryScanWorkflow()
@@ -2602,6 +2603,98 @@ func (h *harness) caseMachineRegisterWorkflow() {
 		return
 	}
 	h.record(result{Name: "machine register state row", Status: "PASS", ExitCode: 0})
+}
+
+func (h *harness) caseManifestExportImportWorkflow() {
+	caseRoot := filepath.Join(h.tmp, "manifest-export-import")
+	machineA, err := h.newTwoMachineNode(caseRoot, "machine-a")
+	if err != nil {
+		h.record(result{Name: "manifest export/import machine A setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	machineB, err := h.newTwoMachineNode(caseRoot, "machine-b")
+	if err != nil {
+		h.record(result{Name: "manifest export/import machine B setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	alphaPathA := filepath.Join(machineA.WorkspaceRoot, "tools", "alpha")
+	betaPathA := filepath.Join(machineA.WorkspaceRoot, "apps", "beta")
+	if err := h.createPortableWorkspaceCheckout(alphaPathA, "git@github.com:BramVR/alpha.git"); err != nil {
+		h.record(result{Name: "manifest export/import alpha checkout", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := h.createPortableWorkspaceCheckout(betaPathA, "https://github.com/BramVR/beta.git"); err != nil {
+		h.record(result{Name: "manifest export/import beta checkout", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if init := h.twoMachineCommand("manifest export/import machine A init", machineA, h.bin, "init", machineA.WorkspaceRoot); init.Status != "PASS" {
+		return
+	}
+	if register := h.twoMachineCommand("manifest export/import machine A register", machineA, h.bin, "machine", "register", machineA.WorkspaceRoot); register.Status != "PASS" {
+		return
+	}
+	if add := h.twoMachineCommand("manifest export/import machine A add alpha", machineA, h.bin, "add", alphaPathA, "--alias", "alpha"); add.Status != "PASS" {
+		return
+	}
+	if add := h.twoMachineCommand("manifest export/import machine A add beta", machineA, h.bin, "add", betaPathA, "--alias", "beta"); add.Status != "PASS" {
+		return
+	}
+	manifestPath := filepath.Join(caseRoot, "workspace-manifest.json")
+	exported := h.twoMachineCommand("manifest export/import export", machineA, h.bin, "manifest", "export", "--output", manifestPath)
+	if exported.Status != "PASS" || !resultContainsAll(exported, "manifest exported", "projects: 2") {
+		if exported.Status == "PASS" {
+			exported.Status = "FAIL"
+			exported.Error = "manifest export summary missing"
+			h.updateResultByName(exported)
+		}
+		return
+	}
+	manifest, err := readWorkspaceManifestForE2E(manifestPath)
+	if err != nil {
+		h.record(result{Name: "manifest export/import manifest parse", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if manifest.ManifestVersion != 1 || len(manifest.Projects) != 2 {
+		h.record(result{Name: "manifest export/import manifest shape", Status: "FAIL", Error: fmt.Sprintf("manifest = %#v", manifest), ExitCode: -1})
+		return
+	}
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		h.record(result{Name: "manifest export/import manifest read", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if strings.Contains(string(manifestData), machineA.WorkspaceRoot) {
+		h.record(result{Name: "manifest export/import portability", Status: "FAIL", Error: "machine A absolute workspace path leaked into manifest", ExitCode: -1})
+		return
+	}
+	h.record(result{Name: "manifest export/import portability", Status: "PASS", ExitCode: 0})
+
+	if init := h.twoMachineCommand("manifest export/import machine B init", machineB, h.bin, "init", machineB.WorkspaceRoot); init.Status != "PASS" {
+		return
+	}
+	if register := h.twoMachineCommand("manifest export/import machine B register", machineB, h.bin, "machine", "register", machineB.WorkspaceRoot); register.Status != "PASS" {
+		return
+	}
+	imported := h.twoMachineCommand("manifest export/import import", machineB, h.bin, "manifest", "import", manifestPath)
+	alphaPathB := filepath.Join(machineB.WorkspaceRoot, "tools", "alpha")
+	betaPathB := filepath.Join(machineB.WorkspaceRoot, "apps", "beta")
+	if imported.Status != "PASS" || !resultContainsAll(imported, "manifest imported", "added: beta "+betaPathB, "added: alpha "+alphaPathB) {
+		if imported.Status == "PASS" {
+			imported.Status = "FAIL"
+			imported.Error = "manifest import summary missing machine-local placement"
+			h.updateResultByName(imported)
+		}
+		return
+	}
+	if !h.expectProjectRowsAt("manifest export/import machine B rows", machineB.CodeMeshHome,
+		projectRow{Alias: "alpha", NormalizedRemote: "https://github.com/BramVR/alpha", CloneURL: "git@github.com:BramVR/alpha.git", LocalPath: alphaPathB},
+		projectRow{Alias: "beta", NormalizedRemote: "https://github.com/BramVR/beta", CloneURL: "https://github.com/BramVR/beta.git", LocalPath: betaPathB},
+	) {
+		return
+	}
+	if !h.expectPathMissingResult("manifest export/import alpha remains unhydrated", alphaPathB) || !h.expectPathMissingResult("manifest export/import beta remains unhydrated", betaPathB) {
+		return
+	}
 }
 
 func (h *harness) caseProjectRegistryFixtureWorkflow() {
@@ -5070,6 +5163,53 @@ func writeE2EManifestEntryWithCloneURL(dir, name, identity, alias, desiredPath, 
 }
 `, identity, alias, desiredPath, cloneURL)
 	return os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644)
+}
+
+type e2eWorkspaceManifest struct {
+	ManifestVersion int `json:"manifest_version"`
+	Projects        []struct {
+		Identity    string `json:"identity"`
+		Alias       string `json:"alias"`
+		DesiredPath string `json:"desired_path"`
+		CloneHints  struct {
+			URL string `json:"url"`
+		} `json:"clone_hints"`
+		Groups []string `json:"groups"`
+	} `json:"projects"`
+}
+
+func readWorkspaceManifestForE2E(path string) (e2eWorkspaceManifest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return e2eWorkspaceManifest{}, err
+	}
+	var manifest e2eWorkspaceManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return e2eWorkspaceManifest{}, err
+	}
+	return manifest, nil
+}
+
+func (h *harness) createPortableWorkspaceCheckout(path, remote string) error {
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return err
+	}
+	if _, _, err := h.exec(path, "git", "init", "-b", "main"); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(path, "README.md"), []byte("# portable fixture\n"), 0o644); err != nil {
+		return err
+	}
+	if _, _, err := h.exec(path, "git", "add", "README.md"); err != nil {
+		return err
+	}
+	if _, _, err := h.exec(path, "git", "-c", "user.name=CodeMesh E2E", "-c", "user.email=e2e@example.invalid", "commit", "-m", "Initial portable fixture"); err != nil {
+		return err
+	}
+	if _, _, err := h.exec(path, "git", "remote", "add", "origin", remote); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (h *harness) newTwoMachineNode(root, name string) (twoMachineNode, error) {

@@ -17,7 +17,7 @@ It keeps the canonical project tree visible, checks whether projects are present
 - [Install](install.md): build the current CLI from source and verify it runs.
 - [Quickstart](quickstart.md): try CodeMesh against a local Git remote with isolated state.
 - [Command Catalog](commands.md): see the current runnable command surface.
-- Command references: [init](commands/init.md), [add](commands/add.md), [scan](commands/scan.md), [tree](commands/tree.md), [status](commands/status.md), [doctor](commands/doctor.md), [hydrate](commands/hydrate.md), [agent prepare](commands/agent-prepare.md), [runs](commands/runs.md), and [clean](commands/clean.md).
+- Command references: [init](commands/init.md), [add](commands/add.md), [scan](commands/scan.md), [tree](commands/tree.md), [status](commands/status.md), [doctor](commands/doctor.md), [hydrate](commands/hydrate.md), [manifest export](commands/manifest-export.md), [manifest import](commands/manifest-import.md), [agent prepare](commands/agent-prepare.md), [runs](commands/runs.md), and [clean](commands/clean.md).
 - [Trust Boundaries](trust.md): review what CodeMesh does and does not own.
 - [Local State Model](state.md): understand CodeMesh home, SQLite metadata, and agent run storage.
 
@@ -26,6 +26,7 @@ It keeps the canonical project tree visible, checks whether projects are present
 - Tracks a Project Registry for the intended workspace tree.
 - Shows present, missing, dirty, stale, and env-missing readiness signals.
 - Hydrates registered missing projects through explicit Git clones.
+- Exports and imports portable workspace manifests while keeping SQLite local.
 - Prepares temporary agent workspaces from clean Git bases.
 - Checks env readiness by names and paths only.
 - Reports declared toolchain readiness without installing or building environments.
@@ -39,6 +40,7 @@ CodeMesh does not replace Git, sync arbitrary files, become a cloud drive, creat
 | Area | Current MVP stance |
 | --- | --- |
 | Project Registry | Local SQLite metadata and Git remote identity. |
+| Workspace Manifest | Portable JSON topology exported from and imported into local SQLite. |
 | Readiness | Warnings and blockers derived from the local filesystem and Git state. |
 | Doctor | Agent handoff preflight without creating run state. |
 | Agent Prep | Temporary clone, selected base, policy check, and run metadata. |

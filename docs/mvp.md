@@ -117,6 +117,32 @@ Used by:
 - `agent prepare`
 - `target export`
 
+### Workspace Manifest
+
+Owns the portable canonical workspace topology contract.
+
+Responsibilities:
+
+- deterministic manifest export
+- strict manifest import validation
+- project identity, alias, clone hint, and relative path checks
+- local Project Registry persistence under the importing machine's workspace root
+- secret-free portable metadata
+
+Non-responsibilities:
+
+- syncing manifests between machines
+- storing operational state outside SQLite
+- cloning project content
+- exporting readiness, dirty/stale state, Agent Runs, machine facts, or env values
+
+Used by:
+
+- `manifest export`
+- `manifest import`
+- `bootstrap`
+- `target export`
+
 ### Workspace Target Export
 
 Owns target-ready JSON for future cloud, dev, and agent destinations.
@@ -281,6 +307,28 @@ Rules:
 - blocks path conflicts before mutation
 - does not clone project content by default
 - does not create project placeholder directories
+
+### `codemesh manifest export [--output path]`
+
+Writes the registered canonical workspace as one deterministic portable manifest JSON file. The manifest is the reviewable interface between machines; SQLite remains the local operational store.
+
+Rules:
+
+- requires local machine registration
+- derives desired paths relative to the registered workspace root
+- includes aliases, normalized remotes, clone hints, relative paths, and groups
+- excludes local absolute paths, readiness, machine facts, Agent Runs, env values, and secret values
+
+### `codemesh manifest import <path>`
+
+Validates a portable manifest and persists Project Registry rows for the importing machine.
+
+Rules:
+
+- requires local machine registration
+- rejects unsupported schema versions, unknown fields, unsafe clone hints, duplicate topology, and non-relative paths before mutation
+- resolves each desired path under the importing machine's workspace root
+- does not clone project content or create project placeholders
 
 ### `codemesh target export <target-name>`
 

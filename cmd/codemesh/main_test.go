@@ -456,6 +456,266 @@ func TestBootstrapJSONReportsPathConflictWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestManifestExportImportMovesCanonicalWorkspaceBetweenMachines(t *testing.T) {
+	tmp := t.TempDir()
+	homeA := filepath.Join(tmp, "codemesh-a")
+	homeB := filepath.Join(tmp, "codemesh-b")
+	workspaceA := filepath.Join(tmp, "workspace-a")
+	workspaceB := filepath.Join(tmp, "workspace-b")
+	alphaA := createGitRepoAt(t, filepath.Join(workspaceA, "tools", "alpha"), "git@github.com:BramVR/alpha.git")
+	betaA := createGitRepoAt(t, filepath.Join(workspaceA, "apps", "beta"), "https://github.com/BramVR/beta.git")
+	manifestPath := filepath.Join(tmp, "workspace-manifest.json")
+	manifestPath2 := filepath.Join(tmp, "workspace-manifest-2.json")
+	t.Setenv("CODEMESH_HOME", homeA)
+
+	if code := run([]string{"init", workspaceA}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine A init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspaceA}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine A register exit code = %d, want 0", code)
+	}
+	if code := run([]string{"add", alphaA, "--alias", "alpha"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine A add alpha exit code = %d, want 0", code)
+	}
+	if code := run([]string{"add", betaA, "--alias", "beta"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine A add beta exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"manifest", "export", "--output", manifestPath}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("manifest export exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("manifest export stderr = %q, want empty", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "manifest exported") || !strings.Contains(stdout.String(), "projects: 2") {
+		t.Fatalf("manifest export output missing summary:\n%s", stdout.String())
+	}
+	firstExport, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"manifest", "export", "--output", manifestPath2}, &stdout, &stderr); code != 0 {
+		t.Fatalf("second manifest export exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	secondExport, err := os.ReadFile(manifestPath2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstExport, secondExport) {
+		t.Fatalf("manifest export was not deterministic\nfirst:\n%s\nsecond:\n%s", firstExport, secondExport)
+	}
+	rawManifest := string(firstExport)
+	for _, want := range []string{`"manifest_version": 1`, `"alias": "beta"`, `"desired_path": "apps/beta"`, `"alias": "alpha"`, `"desired_path": "tools/alpha"`} {
+		if !strings.Contains(rawManifest, want) {
+			t.Fatalf("manifest missing %q:\n%s", want, rawManifest)
+		}
+	}
+	for _, forbidden := range []string{workspaceA, homeA, "local_path", "readiness", "agent_run", "secret"} {
+		if strings.Contains(rawManifest, forbidden) {
+			t.Fatalf("manifest leaked %q:\n%s", forbidden, rawManifest)
+		}
+	}
+
+	t.Setenv("CODEMESH_HOME", homeB)
+	if code := run([]string{"init", workspaceB}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine B init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspaceB}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine B register exit code = %d, want 0", code)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"manifest", "import", manifestPath}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("manifest import exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("manifest import stderr = %q, want empty", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "manifest imported") || !strings.Contains(stdout.String(), "added: beta "+filepath.Join(workspaceB, "apps", "beta")) || !strings.Contains(stdout.String(), "added: alpha "+filepath.Join(workspaceB, "tools", "alpha")) {
+		t.Fatalf("manifest import output missing machine B placement:\n%s", stdout.String())
+	}
+	projects := listProjectsForTest(t, homeB)
+	if len(projects) != 2 {
+		t.Fatalf("machine B projects = %#v, want 2", projects)
+	}
+	byAlias := map[string]state.Project{}
+	for _, project := range projects {
+		byAlias[project.Alias] = project
+	}
+	if byAlias["alpha"].LocalPath != filepath.Join(workspaceB, "tools", "alpha") || byAlias["alpha"].NormalizedRemote != "https://github.com/BramVR/alpha" {
+		t.Fatalf("machine B alpha = %#v", byAlias["alpha"])
+	}
+	if byAlias["beta"].LocalPath != filepath.Join(workspaceB, "apps", "beta") || byAlias["beta"].NormalizedRemote != "https://github.com/BramVR/beta" {
+		t.Fatalf("machine B beta = %#v", byAlias["beta"])
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"manifest", "import", manifestPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("second manifest import exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("second manifest import stderr = %q, want empty", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "added: none") || !strings.Contains(stdout.String(), "updated: none") ||
+		!strings.Contains(stdout.String(), "unchanged: beta "+filepath.Join(workspaceB, "apps", "beta")) ||
+		!strings.Contains(stdout.String(), "unchanged: alpha "+filepath.Join(workspaceB, "tools", "alpha")) {
+		t.Fatalf("second manifest import output missing unchanged projects:\n%s", stdout.String())
+	}
+	if projects = listProjectsForTest(t, homeB); len(projects) != 2 {
+		t.Fatalf("machine B projects after second import = %#v, want 2", projects)
+	}
+}
+
+func TestManifestExportRejectsEmptyOutputPath(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"manifest", "export", "--output", ""}, &stdout, &stderr)
+
+	if code != 2 {
+		t.Fatalf("manifest export exit code = %d, want usage failure", code)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "--output requires a path") {
+		t.Fatalf("stderr missing output path error:\n%s", stderr.String())
+	}
+}
+
+func TestManifestExportWritesJSONToStdoutWithoutSummary(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	projectPath := createGitRepoAt(t, filepath.Join(workspace, "alpha"), "https://github.com/BramVR/alpha.git")
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	if code := run([]string{"add", projectPath, "--alias", "alpha"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"manifest", "export"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("manifest export exit code = %d, want 0\nstderr:\n%s", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "manifest exported") {
+		t.Fatalf("stdout included human summary in JSON mode:\n%s", stdout.String())
+	}
+	manifest, err := workspacemanifest.DecodeWorkspace(stdout.Bytes())
+	if err != nil {
+		t.Fatalf("DecodeWorkspace(stdout) error = %v\nstdout:\n%s", err, stdout.String())
+	}
+	if len(manifest.Projects) != 1 || manifest.Projects[0].Alias != "alpha" {
+		t.Fatalf("manifest = %#v, want alpha project", manifest)
+	}
+}
+
+func TestManifestImportRejectsUnsafeManifestBeforePersisting(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	manifestPath := filepath.Join(tmp, "bad-manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(`{
+  "manifest_version": 1,
+  "projects": [
+    {
+      "identity": "https://github.com/BramVR/alpha",
+      "alias": "alpha",
+      "desired_path": "alpha",
+      "clone_hints": {
+        "url": "https://user:leak-marker@example.invalid/org/alpha.git"
+      },
+      "groups": [],
+      "secret_value": "leak-marker"
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"manifest", "import", manifestPath}, &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatalf("manifest import exit code = 0, want failure\nstdout:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "unknown field") {
+		t.Fatalf("stderr missing schema validation error:\n%s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "leak-marker") || strings.Contains(stdout.String(), "leak-marker") {
+		t.Fatalf("import validation leaked secret marker\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	}
+	assertProjectRows(t, home, 0)
+}
+
+func TestManifestImportRejectsValidPathConflictBeforePersisting(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	conflictPath := filepath.Join(workspace, "alpha")
+	if err := os.MkdirAll(conflictPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(tmp, "conflicting-manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(`{
+  "manifest_version": 1,
+  "projects": [
+    {
+      "identity": "https://github.com/BramVR/alpha",
+      "alias": "alpha",
+      "desired_path": "alpha",
+      "clone_hints": {},
+      "groups": []
+    }
+  ]
+}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"manifest", "import", manifestPath}, &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatalf("manifest import exit code = 0, want conflict failure\nstdout:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "exists outside the Project Registry") {
+		t.Fatalf("stderr missing path conflict:\n%s", stderr.String())
+	}
+	assertProjectRows(t, home, 0)
+}
+
 func TestTargetExportJSONIncludesTopologyMachineAndScopedEnvRefs(t *testing.T) {
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, "codemesh-home")
@@ -2239,6 +2499,14 @@ func writeManifestEntry(t *testing.T, dir, name, identity, alias, desiredPath st
 
 func assertProjectRows(t *testing.T, home string, want int) {
 	t.Helper()
+	projects := listProjectsForTest(t, home)
+	if len(projects) != want {
+		t.Fatalf("project rows = %d, want %d: %#v", len(projects), want, projects)
+	}
+}
+
+func listProjectsForTest(t *testing.T, home string) []state.Project {
+	t.Helper()
 	store, err := state.Open(filepath.Join(home, "codemesh.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -2248,9 +2516,7 @@ func assertProjectRows(t *testing.T, home string, want int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(projects) != want {
-		t.Fatalf("project rows = %d, want %d: %#v", len(projects), want, projects)
-	}
+	return projects
 }
 
 func assertGitStatusClean(t *testing.T, dir string) {

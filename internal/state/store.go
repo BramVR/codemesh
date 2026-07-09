@@ -95,8 +95,15 @@ type Machine struct {
 }
 
 type SQLiteStore struct {
-	db   *sql.DB
+	db   sqlExecutor
+	root *sql.DB
 	home string
+}
+
+type sqlExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 func Initialize(ctx context.Context, home, workspaceRoot string) (InitResult, error) {
@@ -171,7 +178,7 @@ func Open(path string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open state database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	return &SQLiteStore{db: db, home: home}, nil
+	return &SQLiteStore{db: db, root: db, home: home}, nil
 }
 
 func (s *SQLiteStore) Migrate(ctx context.Context) error {
@@ -184,7 +191,10 @@ create table if not exists schema_migrations (
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	if s.root == nil {
+		return errors.New("migration requires root database handle")
+	}
+	tx, err := s.root.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin migration: %w", err)
 	}
@@ -358,6 +368,27 @@ on conflict(key) do update set value = excluded.value, updated_at = excluded.upd
 	return nil
 }
 
+func (s *SQLiteStore) WithTransaction(ctx context.Context, fn func(*SQLiteStore) error) error {
+	if s.root == nil {
+		return errors.New("transaction requires root database handle")
+	}
+	tx, err := s.root.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	txStore := &SQLiteStore{db: tx, home: s.home}
+	if err := fn(txStore); err != nil {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			return fmt.Errorf("%w; rollback failed: %v", err, rollbackErr)
+		}
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteStore) AddProject(ctx context.Context, project Project) (Project, error) {
 	if project.Alias == "" {
 		return Project{}, errors.New("project alias is required")
@@ -505,6 +536,24 @@ where id = ?
 	return project, nil
 }
 
+func (s *SQLiteStore) DeleteProject(ctx context.Context, id int64) error {
+	if id == 0 {
+		return errors.New("project id is required")
+	}
+	result, err := s.db.ExecContext(ctx, `delete from projects where id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete project %d: %w", id, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check project %d delete: %w", id, err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("project %d not found", id)
+	}
+	return nil
+}
+
 func (s *SQLiteStore) ListProjects(ctx context.Context) ([]Project, error) {
 	rows, err := s.db.QueryContext(ctx, `
 select id, alias, normalized_remote, clone_url, local_path
@@ -548,7 +597,10 @@ func (s *SQLiteStore) RegisterMachine(ctx context.Context, facts MachineFacts) (
 		return Machine{}, errors.New("machine workspace root is required")
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	if s.root == nil {
+		return Machine{}, errors.New("machine registration requires root database handle")
+	}
+	tx, err := s.root.BeginTx(ctx, nil)
 	if err != nil {
 		return Machine{}, fmt.Errorf("begin machine registration: %w", err)
 	}
@@ -814,7 +866,10 @@ func (s *SQLiteStore) DeleteAgentRuns(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	if s.root == nil {
+		return errors.New("agent run delete requires root database handle")
+	}
+	tx, err := s.root.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin agent run delete: %w", err)
 	}
@@ -859,7 +914,10 @@ where id = ?
 }
 
 func (s *SQLiteStore) Close() error {
-	return s.db.Close()
+	if s.root == nil {
+		return nil
+	}
+	return s.root.Close()
 }
 
 func pathExists(path string) (bool, error) {

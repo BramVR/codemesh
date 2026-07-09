@@ -18,6 +18,8 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 - [`codemesh doctor <project> [--base branch] [--strict] [--json]`](commands/doctor.md)
 - [`codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]`](commands/hydrate.md)
 - [`codemesh bootstrap <manifest-path> [--apply] [--json]`](commands/bootstrap.md)
+- [`codemesh manifest export [--output path]`](commands/manifest-export.md)
+- [`codemesh manifest import <path>`](commands/manifest-import.md)
 - [`codemesh target export <target-name> --scope scope [--kind kind] [--workspace-root path] [--json]`](commands/target-export.md)
 - [`codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope`](commands/env-bind.md)
 - [`codemesh machine register [workspace-root] [--name name] [--json]`](commands/machine-register.md)
@@ -85,13 +87,14 @@ Use `codemesh hydrate <project>` after a project is already registered and its d
 
 Use `codemesh bootstrap <manifest-path>` after `codemesh machine register` to preview shared Workspace Manifest topology on the current machine. Add `--apply` to create only parent directories and local Project Registry rows; project content stays missing until explicit hydration.
 
+Use `codemesh manifest export --output <path>` on a registered machine to write the canonical Workspace Manifest as a deterministic portable JSON file. Use `codemesh manifest import <path>` on another registered machine to validate that manifest and persist matching Project Registry rows under that machine's workspace root.
+
 Use `codemesh target export <target-name> --scope scope --json` after `codemesh machine register` to package the current manifest topology, local machine facts, target facts, and scoped Env Binding references into a target-ready JSON contract. The export is local-only and does not contact Coder, DevPod, Daytona, or any live provider.
 
 ## Planned Or Unimplemented
 
 These directions remain product direction, not runnable commands today:
 
-- workspace manifest import commands for Git-backed desired topology
 - multi-machine sync
 - synced manifests or remote project indexes
 - live secret providers or env file writing
@@ -100,4 +103,4 @@ These directions remain product direction, not runnable commands today:
 
 Research docs may sketch future commands for those areas. Treat them as planned until they appear in current CLI help and this catalog.
 
-The current Workspace Manifest input for `bootstrap` is one JSON entry file or a directory of small per-project desired-topology entries: project identity, alias, relative desired path, clone hints, and grouping. It must not export observed readiness, dirty/stale status, Agent Runs, machine facts, env values, or secret values. `target export` wraps that desired topology with target/machine facts and scoped Env Binding references for future adapters. Coder, DevPod, and Daytona are future adapters over this target shape, not integrations in this command.
+The current Workspace Manifest command surface writes and imports one deterministic JSON file with schema version and sorted project topology: project identity, alias, relative desired path, clone hints, and grouping. Legacy bootstrap input remains one JSON entry file or a directory of small per-project desired-topology entries. Manifest files must not export observed readiness, dirty/stale status, Agent Runs, machine facts, env values, or secret values. `target export` wraps that desired topology with target/machine facts and scoped Env Binding references for future adapters. Coder, DevPod, and Daytona are future adapters over this target shape, not integrations in this command.

@@ -16,6 +16,8 @@
         "commands/doctor.md",
         "commands/hydrate.md",
         "commands/bootstrap.md",
+        "commands/manifest-export.md",
+        "commands/manifest-import.md",
         "commands/target-export.md",
         "commands/env-bind.md",
         "commands/machine-register.md",

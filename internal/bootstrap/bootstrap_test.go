@@ -302,6 +302,16 @@ func (s *memoryStore) UpdateProject(_ context.Context, id int64, project state.P
 	return state.Project{}, errors.New("not found")
 }
 
+func (s *memoryStore) DeleteProject(_ context.Context, id int64) error {
+	for i := range s.projects {
+		if s.projects[i].ID == id {
+			s.projects = append(s.projects[:i], s.projects[i+1:]...)
+			return nil
+		}
+	}
+	return errors.New("not found")
+}
+
 func hasAppliedParent(result Result, path string) bool {
 	for _, parent := range result.Applied.ParentDirectories {
 		if parent == path {
