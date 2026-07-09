@@ -56,7 +56,7 @@ func TestVersionReportsReleaseVersion(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
-	if got, want := strings.TrimSpace(stdout.String()), "codemesh 0.1.0"; got != want {
+	if got, want := strings.TrimSpace(stdout.String()), "codemesh 0.2.0"; got != want {
 		t.Fatalf("version output = %q, want %q", got, want)
 	}
 	if stderr.Len() != 0 {

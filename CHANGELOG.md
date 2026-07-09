@@ -1,8 +1,14 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 - 2026-07-09
 
-Target next patch: `v0.1.1`.
+### Highlights
+
+- Portable workspace topology now has the full loop: manifest import/export, machine status, missing-project planning, and guarded bootstrap/hydrate execution.
+- Agent handoff works from source-less registered Projects, including registry clone sources, selected source-mode metadata, and access-triggered lazy hydration.
+- Workspace structure is more visible and safer: metadata-only placeholders, explicit local-only path policy, and public Crabbox proof artifacts show what CodeMesh will touch before it touches it.
+
+### Changes
 
 - Added Local-only path policy declarations for dependency, build, cache, generated, env/config, and OS-specific paths, with `tree`, `status`, hydration/bootstrap plans, and Agent Prep metadata surfacing those decisions while rejecting ambiguous source-as-local-only policy: https://github.com/BramVR/codemesh/issues/143
 - Added command-triggered lazy Hydration with `codemesh access <project>`, so known missing or Placeholder Projects hydrate through the shared safety planner and report before/after workspace-state transitions without daemon, mount, or background sync behavior: https://github.com/BramVR/codemesh/issues/141
