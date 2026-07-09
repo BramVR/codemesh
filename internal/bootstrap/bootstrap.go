@@ -18,6 +18,7 @@ type Store interface {
 	ListMachines(context.Context) ([]state.Machine, error)
 	AddProject(context.Context, state.Project) (state.Project, error)
 	UpdateProject(context.Context, int64, state.Project) (state.Project, error)
+	DeleteProject(context.Context, int64) error
 }
 
 type Bootstrapper struct {
@@ -81,97 +82,13 @@ func (b Bootstrapper) Apply(ctx context.Context, entries []workspacemanifest.Ent
 		result.Applied.ParentDirectories = append(result.Applied.ParentDirectories, parent)
 	}
 
-	updated, err := b.applyUpdates(ctx, importPlan.Changes, projects)
+	importResult, err := workspacemanifest.ApplyImportPlan(ctx, b.Store, importPlan, projects)
 	if err != nil {
 		return result, err
 	}
-	result.Applied.UpdatedProjects = append(result.Applied.UpdatedProjects, updated...)
-	for _, change := range importPlan.Changes {
-		if change.Action == workspacemanifest.ChangeAdd {
-			project, err := b.Store.AddProject(ctx, projectFromImportChange(change))
-			if err != nil {
-				return result, fmt.Errorf("add bootstrap project %q: %w", change.Alias, err)
-			}
-			result.Applied.AddedProjects = append(result.Applied.AddedProjects, project)
-		}
-	}
+	result.Applied.UpdatedProjects = append(result.Applied.UpdatedProjects, importResult.UpdatedProjects...)
+	result.Applied.AddedProjects = append(result.Applied.AddedProjects, importResult.AddedProjects...)
 	return result, nil
-}
-
-func (b Bootstrapper) applyUpdates(ctx context.Context, changes []workspacemanifest.ImportChange, projects []state.Project) ([]state.Project, error) {
-	updates := make([]workspacemanifest.ImportChange, 0, len(changes))
-	for _, change := range changes {
-		if change.Action == workspacemanifest.ChangeUpdate {
-			updates = append(updates, change)
-		}
-	}
-	if len(updates) == 0 {
-		return nil, nil
-	}
-
-	byID := make(map[int64]state.Project, len(projects))
-	usedAliases := make(map[string]bool, len(projects)+len(updates))
-	for _, project := range projects {
-		byID[project.ID] = project
-		usedAliases[project.Alias] = true
-	}
-	for _, change := range updates {
-		usedAliases[change.Alias] = true
-	}
-
-	tempAliases := make(map[int64]string)
-	for _, change := range updates {
-		current, ok := byID[change.ProjectID]
-		if !ok || current.Alias == change.Alias {
-			continue
-		}
-		tempAliases[change.ProjectID] = bootstrapTempAlias(change.ProjectID, usedAliases)
-	}
-	for _, change := range updates {
-		tempAlias, ok := tempAliases[change.ProjectID]
-		if !ok {
-			continue
-		}
-		current := byID[change.ProjectID]
-		current.Alias = tempAlias
-		if _, err := b.Store.UpdateProject(ctx, change.ProjectID, current); err != nil {
-			return nil, fmt.Errorf("free bootstrap project alias %q: %w", change.Alias, err)
-		}
-	}
-
-	updated := make([]state.Project, 0, len(updates))
-	for _, change := range updates {
-		project, err := b.Store.UpdateProject(ctx, change.ProjectID, projectFromImportChange(change))
-		if err != nil {
-			return nil, fmt.Errorf("update bootstrap project %q: %w", change.Alias, err)
-		}
-		updated = append(updated, project)
-	}
-	return updated, nil
-}
-
-func bootstrapTempAlias(projectID int64, used map[string]bool) string {
-	for suffix := 0; ; suffix++ {
-		alias := fmt.Sprintf("__codemesh_bootstrap_%d", projectID)
-		if suffix > 0 {
-			alias = fmt.Sprintf("%s_%d", alias, suffix)
-		}
-		if used[alias] {
-			continue
-		}
-		used[alias] = true
-		return alias
-	}
-}
-
-func projectFromImportChange(change workspacemanifest.ImportChange) state.Project {
-	return state.Project{
-		ID:               change.ProjectID,
-		Alias:            change.Alias,
-		NormalizedRemote: change.Identity,
-		CloneURL:         change.CloneURL,
-		LocalPath:        change.LocalPath,
-	}
 }
 
 func parentDirectories(plan reconciliation.DriftPlan) []string {

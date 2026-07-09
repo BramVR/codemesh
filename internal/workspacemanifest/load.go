@@ -55,6 +55,22 @@ func LoadEntries(path string) ([]Entry, error) {
 	return entries, nil
 }
 
+func LoadWorkspace(path string) (WorkspaceManifest, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return WorkspaceManifest{}, fmt.Errorf("workspace manifest path is required")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return WorkspaceManifest{}, fmt.Errorf("read workspace manifest %q: %w", path, err)
+	}
+	manifest, err := DecodeWorkspace(data)
+	if err != nil {
+		return WorkspaceManifest{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return manifest, nil
+}
+
 func loadEntryFile(path string) (Entry, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

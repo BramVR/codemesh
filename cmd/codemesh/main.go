@@ -69,6 +69,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runHydrate(args[1:], stdout, stderr)
 	case "bootstrap":
 		return runBootstrap(args[1:], stdout, stderr)
+	case "manifest":
+		return runManifest(args[1:], stdout, stderr)
 	case "target":
 		return runTarget(args[1:], stdout, stderr)
 	case "env":
@@ -85,6 +87,163 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unknown command: %s\n\n", args[0])
 		printHelp(stderr)
 		return 2
+	}
+}
+
+func runManifest(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" || args[0] == "help" {
+		printManifestHelp(stdout)
+		return 0
+	}
+	switch args[0] {
+	case "export":
+		return runManifestExport(args[1:], stdout, stderr)
+	case "import":
+		return runManifestImport(args[1:], stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown manifest command: %s\n\n", args[0])
+		printManifestHelp(stderr)
+		return 2
+	}
+}
+
+func runManifestExport(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printManifestExportHelp(stdout)
+		return 0
+	}
+	outputPath, ok := parseManifestExportArgs(args, stderr)
+	if !ok {
+		printManifestExportHelp(stderr)
+		return 2
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+	machine, err := currentMachine(context.Background(), store)
+	if err != nil {
+		fmt.Fprintf(stderr, "export workspace manifest: %v\n", err)
+		return 1
+	}
+	projects, err := store.ListProjects(context.Background())
+	if err != nil {
+		fmt.Fprintf(stderr, "read project registry: %v\n", err)
+		return 1
+	}
+	manifest, err := workspacemanifest.ExportWorkspace(projects, machine.WorkspaceRoot)
+	if err != nil {
+		fmt.Fprintf(stderr, "export workspace manifest: %v\n", err)
+		return 1
+	}
+	data, err := workspacemanifest.EncodeWorkspace(manifest)
+	if err != nil {
+		fmt.Fprintf(stderr, "encode workspace manifest: %v\n", err)
+		return 1
+	}
+	if outputPath == "" {
+		if _, err := stdout.Write(data); err != nil {
+			fmt.Fprintf(stderr, "write workspace manifest: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		fmt.Fprintf(stderr, "create manifest output parent: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(outputPath, data, 0o644); err != nil {
+		fmt.Fprintf(stderr, "write workspace manifest: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "manifest exported\npath: %s\nprojects: %d\n", outputPath, len(manifest.Projects))
+	return 0
+}
+
+func runManifestImport(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printManifestImportHelp(stdout)
+		return 0
+	}
+	manifestPath, ok := parseManifestImportArgs(args, stderr)
+	if !ok {
+		printManifestImportHelp(stderr)
+		return 2
+	}
+	manifest, err := workspacemanifest.LoadWorkspace(manifestPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "read workspace manifest: %v\n", err)
+		return 1
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+	machine, err := currentMachine(context.Background(), store)
+	if err != nil {
+		fmt.Fprintf(stderr, "import workspace manifest: %v\n", err)
+		return 1
+	}
+	result, err := workspacemanifest.ApplyImport(context.Background(), store, manifest, machine.WorkspaceRoot)
+	if err != nil {
+		fmt.Fprintf(stderr, "import workspace manifest: %v\n", err)
+		return 1
+	}
+	renderManifestImportHuman(stdout, machine.WorkspaceRoot, manifest, result)
+	return 0
+}
+
+func parseManifestExportArgs(args []string, stderr io.Writer) (string, bool) {
+	var outputPath string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--output":
+			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "manifest export --output requires a path\n\n")
+				return "", false
+			}
+			outputPath = args[i+1]
+			i++
+		default:
+			fmt.Fprintf(stderr, "unknown manifest export argument: %s\n\n", args[i])
+			return "", false
+		}
+	}
+	return outputPath, true
+}
+
+func parseManifestImportArgs(args []string, stderr io.Writer) (string, bool) {
+	if len(args) != 1 {
+		fmt.Fprint(stderr, "manifest import requires exactly one manifest path\n\n")
+		return "", false
+	}
+	return args[0], true
+}
+
+func renderManifestImportHuman(stdout io.Writer, workspaceRoot string, manifest workspacemanifest.WorkspaceManifest, result workspacemanifest.ApplyImportResult) {
+	fmt.Fprintf(stdout, "manifest imported\nworkspace_root: %s\nprojects: %d\n", workspaceRoot, len(manifest.Projects))
+	renderManifestImportProjects(stdout, "added", result.AddedProjects)
+	renderManifestImportProjects(stdout, "updated", result.UpdatedProjects)
+	unchanged := make([]state.Project, 0)
+	for _, change := range result.Plan.Changes {
+		if change.Action == workspacemanifest.ChangeUnchanged {
+			unchanged = append(unchanged, state.Project{Alias: change.Alias, LocalPath: change.LocalPath})
+		}
+	}
+	renderManifestImportProjects(stdout, "unchanged", unchanged)
+}
+
+func renderManifestImportProjects(stdout io.Writer, label string, projects []state.Project) {
+	if len(projects) == 0 {
+		fmt.Fprintf(stdout, "%s: none\n", label)
+		return
+	}
+	for _, project := range projects {
+		fmt.Fprintf(stdout, "%s: %s %s\n", label, project.Alias, project.LocalPath)
 	}
 }
 
@@ -2131,6 +2290,8 @@ Usage:
   codemesh doctor <project> [--base branch] [--strict] [--json]
   codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]
   codemesh bootstrap <manifest-path> [--apply] [--json]
+  codemesh manifest export [--output path]
+  codemesh manifest import <path>
   codemesh target export <target-name> --scope scope [--kind kind] [--workspace-root path] [--json]
   codemesh env bind <project> <requirement> --provider fake --ref secret-ref --scope scope
   codemesh machine register [workspace-root] [--name name] [--json]
@@ -2149,12 +2310,43 @@ Commands:
   doctor     preflight agent handoff readiness without creating a run
   hydrate    clone a missing project into its desired path
   bootstrap  plan or apply workspace topology without cloning
+  manifest   export or import portable workspace manifests
   target     export target-ready workspace specs
   env        manage private env bindings
   machine    register this machine locally
   agent      prepare and run agent workspaces
   runs       list prepared agent runs
   clean      delete old CodeMesh-managed agent runs
+`)
+}
+
+func printManifestHelp(w io.Writer) {
+	fmt.Fprint(w, `Export or import portable workspace manifests.
+
+Usage:
+  codemesh manifest export [--output path]
+  codemesh manifest import <path>
+`)
+}
+
+func printManifestExportHelp(w io.Writer) {
+	fmt.Fprint(w, `Export a portable Workspace Manifest.
+
+Usage:
+  codemesh manifest export [--output path]
+
+Writes JSON to stdout unless --output is provided.
+Requires machine registration so canonical paths are relative to the registered workspace root.
+`)
+}
+
+func printManifestImportHelp(w io.Writer) {
+	fmt.Fprint(w, `Import a portable Workspace Manifest.
+
+Usage:
+  codemesh manifest import <path>
+
+Validates manifest schema and stores Project Registry rows under this machine's registered workspace root.
 `)
 }
 

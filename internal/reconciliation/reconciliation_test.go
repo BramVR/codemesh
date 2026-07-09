@@ -45,6 +45,80 @@ func TestDryRunPlanReportsWorkspaceDriftWithoutMutating(t *testing.T) {
 	}
 }
 
+func TestDryRunPlanComparesCanonicalSymlinkedWorkspacePaths(t *testing.T) {
+	tmp := t.TempDir()
+	realWorkspace := filepath.Join(tmp, "real-workspace")
+	if err := os.MkdirAll(filepath.Join(realWorkspace, "apps", "alpha"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkWorkspace := filepath.Join(tmp, "link-workspace")
+	if err := os.Symlink(realWorkspace, linkWorkspace); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	plan, err := BuildDryRunPlan([]workspacemanifest.Entry{
+		manifestEntry("https://github.com/BramVR/alpha", "alpha", "apps/alpha"),
+	}, []state.Project{
+		project(1, "alpha", "https://github.com/BramVR/alpha", filepath.Join(realWorkspace, "apps", "alpha")),
+	}, machine(linkWorkspace))
+	if err != nil {
+		t.Fatalf("BuildDryRunPlan error = %v", err)
+	}
+
+	assertDrift(t, plan, "https://github.com/BramVR/alpha", DriftUnchanged, filepath.Join(linkWorkspace, "apps", "alpha"))
+}
+
+func TestDryRunPlanAllowsMissingProjectUnderSymlinkedWorkspaceRoot(t *testing.T) {
+	tmp := t.TempDir()
+	realWorkspace := filepath.Join(tmp, "real-workspace")
+	if err := os.MkdirAll(realWorkspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkWorkspace := filepath.Join(tmp, "link-workspace")
+	if err := os.Symlink(realWorkspace, linkWorkspace); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	plan, err := BuildDryRunPlan([]workspacemanifest.Entry{
+		manifestEntry("https://github.com/BramVR/alpha", "alpha", "apps/alpha"),
+	}, nil, machine(linkWorkspace))
+	if err != nil {
+		t.Fatalf("BuildDryRunPlan error = %v", err)
+	}
+
+	assertDrift(t, plan, "https://github.com/BramVR/alpha", DriftMissing, filepath.Join(linkWorkspace, "apps", "alpha"))
+	if plan.Blocked {
+		t.Fatalf("plan = %#v, want unblocked symlink-root missing project", plan)
+	}
+}
+
+func TestDryRunPlanBlocksSymlinkedDesiredPathOutsideWorkspaceRoot(t *testing.T) {
+	tmp := t.TempDir()
+	workspace := filepath.Join(tmp, "workspace")
+	outside := filepath.Join(tmp, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "shared")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	plan, err := BuildDryRunPlan([]workspacemanifest.Entry{
+		manifestEntry("https://github.com/BramVR/alpha", "alpha", "shared/alpha"),
+	}, nil, machine(workspace))
+	if err != nil {
+		t.Fatalf("BuildDryRunPlan error = %v", err)
+	}
+
+	assertDrift(t, plan, "https://github.com/BramVR/alpha", DriftConflicting, filepath.Join(workspace, "shared", "alpha"))
+	if !plan.Blocked || !hasBlocker(plan, BlockerPathConflict, "https://github.com/BramVR/alpha") {
+		t.Fatalf("plan = %#v, want outside-workspace path blocker", plan)
+	}
+}
+
 func TestDryRunPlanBlocksFilesystemPathConflictWithoutWriting(t *testing.T) {
 	workspace := t.TempDir()
 	conflictPath := filepath.Join(workspace, "src", "taken")

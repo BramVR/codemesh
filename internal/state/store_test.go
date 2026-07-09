@@ -129,6 +129,40 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestWithTransactionRollsBackProjectMutations(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "codemesh.db"))
+	if err != nil {
+		t.Fatalf("Open error = %v", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate error = %v", err)
+	}
+
+	err = store.WithTransaction(ctx, func(tx *SQLiteStore) error {
+		if _, err := tx.AddProject(ctx, Project{
+			Alias:            "alpha",
+			NormalizedRemote: "https://github.com/BramVR/alpha",
+			CloneURL:         "https://github.com/BramVR/alpha.git",
+			LocalPath:        filepath.Join(t.TempDir(), "alpha"),
+		}); err != nil {
+			return err
+		}
+		return errors.New("rollback marker")
+	})
+	if err == nil || !strings.Contains(err.Error(), "rollback marker") {
+		t.Fatalf("WithTransaction error = %v, want rollback marker", err)
+	}
+	projects, err := store.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects error = %v", err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("projects after rollback = %#v, want none", projects)
+	}
+}
+
 func TestMigrateDeduplicatesRemoteRowsBeforeUniqueIndex(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "codemesh.db")

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -123,6 +122,7 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 	}
 
 	plan := DriftPlan{WorkspaceRoot: root}
+	compareRoot := workspacemanifest.CanonicalPathForComparison(root)
 	seenDesiredIdentities := map[string]bool{}
 	seenDesiredPaths := map[string]string{}
 	for _, project := range projects {
@@ -135,6 +135,7 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 		project := entry.Project
 		desiredLocalPath := filepath.Join(root, filepath.FromSlash(project.DesiredPath))
 		desiredLocalPath = filepath.Clean(desiredLocalPath)
+		desiredComparePath := workspacemanifest.CanonicalPathForComparison(desiredLocalPath)
 		drift := Drift{
 			Identity:         project.Identity,
 			Alias:            project.Alias,
@@ -148,16 +149,20 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 			continue
 		}
 		seenDesiredIdentities[project.Identity] = true
+		if !workspacemanifest.PathWithinRoot(compareRoot, desiredComparePath) {
+			plan.addConflict(drift, BlockerPathConflict, desiredLocalPath, "desired path resolves outside workspace root")
+			continue
+		}
 		aliasOwnerIdentity, aliasTaken := aliasOwner[project.Alias]
 		aliasConflict := aliasTaken && aliasOwnerIdentity != project.Identity
-		pathOwnerIdentity, pathTaken := seenDesiredPaths[desiredLocalPath]
+		pathOwnerIdentity, pathTaken := seenDesiredPaths[desiredComparePath]
 		pathConflict := pathTaken && pathOwnerIdentity != project.Identity
-		nestedPathOwnerIdentity, nestedPath, nestedPathConflict := nestedDesiredPathConflict(seenDesiredPaths, desiredLocalPath, project.Identity)
+		nestedPathOwnerIdentity, nestedPath, nestedPathConflict := workspacemanifest.NestedDesiredPathConflict(seenDesiredPaths, desiredComparePath, project.Identity)
 		if !aliasConflict {
 			aliasOwner[project.Alias] = project.Identity
 		}
 		if !pathConflict && !nestedPathConflict {
-			seenDesiredPaths[desiredLocalPath] = project.Identity
+			seenDesiredPaths[desiredComparePath] = project.Identity
 		}
 		if aliasConflict {
 			plan.addConflict(drift, BlockerAliasConflict, "", fmt.Sprintf("alias %q already belongs to %q", project.Alias, aliasOwnerIdentity))
@@ -174,11 +179,11 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 
 		observed, exists := byIdentity[project.Identity]
 		if !exists {
-			if owner, ok := byPath[desiredLocalPath]; ok && owner.NormalizedRemote != project.Identity {
+			if owner, ok := byPath[desiredComparePath]; ok && owner.NormalizedRemote != project.Identity {
 				plan.addConflict(drift, BlockerPathConflict, desiredLocalPath, fmt.Sprintf("desired path is already registered to %q", owner.NormalizedRemote))
 				continue
 			}
-			if reason, blocked := pathConflictReason(desiredLocalPath); blocked {
+			if reason, blocked := workspacemanifest.PathConflictReason(desiredLocalPath); blocked {
 				plan.addConflict(drift, BlockerPathConflict, desiredLocalPath, reason)
 				continue
 			}
@@ -190,16 +195,16 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 		drift.ProjectID = observed.ID
 		drift.ObservedLocalPath = observed.LocalPath
 		observedPath := cleanPath(observed.LocalPath)
-		if observedPath == desiredLocalPath {
+		if observedPath == desiredComparePath {
 			drift.Kind = DriftUnchanged
 			plan.Drifts = append(plan.Drifts, drift)
 			continue
 		}
-		if owner, ok := byPath[desiredLocalPath]; ok && owner.NormalizedRemote != project.Identity {
+		if owner, ok := byPath[desiredComparePath]; ok && owner.NormalizedRemote != project.Identity {
 			plan.addConflict(drift, BlockerPathConflict, desiredLocalPath, fmt.Sprintf("desired path is already registered to %q", owner.NormalizedRemote))
 			continue
 		}
-		if reason, blocked := pathConflictReason(desiredLocalPath); blocked {
+		if reason, blocked := workspacemanifest.PathConflictReason(desiredLocalPath); blocked {
 			plan.addConflict(drift, BlockerPathConflict, desiredLocalPath, reason)
 			continue
 		}
@@ -281,27 +286,7 @@ func cleanPath(path string) string {
 	if err == nil {
 		path = abs
 	}
-	return filepath.Clean(path)
-}
-
-func nestedDesiredPathConflict(seen map[string]string, desiredPath, desiredIdentity string) (string, string, bool) {
-	for existingPath, existingIdentity := range seen {
-		if existingIdentity == desiredIdentity {
-			continue
-		}
-		if pathIsAncestor(existingPath, desiredPath) || pathIsAncestor(desiredPath, existingPath) {
-			return existingIdentity, existingPath, true
-		}
-	}
-	return "", "", false
-}
-
-func pathIsAncestor(parent, child string) bool {
-	rel, err := filepath.Rel(parent, child)
-	if err != nil {
-		return false
-	}
-	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return workspacemanifest.CanonicalPathForComparison(path)
 }
 
 func cloneURLFor(project workspacemanifest.ProjectEntry) string {
@@ -309,40 +294,6 @@ func cloneURLFor(project workspacemanifest.ProjectEntry) string {
 		return project.CloneHints.URL
 	}
 	return project.Identity
-}
-
-func pathConflictReason(path string) (string, bool) {
-	_, err := os.Lstat(path)
-	switch {
-	case err == nil:
-		return "desired path already exists outside the Project Registry", true
-	case errors.Is(err, os.ErrNotExist):
-		return parentPathConflictReason(path)
-	default:
-		return "desired path could not be checked safely: " + err.Error(), true
-	}
-}
-
-func parentPathConflictReason(path string) (string, bool) {
-	for parent := filepath.Dir(path); parent != "." && parent != string(filepath.Separator); parent = filepath.Dir(parent) {
-		info, err := os.Lstat(parent)
-		switch {
-		case err == nil:
-			if !info.IsDir() {
-				return fmt.Sprintf("desired path parent %q exists and is not a directory", parent), true
-			}
-			return "", false
-		case errors.Is(err, os.ErrNotExist):
-			next := filepath.Dir(parent)
-			if next == parent {
-				return "", false
-			}
-			continue
-		default:
-			return "desired path parent could not be checked safely: " + err.Error(), true
-		}
-	}
-	return "", false
 }
 
 func sortedProjects(projects []state.Project) []state.Project {
