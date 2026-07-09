@@ -140,6 +140,77 @@ func TestPlannerBuildsSameCloneActionFromBootstrapManifestAndHydrateRegistry(t *
 	}
 }
 
+func TestPlannerReadsLocalOnlyPolicyFromObservedCanonicalCheckout(t *testing.T) {
+	workspace := t.TempDir()
+	observed := filepath.Join(workspace, "old", "alpha")
+	target := filepath.Join(workspace, "tools", "alpha")
+	if err := os.MkdirAll(filepath.Join(observed, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(observed, ".codemesh.yml"), []byte("local_only:\n  paths:\n    - path: node_modules\n      category: dependency\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := memoryStore{
+		machines: []state.Machine{machine(workspace)},
+		projects: []state.Project{{
+			ID:               1,
+			Alias:            "alpha",
+			NormalizedRemote: "https://example.invalid/alpha",
+			CloneURL:         "https://example.invalid/alpha.git",
+			LocalPath:        observed,
+			CanonicalPath:    target,
+			Source:           "canonical",
+		}},
+	}
+
+	plan, err := New(store).PlanProject(context.Background(), "alpha", clonestrategy.Options{})
+	if err != nil {
+		t.Fatalf("PlanProject error = %v", err)
+	}
+
+	action := assertAction(t, plan, "alpha", StateMissing, ActionClone, target)
+	if len(action.LocalOnlyPaths) != 1 || action.LocalOnlyPaths[0].Path != "node_modules" || action.LocalOnlyPaths[0].Category != "dependency" {
+		t.Fatalf("local_only_paths = %#v", action.LocalOnlyPaths)
+	}
+}
+
+func TestPlannerRejectsInvalidLocalOnlyPolicyFromObservedCanonicalCheckout(t *testing.T) {
+	workspace := t.TempDir()
+	observed := filepath.Join(workspace, "old", "alpha")
+	target := filepath.Join(workspace, "tools", "alpha")
+	if err := os.MkdirAll(filepath.Join(observed, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(observed, ".codemesh.yml"), []byte("local_only:\n  paths:\n    - path: src\n      category: source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := memoryStore{
+		machines: []state.Machine{machine(workspace)},
+		projects: []state.Project{{
+			ID:               1,
+			Alias:            "alpha",
+			NormalizedRemote: "https://example.invalid/alpha",
+			CloneURL:         "https://example.invalid/alpha.git",
+			LocalPath:        observed,
+			CanonicalPath:    target,
+			Source:           "canonical",
+		}},
+	}
+
+	plan, err := New(store).PlanProject(context.Background(), "alpha", clonestrategy.Options{})
+	if err != nil {
+		t.Fatalf("PlanProject error = %v", err)
+	}
+
+	action := assertAction(t, plan, "alpha", StatePathConflict, ActionRefuse, target)
+	if !strings.Contains(action.Reason, "source content must stay in Git-managed source") {
+		t.Fatalf("reason = %q", action.Reason)
+	}
+	if !plan.Blocked {
+		t.Fatalf("Blocked = false, want invalid observed policy to block clone")
+	}
+}
+
 func assertAction(t *testing.T, plan Plan, alias string, state State, action ActionKind, path string) Action {
 	t.Helper()
 	for _, item := range plan.Actions {

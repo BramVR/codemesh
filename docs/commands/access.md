@@ -19,7 +19,7 @@ codemesh access <project> [--partial-clone] [--sparse path] [--json]
 
 Access one known Project and hydrate it when its desired path is missing or contains an unmodified CodeMesh-owned Placeholder. This is command-triggered lazy Hydration: it reuses the same Hydration Planner and clone executor as [`codemesh hydrate`](hydrate.md), records the before/after transition in the command result, and leaves `tree` and `status` to report the derived final workspace state.
 
-Use `--json` to emit the stable Command Result shape. The payload reports `trigger: command-access`, `outcome`, the project path, the transition from `missing`, `placeholder`, or `hydrated` to the final state, and the nested hydrate payload with the planner action. Path conflicts, unsafe paths, unknown projects, modified placeholders, and mismatched placeholders are refused before Git runs.
+Use `--json` to emit the stable Command Result shape. The payload reports `trigger: command-access`, `outcome`, the project path, the transition from `missing`, `placeholder`, or `hydrated` to the final state, and the nested hydrate payload with the planner action. The planner action includes `local_only_paths` when policy is available before the clone decision. Path conflicts, unsafe paths, invalid policy, unknown projects, modified placeholders, and mismatched placeholders are refused before Git runs.
 
 Like `hydrate`, `access` defaults to the `full-clone` Clone Strategy. `--partial-clone` and repeatable `--sparse path` are explicit Git-native clone strategy options, not background file sync.
 

@@ -26,6 +26,7 @@ import (
 	"github.com/BramVR/codemesh/internal/hydrationplanner"
 	"github.com/BramVR/codemesh/internal/machineregistry"
 	"github.com/BramVR/codemesh/internal/placeholder"
+	"github.com/BramVR/codemesh/internal/policy"
 	"github.com/BramVR/codemesh/internal/presentation"
 	"github.com/BramVR/codemesh/internal/readiness"
 	"github.com/BramVR/codemesh/internal/reconciliation"
@@ -2408,6 +2409,7 @@ func buildTreeResult(ctx context.Context, projects []state.Project) (commandresu
 			WorkspaceSource:      report.Project.Source,
 			State:                string(report.State),
 			WorkspaceState:       workspaceState(report),
+			LocalOnlyPaths:       localOnlyPaths(report.LocalOnlyPaths),
 			Path:                 report.Project.LocalPath,
 			PathPresent:          report.LocalPathPresent,
 			CanonicalPath:        report.Project.CanonicalPath,
@@ -2544,6 +2546,7 @@ type statusProject struct {
 	WorkspaceSource      string                    `json:"workspace_source"`
 	State                string                    `json:"state"`
 	WorkspaceState       string                    `json:"workspace_state"`
+	LocalOnlyPaths       []policy.PathRule         `json:"local_only_paths"`
 	Path                 string                    `json:"path"`
 	PathPresent          bool                      `json:"path_present"`
 	CanonicalPath        string                    `json:"canonical_path"`
@@ -2592,6 +2595,7 @@ func newStatusResult(projectName string, reports []readiness.ProjectReport, comm
 			WorkspaceSource:      report.Project.Source,
 			State:                string(report.State),
 			WorkspaceState:       workspaceState(report),
+			LocalOnlyPaths:       localOnlyPaths(report.LocalOnlyPaths),
 			Path:                 report.Project.LocalPath,
 			PathPresent:          report.LocalPathPresent,
 			CanonicalPath:        report.Project.CanonicalPath,
@@ -2607,6 +2611,13 @@ func newStatusResult(projectName string, reports []readiness.ProjectReport, comm
 		Project:  projectName,
 		Projects: projects,
 	})
+}
+
+func localOnlyPaths(paths []policy.PathRule) []policy.PathRule {
+	if len(paths) == 0 {
+		return []policy.PathRule{}
+	}
+	return append([]policy.PathRule(nil), paths...)
 }
 
 func pathPresent(path string) bool {

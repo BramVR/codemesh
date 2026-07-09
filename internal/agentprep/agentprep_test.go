@@ -184,6 +184,44 @@ func TestPrepareRecordsToolchainReadinessInRunContract(t *testing.T) {
 	}
 }
 
+func TestPrepareRecordsLocalOnlyPolicyWithoutCopyingMachineJunk(t *testing.T) {
+	project := createFixtureProject(t, "prepare-local-only")
+	writeFile(t, filepath.Join(project.LocalPath, ".codemesh.yml"), `local_only:
+  paths:
+    - path: node_modules
+      category: dependency
+    - path: dist
+      category: build
+`)
+	runGit(t, project.LocalPath, "add", ".codemesh.yml")
+	runGit(t, project.LocalPath, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Declare local-only policy")
+	runGit(t, project.LocalPath, "push", "origin", "main")
+	if err := os.MkdirAll(filepath.Join(project.LocalPath, "node_modules", "left-pad"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(project.LocalPath, "node_modules", "left-pad", "index.js"), "module.exports = 1\n")
+	store := newMemoryStore(project)
+	preparer := testPreparer(t.TempDir(), store)
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+
+	if err != nil {
+		t.Fatalf("Prepare error = %v", err)
+	}
+	metadata := readMetadata(t, result.ReadyPath)
+	if len(metadata.Project.LocalOnlyPaths) != 2 ||
+		metadata.Project.LocalOnlyPaths[0].Path != "node_modules" ||
+		metadata.Project.LocalOnlyPaths[0].Category != "dependency" {
+		t.Fatalf("metadata local-only paths = %#v", metadata.Project.LocalOnlyPaths)
+	}
+	if _, err := os.Stat(filepath.Join(result.ReadyPath, "node_modules")); !os.IsNotExist(err) {
+		t.Fatalf("prepared workspace included local-only dependency directory or stat failed: %v", err)
+	}
+	if strings.Contains(store.runs[0].MetadataJSON, "left-pad") {
+		t.Fatalf("metadata leaked local-only dependency content:\n%s", store.runs[0].MetadataJSON)
+	}
+}
+
 func TestPrepareMissingSourceCheckoutClonesFromRegisteredRemote(t *testing.T) {
 	project := createFixtureProject(t, "missing-source-prep")
 	if err := os.RemoveAll(project.LocalPath); err != nil {

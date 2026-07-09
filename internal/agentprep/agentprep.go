@@ -216,6 +216,7 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 			SourceMode:        sourceMode(decision.SourcePathMissing),
 			SourcePath:        project.LocalPath,
 			LocalPath:         project.LocalPath,
+			LocalOnlyPaths:    readyPolicy.LocalOnly.Paths,
 			SourcePathMissing: decision.SourcePathMissing,
 			ProjectID:         project.ID,
 		},

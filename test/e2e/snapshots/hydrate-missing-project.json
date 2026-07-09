@@ -35,6 +35,7 @@
               "name": "",
               "working_tree": ""
             },
+            "local_only_paths": [],
             "path_present": false,
             "project": "ghost-project",
             "reason": "unknown project: ghost-project",

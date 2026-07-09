@@ -21,7 +21,7 @@ Clone missing registered Projects into their desired local paths, or materialize
 
 Bootstrap also keeps the manifest topology path from earlier MVP slices: when the positional argument is a manifest file or directory, CodeMesh reads the Workspace Manifest entries, compares them with the registered machine workspace root, inserts or updates local Project Registry rows on `--apply` or `--placeholders`, and then consumes the same planned clone/refusal actions.
 
-By default bootstrap is a dry run; `--dry-run` makes that explicit. The dry-run output includes planned clones for missing Projects and refusals for path conflicts, unsafe paths, or unknown Projects. With `--placeholders`, bootstrap refuses the same blockers, writes `.codemesh-placeholder.json`, `CODEMESH_PLACEHOLDER.txt`, and an invalid `.git` barrier file, and does not clone source content. With `--apply`, bootstrap refuses blockers before invoking Git, then clones planned missing Projects from their registered clone source. Bootstrap does not start a daemon, mount a filesystem, sync arbitrary files, install tools, or touch env materialization.
+By default bootstrap is a dry run; `--dry-run` makes that explicit. The dry-run output includes planned clones for missing Projects, declared local-only policy paths when the source checkout is present, and refusals for path conflicts, unsafe paths, invalid policy, or unknown Projects. With `--placeholders`, bootstrap refuses the same blockers, writes `.codemesh-placeholder.json`, `CODEMESH_PLACEHOLDER.txt`, and an invalid `.git` barrier file, and does not clone source content. With `--apply`, bootstrap refuses blockers before invoking Git, then clones planned missing Projects from their registered clone source. Bootstrap does not start a daemon, mount a filesystem, sync arbitrary files, install tools, or touch env materialization.
 
 Use `--json` to emit the stable Command Result shape.
 
@@ -74,6 +74,7 @@ codemesh tree
 - Requires `codemesh machine register` first so the machine workspace root is known.
 - Reads local manifest files only; it does not fetch, publish, or sync manifests.
 - Refuses path conflicts and unsafe paths without mutation.
+- Refuses invalid `.codemesh.yml` local-only policy when that policy is available during planning.
 - Placeholder directories are metadata-only sentinels, not usable Git checkouts; explicit `codemesh hydrate <project>` can replace an unmodified CodeMesh-owned placeholder with a real clone.
 - Executes Git clones only for planned missing registered Projects. Existing present Projects are left alone, and conflicts are refused before Git.
 

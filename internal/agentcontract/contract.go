@@ -12,6 +12,7 @@ import (
 
 	"github.com/BramVR/codemesh/internal/clonestrategy"
 	"github.com/BramVR/codemesh/internal/gitops"
+	"github.com/BramVR/codemesh/internal/policy"
 	"github.com/BramVR/codemesh/internal/toolchain"
 )
 
@@ -51,6 +52,7 @@ type ProjectInput struct {
 	SourceMode        string
 	SourcePath        string
 	LocalPath         string
+	LocalOnlyPaths    []policy.PathRule
 	SourcePathMissing bool
 	ProjectID         int64
 }
@@ -76,14 +78,15 @@ type Contract struct {
 }
 
 type ProjectInfo struct {
-	Alias             string `json:"alias"`
-	Remote            string `json:"remote"`
-	CloneURL          string `json:"clone_url"`
-	SourceMode        string `json:"source_mode"`
-	SourcePath        string `json:"source_path"`
-	LocalPath         string `json:"local_path"`
-	SourcePathMissing bool   `json:"source_path_missing"`
-	ProjectID         int64  `json:"project_id,omitempty"`
+	Alias             string            `json:"alias"`
+	Remote            string            `json:"remote"`
+	CloneURL          string            `json:"clone_url"`
+	SourceMode        string            `json:"source_mode"`
+	SourcePath        string            `json:"source_path"`
+	LocalPath         string            `json:"local_path"`
+	LocalOnlyPaths    []policy.PathRule `json:"local_only_paths"`
+	SourcePathMissing bool              `json:"source_path_missing"`
+	ProjectID         int64             `json:"project_id,omitempty"`
 }
 
 type HandoffDoc struct {
@@ -183,6 +186,7 @@ func New(input Input) Contract {
 			SourceMode:        normalizeSourceMode(input.Project.SourceMode, input.Project.SourcePathMissing),
 			SourcePath:        input.Project.SourcePath,
 			LocalPath:         input.Project.LocalPath,
+			LocalOnlyPaths:    normalizeLocalOnlyPaths(input.Project.LocalOnlyPaths),
 			SourcePathMissing: input.Project.SourcePathMissing,
 			ProjectID:         input.Project.ProjectID,
 		},
@@ -201,6 +205,13 @@ func New(input Input) Contract {
 		},
 		CreatedAt: input.CreatedAt.UTC().Format(time.RFC3339),
 	}
+}
+
+func normalizeLocalOnlyPaths(paths []policy.PathRule) []policy.PathRule {
+	if len(paths) == 0 {
+		return []policy.PathRule{}
+	}
+	return append([]policy.PathRule(nil), paths...)
 }
 
 func RedactCloneURL(raw string) string {
@@ -336,6 +347,7 @@ func normalizeContract(contract Contract) Contract {
 	contract.Producer = normalizeProducer(contract.Producer)
 	contract.Project.CloneURL = RedactCloneURL(contract.Project.CloneURL)
 	contract.Project.SourceMode = normalizeSourceMode(contract.Project.SourceMode, contract.Project.SourcePathMissing)
+	contract.Project.LocalOnlyPaths = normalizeLocalOnlyPaths(contract.Project.LocalOnlyPaths)
 	contract.BaseProvenance = normalizeBaseProvenance(contract.BaseProvenance, contract.Base, contract.ResolvedCommit, contract.Project.Remote)
 	contract.CloneStrategy = clonestrategy.NormalizeSelection(contract.CloneStrategy)
 	contract.Env = normalizeEnv(contract.Env)

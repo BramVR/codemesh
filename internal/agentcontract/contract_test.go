@@ -172,12 +172,12 @@ func TestEncodePreservesEmptyContractListsAsArrays(t *testing.T) {
 		t.Fatalf("Encode error = %v", err)
 	}
 	raw := string(data)
-	for _, want := range []string{`"requirements": []`, `"allowed_scopes": []`, `"toolchain": []`, `"handoff_docs": []`, `"warnings": []`, `"blockers": []`} {
+	for _, want := range []string{`"local_only_paths": []`, `"requirements": []`, `"allowed_scopes": []`, `"toolchain": []`, `"handoff_docs": []`, `"warnings": []`, `"blockers": []`} {
 		if !strings.Contains(raw, want) {
 			t.Fatalf("encoded contract missing %s:\n%s", want, raw)
 		}
 	}
-	if strings.Contains(raw, `"requirements": null`) || strings.Contains(raw, `"allowed_scopes": null`) || strings.Contains(raw, `"toolchain": null`) || strings.Contains(raw, `"handoff_docs": null`) || strings.Contains(raw, `"warnings": null`) || strings.Contains(raw, `"blockers": null`) {
+	if strings.Contains(raw, `"local_only_paths": null`) || strings.Contains(raw, `"requirements": null`) || strings.Contains(raw, `"allowed_scopes": null`) || strings.Contains(raw, `"toolchain": null`) || strings.Contains(raw, `"handoff_docs": null`) || strings.Contains(raw, `"warnings": null`) || strings.Contains(raw, `"blockers": null`) {
 		t.Fatalf("encoded contract used null list fields:\n%s", raw)
 	}
 }
@@ -224,6 +224,9 @@ func TestDecodeAcceptsLegacyMetadataForLocalRunListing(t *testing.T) {
 	}
 	if contract.ContractVersion != ContractVersion || contract.Producer.Name != ProducerName || contract.Producer.Version == "" {
 		t.Fatalf("legacy contract defaults = version %d producer %#v", contract.ContractVersion, contract.Producer)
+	}
+	if contract.Project.LocalOnlyPaths == nil {
+		t.Fatalf("legacy local-only paths = nil, want empty array")
 	}
 	projection, err := contract.ListProjection(time.Time{}, contract.ReadyPath)
 	if err != nil {
