@@ -26,6 +26,23 @@
       "outcome": "unknown-project",
       "path": "",
       "path_present": false,
+      "plan": {
+        "actions": [
+          {
+            "action": "refuse",
+            "clone_strategy": {
+              "history": "",
+              "name": "",
+              "working_tree": ""
+            },
+            "path_present": false,
+            "project": "ghost-project",
+            "reason": "unknown project: ghost-project",
+            "state": "unknown-project"
+          }
+        ],
+        "blocked": true
+      },
       "project": "ghost-project",
       "remote": ""
     }

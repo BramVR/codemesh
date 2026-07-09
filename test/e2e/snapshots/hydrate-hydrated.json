@@ -25,6 +25,29 @@
       "outcome": "hydrated",
       "path": "<FIXTURE_SOURCES>/contract-hydrate-target",
       "path_present": true,
+      "plan": {
+        "actions": [
+          {
+            "action": "clone",
+            "canonical_path": "<FIXTURE_SOURCES>/contract-hydrate-target",
+            "clone_strategy": {
+              "history": "full",
+              "name": "full-clone",
+              "working_tree": "complete"
+            },
+            "clone_url": "<FIXTURE_REMOTES>/contract-hydrate-target.git",
+            "identity": "<FIXTURE_REMOTES>/contract-hydrate-target.git",
+            "observed_path": "<FIXTURE_SOURCES>/contract-hydrate-target",
+            "path": "<FIXTURE_SOURCES>/contract-hydrate-target",
+            "path_present": false,
+            "project": "contract-hydrate-target",
+            "project_id": 13,
+            "source": "local-only",
+            "state": "missing"
+          }
+        ],
+        "blocked": false
+      },
       "project": "contract-hydrate-target",
       "remote": "<FIXTURE_REMOTES>/contract-hydrate-target.git"
     }

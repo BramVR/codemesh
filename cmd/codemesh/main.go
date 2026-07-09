@@ -22,6 +22,7 @@ import (
 	"github.com/BramVR/codemesh/internal/commandresult"
 	"github.com/BramVR/codemesh/internal/config"
 	"github.com/BramVR/codemesh/internal/envbinding"
+	"github.com/BramVR/codemesh/internal/hydrationplanner"
 	"github.com/BramVR/codemesh/internal/machineregistry"
 	"github.com/BramVR/codemesh/internal/presentation"
 	"github.com/BramVR/codemesh/internal/readiness"
@@ -1060,6 +1061,7 @@ type hydratePayload struct {
 	PathPresent   bool                     `json:"path_present"`
 	Remote        string                   `json:"remote"`
 	CloneStrategy *clonestrategy.Selection `json:"clone_strategy,omitempty"`
+	Plan          hydrationplanner.Plan    `json:"plan"`
 }
 
 func newHydrateResult(result registry.HydrateResult) commandresult.Result[hydratePayload] {
@@ -1074,6 +1076,7 @@ func newHydrateResult(result registry.HydrateResult) commandresult.Result[hydrat
 		PathPresent:   true,
 		Remote:        result.Project.NormalizedRemote,
 		CloneStrategy: cloneStrategyPayload(result.CloneStrategy),
+		Plan:          result.Plan,
 	})
 }
 
@@ -1089,6 +1092,7 @@ func newHydrateErrorResult(projectName string, result registry.HydrateResult, er
 		Path:          project.LocalPath,
 		Remote:        project.NormalizedRemote,
 		CloneStrategy: cloneStrategyPayload(result.CloneStrategy),
+		Plan:          result.Plan,
 	}
 	if project.LocalPath != "" {
 		if _, statErr := os.Stat(project.LocalPath); statErr == nil {
@@ -1100,13 +1104,21 @@ func newHydrateErrorResult(projectName string, result registry.HydrateResult, er
 	exitClass := commandresult.ExitInternalError
 	diagnostic := commandresult.Diagnostic{Code: "hydrate-failed", Message: err.Error(), Target: alias}
 	var conflict registry.PathConflictError
+	var unsafe registry.UnsafePathError
+	var unknown registry.UnknownProjectError
 	if errors.As(err, &conflict) {
 		exitClass = commandresult.ExitReadinessBlocked
 		payload.Outcome = "path-conflict"
 		payload.Path = conflict.Path
 		payload.PathPresent = true
 		diagnostic = commandresult.Diagnostic{Code: "path-conflict", Message: err.Error(), Target: conflict.Path}
-	} else if strings.HasPrefix(err.Error(), "unknown project:") {
+	} else if errors.As(err, &unsafe) {
+		exitClass = commandresult.ExitReadinessBlocked
+		payload.Outcome = "unsafe-path"
+		payload.Path = unsafe.Path
+		payload.PathPresent = hydratePlanPathPresent(result.Plan, unsafe.Path)
+		diagnostic = commandresult.Diagnostic{Code: "unsafe-path", Message: err.Error(), Target: unsafe.Path}
+	} else if errors.As(err, &unknown) || strings.HasPrefix(err.Error(), "unknown project:") {
 		exitClass = commandresult.ExitReadinessBlocked
 		payload.Outcome = "unknown-project"
 		diagnostic = commandresult.Diagnostic{Code: "unknown-project", Message: err.Error(), Target: alias}
@@ -1114,6 +1126,15 @@ func newHydrateErrorResult(projectName string, result registry.HydrateResult, er
 	return commandresult.New("hydrate", exitClass, commandresult.Diagnostics{
 		Blockers: []commandresult.Diagnostic{diagnostic},
 	}, payload)
+}
+
+func hydratePlanPathPresent(plan hydrationplanner.Plan, path string) bool {
+	for _, action := range plan.Actions {
+		if action.Path == path {
+			return action.PathPresent
+		}
+	}
+	return false
 }
 
 func hydrateExitCode(result commandresult.Result[hydratePayload]) int {
@@ -1127,6 +1148,9 @@ func renderHydratePayloadHuman(w io.Writer, payload hydratePayload) error {
 	if payload.Outcome == "already-present" {
 		fmt.Fprintf(w, "project already present: %s\npath: %s\n", payload.Project, payload.Path)
 		return nil
+	}
+	for _, action := range payload.Plan.Actions {
+		renderHydrationAction(w, action)
 	}
 	fmt.Fprintf(w, "hydrated project: %s\npath: %s\nremote: %s\n", payload.Project, payload.Path, payload.Remote)
 	return nil
@@ -1159,9 +1183,7 @@ func runBootstrap(args []string, stdout, stderr io.Writer) int {
 	if bootstrapArgs.Apply {
 		result, err = bootstrap.Bootstrapper{Store: store}.Apply(ctx, entries)
 	} else {
-		plan, planErr := bootstrap.Bootstrapper{Store: store}.Plan(ctx, entries)
-		result = bootstrap.Result{Plan: plan}
-		err = planErr
+		result, err = bootstrap.Bootstrapper{Store: store}.PlanResult(ctx, entries)
 	}
 	if err != nil {
 		var blocked bootstrap.BlockedError
@@ -1201,17 +1223,21 @@ func runBootstrap(args []string, stdout, stderr io.Writer) int {
 type parsedBootstrapArgs struct {
 	ManifestPath string
 	Apply        bool
+	DryRun       bool
 	JSON         bool
 }
 
 func parseBootstrapArgs(args []string, stderr io.Writer) (parsedBootstrapArgs, bool) {
 	var manifestPaths []string
 	var apply bool
+	var dryRun bool
 	var jsonOutput bool
 	for _, arg := range args {
 		switch arg {
 		case "--apply":
 			apply = true
+		case "--dry-run":
+			dryRun = true
 		case "--json":
 			jsonOutput = true
 		default:
@@ -1222,13 +1248,18 @@ func parseBootstrapArgs(args []string, stderr io.Writer) (parsedBootstrapArgs, b
 		fmt.Fprint(stderr, "bootstrap requires exactly one workspace manifest path\n\n")
 		return parsedBootstrapArgs{}, false
 	}
-	return parsedBootstrapArgs{ManifestPath: manifestPaths[0], Apply: apply, JSON: jsonOutput}, true
+	if apply && dryRun {
+		fmt.Fprint(stderr, "bootstrap accepts only one of --apply or --dry-run\n\n")
+		return parsedBootstrapArgs{}, false
+	}
+	return parsedBootstrapArgs{ManifestPath: manifestPaths[0], Apply: apply, DryRun: dryRun, JSON: jsonOutput}, true
 }
 
 type bootstrapPayload struct {
-	Apply   bool                     `json:"apply"`
-	Plan    reconciliation.DriftPlan `json:"plan"`
-	Applied bootstrapAppliedPayload  `json:"applied"`
+	Apply         bool                     `json:"apply"`
+	Plan          reconciliation.DriftPlan `json:"plan"`
+	HydrationPlan hydrationplanner.Plan    `json:"hydration_plan"`
+	Applied       bootstrapAppliedPayload  `json:"applied"`
 }
 
 type bootstrapAppliedPayload struct {
@@ -1251,9 +1282,10 @@ func newBootstrapResult(args parsedBootstrapArgs, result bootstrap.Result) comma
 		exitClass = commandresult.ExitReadinessBlocked
 	}
 	return commandresult.New("bootstrap", exitClass, diagnostics, bootstrapPayload{
-		Apply:   args.Apply,
-		Plan:    result.Plan,
-		Applied: bootstrapApplied(result.Applied),
+		Apply:         args.Apply,
+		Plan:          result.Plan,
+		HydrationPlan: result.HydrationPlan,
+		Applied:       bootstrapApplied(result.Applied),
 	})
 }
 
@@ -1318,6 +1350,9 @@ func renderBootstrapPayloadHuman(w io.Writer, payload bootstrapPayload) error {
 	for _, blocker := range payload.Plan.Blockers {
 		fmt.Fprintf(w, "blocker: %s %s %s\n", blocker.Kind, blocker.Path, blocker.Reason)
 	}
+	for _, action := range payload.HydrationPlan.Actions {
+		renderHydrationAction(w, action)
+	}
 	if !payload.Apply || payload.Plan.Blocked {
 		return nil
 	}
@@ -1344,6 +1379,19 @@ func renderBootstrapPayloadHuman(w io.Writer, payload bootstrapPayload) error {
 		}
 	}
 	return nil
+}
+
+func renderHydrationAction(w io.Writer, action hydrationplanner.Action) {
+	switch action.Action {
+	case hydrationplanner.ActionClone:
+		fmt.Fprintf(w, "clone: %s %s\n", action.Project, action.Path)
+	case hydrationplanner.ActionRefuse:
+		fmt.Fprintf(w, "refusal: %s %s %s\n", action.State, action.Project, action.Reason)
+	case hydrationplanner.ActionNone:
+		if action.State == hydrationplanner.StatePresent {
+			fmt.Fprintf(w, "present: %s %s\n", action.Project, action.Path)
+		}
+	}
 }
 
 func renderBootstrapDrift(w io.Writer, drift reconciliation.Drift) {
@@ -2314,7 +2362,7 @@ Usage:
   codemesh status [project] [--base branch] [--json]
   codemesh doctor <project> [--base branch] [--strict] [--json]
   codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]
-  codemesh bootstrap <manifest-path> [--apply] [--json]
+  codemesh bootstrap <manifest-path> [--dry-run|--apply] [--json]
   codemesh manifest export [--output path]
   codemesh manifest import <path>
   codemesh target export <target-name> --scope scope [--kind kind] [--workspace-root path] [--json]
@@ -2476,10 +2524,10 @@ func printBootstrapHelp(w io.Writer) {
 	fmt.Fprint(w, `Bootstrap workspace topology from a Workspace Manifest.
 
 Usage:
-  codemesh bootstrap <manifest-path> [--apply] [--json]
+  codemesh bootstrap <manifest-path> [--dry-run|--apply] [--json]
 
 Reads one manifest entry file or a directory of JSON entries.
-Default mode reports the plan only.
+Default mode and --dry-run report the plan only, including clone/refusal actions.
 --apply creates parent directories and local Project Registry rows.
 Bootstrap does not clone project content or create project placeholders.
 Use --json for the stable command result shape.

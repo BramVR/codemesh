@@ -276,12 +276,12 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	if err != nil {
 		return err
 	}
-	bootstrapPlan, err := r.runCodeMesh("machine B bootstrap dry-run", machineB, "bootstrap", legacyDir)
+	bootstrapPlan, err := r.runCodeMesh("machine B bootstrap dry-run", machineB, "bootstrap", legacyDir, "--dry-run")
 	if err != nil {
 		return err
 	}
-	if !strings.Contains(bootstrapPlan.stdout, "missing: mesh-target") || !strings.Contains(bootstrapPlan.stdout, "apply: false") {
-		return errors.New("bootstrap dry-run proof did not include planned missing projects")
+	if !strings.Contains(bootstrapPlan.stdout, "missing: mesh-target") || !strings.Contains(bootstrapPlan.stdout, "apply: false") || !strings.Contains(bootstrapPlan.stdout, "clone: mesh-target") {
+		return errors.New("bootstrap dry-run proof did not include planned missing clone actions")
 	}
 	if _, err := r.runCodeMesh("machine B bootstrap apply", machineB, "bootstrap", legacyDir, "--apply"); err != nil {
 		return err
@@ -294,8 +294,8 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	if err != nil {
 		return err
 	}
-	if !strings.Contains(hydrate.stdout, "hydrated") {
-		return errors.New("hydrate proof did not report hydrated project")
+	if !strings.Contains(hydrate.stdout, "clone: mesh-target") || !strings.Contains(hydrate.stdout, "hydrated") {
+		return errors.New("hydrate proof did not report planned clone and hydrated project")
 	}
 	treeAfterHydrate, err := r.runCodeMesh("machine B tree after hydrate", machineB, "tree")
 	if err != nil {

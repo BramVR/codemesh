@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/BramVR/codemesh/internal/clonestrategy"
+	"github.com/BramVR/codemesh/internal/hydrationplanner"
 	"github.com/BramVR/codemesh/internal/reconciliation"
 	"github.com/BramVR/codemesh/internal/state"
 	"github.com/BramVR/codemesh/internal/workspacemanifest"
@@ -26,8 +28,9 @@ type Bootstrapper struct {
 }
 
 type Result struct {
-	Plan    reconciliation.DriftPlan `json:"plan"`
-	Applied Applied                  `json:"applied"`
+	Plan          reconciliation.DriftPlan `json:"plan"`
+	HydrationPlan hydrationplanner.Plan    `json:"hydration_plan"`
+	Applied       Applied                  `json:"applied"`
 }
 
 type Applied struct {
@@ -51,20 +54,33 @@ func (b Bootstrapper) Plan(ctx context.Context, entries []workspacemanifest.Entr
 	return reconciliation.New(b.Store).DryRun(ctx, entries)
 }
 
-func (b Bootstrapper) Apply(ctx context.Context, entries []workspacemanifest.Entry) (Result, error) {
+func (b Bootstrapper) PlanResult(ctx context.Context, entries []workspacemanifest.Entry) (Result, error) {
 	plan, err := b.Plan(ctx, entries)
+	result := Result{Plan: plan}
+	if err != nil {
+		return result, err
+	}
+	hydrationPlan, err := hydrationplanner.New(b.Store).PlanEntries(ctx, entries, clonestrategy.Options{})
+	if err != nil {
+		return result, err
+	}
+	result.HydrationPlan = hydrationPlan
+	return result, nil
+}
+
+func (b Bootstrapper) Apply(ctx context.Context, entries []workspacemanifest.Entry) (Result, error) {
+	result, err := b.PlanResult(ctx, entries)
 	if err != nil {
 		return Result{}, err
 	}
-	result := Result{Plan: plan}
-	if plan.Blocked {
-		return result, BlockedError{Blockers: plan.Blockers}
+	if result.Plan.Blocked {
+		return result, BlockedError{Blockers: result.Plan.Blockers}
 	}
 	projects, err := b.Store.ListProjects(ctx)
 	if err != nil {
 		return result, err
 	}
-	importPlan, err := workspacemanifest.PlanImport(entries, projects, plan.WorkspaceRoot)
+	importPlan, err := workspacemanifest.PlanImport(entries, projects, result.Plan.WorkspaceRoot)
 	if err != nil {
 		return result, err
 	}
@@ -74,7 +90,7 @@ func (b Bootstrapper) Apply(ctx context.Context, entries []workspacemanifest.Ent
 		}
 	}
 
-	parents := parentDirectories(plan)
+	parents := parentDirectories(result.Plan)
 	for _, parent := range parents {
 		if err := os.MkdirAll(parent, 0o755); err != nil {
 			return result, fmt.Errorf("create bootstrap parent %q: %w", parent, err)

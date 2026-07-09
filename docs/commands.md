@@ -17,7 +17,7 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 - [`codemesh status [project] [--base branch] [--json]`](commands/status.md)
 - [`codemesh doctor <project> [--base branch] [--strict] [--json]`](commands/doctor.md)
 - [`codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]`](commands/hydrate.md)
-- [`codemesh bootstrap <manifest-path> [--apply] [--json]`](commands/bootstrap.md)
+- [`codemesh bootstrap <manifest-path> [--dry-run|--apply] [--json]`](commands/bootstrap.md)
 - [`codemesh manifest export [--output path]`](commands/manifest-export.md)
 - [`codemesh manifest import <path>`](commands/manifest-import.md)
 - [`codemesh target export <target-name> --scope scope [--kind kind] [--workspace-root path] [--json]`](commands/target-export.md)
@@ -83,9 +83,9 @@ codemesh clean --older-than 0d
 
 Use `codemesh scan "$workspace"` instead of `codemesh add ...` when discovering all Git checkouts under a workspace root.
 
-Use `codemesh hydrate <project>` after a project is already registered and its desired local path is missing. Hydration clones the registered remote into that path and refuses existing non-empty path conflicts.
+Use `codemesh hydrate <project>` after a project is already registered and its desired local path is missing. Hydration uses the shared Hydration Planner to classify present, missing, path-conflict, unsafe-path, and unknown-project states before cloning the registered remote into the planned path.
 
-Use `codemesh bootstrap <manifest-path>` after `codemesh machine register` to preview shared Workspace Manifest topology on the current machine. Add `--apply` to create only parent directories and local Project Registry rows; project content stays missing until explicit hydration.
+Use `codemesh bootstrap <manifest-path>` after `codemesh machine register` to preview shared Workspace Manifest topology and planned clone/refusal actions on the current machine. Add `--dry-run` to make preview mode explicit. Add `--apply` to create only parent directories and local Project Registry rows; project content stays missing until explicit hydration.
 
 Use `codemesh manifest export --output <path>` on a registered machine to write the canonical Workspace Manifest as a deterministic portable JSON file. Use `codemesh manifest import <path>` on another registered machine to validate that manifest and persist matching Project Registry rows under that machine's workspace root.
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/BramVR/codemesh/internal/clonestrategy"
 	"github.com/BramVR/codemesh/internal/gitops"
+	"github.com/BramVR/codemesh/internal/hydrationplanner"
 	"github.com/BramVR/codemesh/internal/state"
 )
 
@@ -38,11 +39,30 @@ type HydrateResult struct {
 	Project        state.Project
 	AlreadyPresent bool
 	CloneStrategy  clonestrategy.Selection
+	Plan           hydrationplanner.Plan
+	Action         hydrationplanner.Action
 }
 
 type PathConflictError struct {
 	Path   string
 	Reason string
+}
+
+type UnknownProjectError struct {
+	Alias string
+}
+
+func (e UnknownProjectError) Error() string {
+	return fmt.Sprintf("unknown project: %s", e.Alias)
+}
+
+type UnsafePathError struct {
+	Path   string
+	Reason string
+}
+
+func (e UnsafePathError) Error() string {
+	return fmt.Sprintf("unsafe path: %s %s", e.Path, e.Reason)
 }
 
 func (e PathConflictError) Error() string {
@@ -197,32 +217,63 @@ func (r *Registry) Hydrate(ctx context.Context, alias string, opts ...clonestrat
 	if len(opts) != 0 {
 		options = opts[0]
 	}
-	projects, err := r.store.ListProjects(ctx)
+	plan, err := hydrationplanner.New(r.store).PlanProject(ctx, alias, options)
 	if err != nil {
 		return HydrateResult{}, err
 	}
-	for _, project := range projects {
-		if project.Alias != alias {
-			continue
+	action := hydrationplanner.Action{}
+	if len(plan.Actions) != 0 {
+		action = plan.Actions[0]
+	}
+	hydrationProject := action.ProjectRow
+	if hydrationProject.Alias == "" {
+		hydrationProject.Alias = alias
+	}
+	result := HydrateResult{Project: hydrationProject, Plan: plan, Action: action, CloneStrategy: action.CloneStrategy}
+	switch action.State {
+	case hydrationplanner.StateUnknownProject:
+		return result, UnknownProjectError{Alias: alias}
+	case hydrationplanner.StateUnsafePath:
+		return result, UnsafePathError{Path: action.Path, Reason: action.Reason}
+	case hydrationplanner.StatePathConflict:
+		return result, PathConflictError{Path: action.Path, Reason: action.Reason}
+	case hydrationplanner.StatePresent:
+		if !gitCheckoutMatches(ctx, r.git, hydrationProject) {
+			return result, PathConflictError{Path: action.Path, Reason: "exists but does not match the registered project"}
 		}
-		hydrationProject := project
-		hydrationProject.LocalPath = hydrationPath(project)
-		alreadyPresent, strategy, err := hydrateProject(ctx, r.git, hydrationProject, options)
-		if err != nil {
-			return HydrateResult{Project: hydrationProject, CloneStrategy: strategy}, err
-		}
-		if hydrationProject.Source == "canonical" && project.LocalPath != hydrationProject.LocalPath {
+		if hydrationProject.Source == "canonical" && action.ObservedPath != "" && action.ObservedPath != hydrationProject.LocalPath {
 			if updater, ok := r.store.(projectUpdater); ok {
-				updated, err := updater.UpdateProject(ctx, project.ID, hydrationProject)
+				updated, err := updater.UpdateProject(ctx, action.ProjectID, hydrationProject)
 				if err != nil {
-					return HydrateResult{Project: hydrationProject, CloneStrategy: strategy}, err
+					return result, err
 				}
 				hydrationProject = updated
 			}
 		}
-		return HydrateResult{Project: hydrationProject, AlreadyPresent: alreadyPresent, CloneStrategy: strategy}, nil
+		result.Project = hydrationProject
+		result.AlreadyPresent = true
+		result.CloneStrategy = clonestrategy.FullCloneSelection()
+		return result, nil
+	case hydrationplanner.StateMissing:
+		alreadyPresent, strategy, err := hydrateProject(ctx, r.git, hydrationProject, options)
+		result.CloneStrategy = strategy
+		if err != nil {
+			return result, err
+		}
+		result.AlreadyPresent = alreadyPresent
+		if hydrationProject.Source == "canonical" && action.ObservedPath != "" && action.ObservedPath != hydrationProject.LocalPath {
+			if updater, ok := r.store.(projectUpdater); ok {
+				updated, err := updater.UpdateProject(ctx, action.ProjectID, hydrationProject)
+				if err != nil {
+					return result, err
+				}
+				hydrationProject = updated
+			}
+		}
+		result.Project = hydrationProject
+		return result, nil
 	}
-	return HydrateResult{}, fmt.Errorf("unknown project: %s", alias)
+	return result, fmt.Errorf("hydrate plan for %q did not produce an executable action", alias)
 }
 
 func hydrationPath(project state.Project) string {
