@@ -224,6 +224,12 @@ It should orchestrate existing primitives:
 - Dev environment tools such as mise, devbox, devenv, direnv, or devcontainers.
 - Optional file sync engines later.
 
+## PR Proof Requirement
+
+Changes that affect the Dropbox-for-developers workflow need reviewer-visible proof, not only unit tests. The required free lane is the `crabbox-pr-proof` GitHub Actions workflow. It runs on standard GitHub-hosted public-repo runners with isolated local fixtures, then uploads `codemesh-crabbox-pr-proof` artifacts showing the canonical workspace tree, per-machine placement or presence, planned bootstrap or hydration actions, and before/after state for mutating fixture flows.
+
+The lane must fail when proof is skipped, fake-only, incomplete, or unsafe to publish. Public proof must not include raw secrets, private endpoints, personal local paths outside isolated fixture placeholders, internal model names, or sensitive generated logs.
+
 ## MVP Direction
 
 This section is historical research direction. The current runnable command surface is [Command Catalog](../commands.md); commands or behavior below are planned unless the catalog lists them as current.

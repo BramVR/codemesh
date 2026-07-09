@@ -1,0 +1,82 @@
+name: crabbox-pr-proof
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: crabbox-pr-proof-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  free-visual-proof:
+    name: Free Crabbox PR visual proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether Crabbox proof is required
+        id: relevance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p tmp
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > tmp/crabbox-pr-proof-files.txt
+          else
+            git ls-files > tmp/crabbox-pr-proof-files.txt
+          fi
+          if grep -Eq '^(\.github/workflows/crabbox-pr-proof\.yml|Makefile|go\.mod|go\.sum|\.crabbox\.yaml|cmd/|internal/|test/e2e/|scripts/crabbox-pr-proof|docs/e2e\.md|docs/mvp\.md|docs/research/dropbox-for-devs\.md|docs/state\.md|docs/commands/|CONTEXT\.md|VISION\.md|README\.md)' tmp/crabbox-pr-proof-files.txt; then
+            echo "required=true" >> "$GITHUB_OUTPUT"
+            echo "Crabbox proof required for changed CodeMesh workspace/proof files." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "required=false" >> "$GITHUB_OUTPUT"
+            echo "Crabbox proof not required for this PR's changed files." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Set up Go
+        if: steps.relevance.outputs.required == 'true'
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+
+      - name: Generate free Crabbox PR proof
+        if: steps.relevance.outputs.required == 'true'
+        run: make crabbox-pr-proof-free
+
+      - name: Verify required proof artifacts
+        if: steps.relevance.outputs.required == 'true'
+        run: |
+          test -s tmp/crabbox-pr-proof/proof-manifest.json
+          test -s tmp/crabbox-pr-proof/summary.md
+          test -s tmp/crabbox-pr-proof/canonical-workspace-tree.svg
+          test -s tmp/crabbox-pr-proof/machine-placement-presence.svg
+          test -s tmp/crabbox-pr-proof/bootstrap-hydration-plan.svg
+          test -s tmp/crabbox-pr-proof/mutating-flow-before-after.svg
+          grep -q '"source": "real-codemesh-cli"' tmp/crabbox-pr-proof/proof-manifest.json
+          grep -q '"confidentiality": "pass"' tmp/crabbox-pr-proof/proof-manifest.json
+
+      - name: Write PR proof summary
+        if: steps.relevance.outputs.required == 'true'
+        run: |
+          if [ -f tmp/crabbox-pr-proof/summary.md ]; then
+            cat tmp/crabbox-pr-proof/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Crabbox PR proof summary was not generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload visual proof artifacts
+        if: steps.relevance.outputs.required == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codemesh-crabbox-pr-proof
+          path: tmp/crabbox-pr-proof
+          if-no-files-found: error
+          retention-days: 14
