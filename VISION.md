@@ -20,6 +20,7 @@ CodeMesh should not become a generic cloud drive. It should stay developer-aware
 - Tests, e2e harness improvements, and docs-list/front-matter cleanup.
 - Documentation updates that sharpen glossary terms, state model, trust, or command behavior.
 - First-slice Dropbox-for-developers work that preserves current local MVP behavior and keeps sync explicit: manifest import/export, Machine registration, per-Machine placement, bootstrap dry-run/clone, and source-less Agent workspace prep.
+- Pull-request proof for Dropbox-for-developers slices that runs on free GitHub-hosted runners and publishes sanitized visual artifacts for canonical tree, per-Machine placement or presence, planned bootstrap/hydration, and mutating before/after fixture state.
 
 ## Needs Sign-Off
 

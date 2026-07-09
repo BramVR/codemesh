@@ -1,6 +1,6 @@
 BIN ?= dist/codemesh
 
-.PHONY: test build e2e e2e-packaged e2e-live e2e-peekaboo e2e-owned-host crabbox-pr-proof docs\:list docs-list docs-site docs-site-test docs-site-clean
+.PHONY: test build e2e e2e-packaged e2e-live e2e-peekaboo e2e-owned-host crabbox-pr-proof crabbox-pr-proof-free docs\:list docs-list docs-site docs-site-test docs-site-clean
 
 test:
 	go test ./...
@@ -26,6 +26,9 @@ e2e-owned-host: build
 
 crabbox-pr-proof:
 	scripts/crabbox-pr-proof
+
+crabbox-pr-proof-free: build
+	CODEMESH_PR_PROOF_BIN="$(abspath $(BIN))" go run ./cmd/codemesh-crabbox-pr-proof
 
 docs\:list: docs-list
 

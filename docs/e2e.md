@@ -319,7 +319,31 @@ Run `make docs-site-test` when docs-site inputs change. Run default `make e2e-li
 
 GitHub Actions adds CI-only cross-OS proof. Required PR CI runs `make test`, `make e2e`, and `make e2e-packaged` on Ubuntu and macOS with distinct `CODEMESH_E2E_REPORT` paths for source and packaged modes, then uploads the JSON reports as short-retention artifacts even when a test step fails. Windows required PR CI runs a targeted Go unit smoke, builds `dist/codemesh.exe`, and runs the binary help smoke; Windows e2e remains an explicit tracked skip for issue 92 while POSIX-mode e2e coverage runs on Ubuntu and macOS. Live/network, including the Clone Strategy live smoke, and Peekaboo checks are not part of required PR CI unless a future workflow opts into them explicitly.
 
-## Crabbox PR Proof
+## Free Crabbox PR Proof
+
+Every pull request runs the free Crabbox PR proof workflow on standard GitHub-hosted public-repo runners. The job first checks changed paths and exits green with a "not required" summary for unrelated PRs. Full visual proof is required for changes to canonical workspace topology, multi-machine placement or presence, manifest import/export, bootstrap, explicit hydration, source-less agent workspace prep, placeholders, lazy hydration, materialization boundaries, or the proof lane itself.
+
+Run the same lane locally with:
+
+```sh
+make crabbox-pr-proof-free
+```
+
+The target builds the packaged CLI, creates isolated local Git remotes and two isolated CodeMesh machine homes, runs real `codemesh` commands, and writes visual proof under `tmp/crabbox-pr-proof/`. It must fail rather than skip when the packaged CLI cannot run, a required visual is missing, command provenance is fake-only, or the public artifact confidentiality scan finds raw secrets, private endpoints, personal local paths outside fixture placeholders, internal model names, or sensitive logs.
+
+The GitHub Actions workflow is `crabbox-pr-proof`. Reviewers find the proof on the PR's Checks tab by opening the `Free Crabbox PR visual proof` job summary and downloading the `codemesh-crabbox-pr-proof` artifact. Required proof files include:
+
+- `summary.md`
+- `proof-manifest.json`
+- `canonical-workspace-tree.svg`
+- `machine-placement-presence.svg`
+- `bootstrap-hydration-plan.svg`
+- `mutating-flow-before-after.svg`
+- matching `.txt` command-output companions and `commands/*.txt` transcripts
+
+The visuals show the canonical workspace tree, manifest import/export placement, per-machine placement and presence, planned bootstrap and hydration actions, and before/after state for bootstrap apply plus selected hydration. Paths are sanitized to isolated fixture placeholders before upload.
+
+## Owned-Host Crabbox Proof
 
 CodeMesh can run Peter-style Crabbox proof from the free `hermes-vm` static SSH target:
 
