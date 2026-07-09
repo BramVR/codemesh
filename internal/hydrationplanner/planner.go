@@ -11,6 +11,7 @@ import (
 
 	"github.com/BramVR/codemesh/internal/clonestrategy"
 	"github.com/BramVR/codemesh/internal/gitops"
+	"github.com/BramVR/codemesh/internal/placeholder"
 	"github.com/BramVR/codemesh/internal/reconciliation"
 	"github.com/BramVR/codemesh/internal/state"
 	"github.com/BramVR/codemesh/internal/workspacemanifest"
@@ -32,6 +33,7 @@ type State string
 
 const (
 	StatePresent        State = "present"
+	StatePlaceholder    State = "placeholder"
 	StateMissing        State = "missing"
 	StatePathConflict   State = "path-conflict"
 	StateUnsafePath     State = "unsafe-path"
@@ -220,6 +222,36 @@ func classifyProject(project state.Project, workspaceRoot string, options clones
 			action.CloneStrategy = clonestrategy.FullCloneSelection()
 			return action
 		}
+		if metadata, ok, err := placeholder.Is(path); err != nil {
+			action.State = StatePathConflict
+			action.Action = ActionRefuse
+			action.Reason = err.Error()
+			return action
+		} else if ok {
+			if metadata.Project != project.Alias || metadata.Identity != project.NormalizedRemote {
+				action.State = StatePathConflict
+				action.Action = ActionRefuse
+				action.Reason = "placeholder metadata does not match registered project"
+				return action
+			}
+			owned, err := placeholder.OwnedBy(path, project.Alias, project.NormalizedRemote)
+			if err != nil {
+				action.State = StatePathConflict
+				action.Action = ActionRefuse
+				action.Reason = err.Error()
+				return action
+			}
+			if !owned {
+				action.State = StatePathConflict
+				action.Action = ActionRefuse
+				action.Reason = "placeholder directory has local changes"
+				return action
+			}
+			action.State = StatePlaceholder
+			action.Action = ActionClone
+			action.Reason = "metadata-only placeholder; hydrate to clone source content"
+			return action
+		}
 		if info.IsDir() {
 			empty, readErr := dirIsEmpty(path)
 			if readErr != nil {
@@ -374,8 +406,22 @@ func pathWithinRoot(root, path string) bool {
 }
 
 func isGitCheckoutPath(path string) bool {
-	_, err := os.Lstat(filepath.Join(path, ".git"))
-	return err == nil
+	gitPath := filepath.Join(path, ".git")
+	info, err := os.Lstat(gitPath)
+	if err != nil {
+		return false
+	}
+	if info.IsDir() {
+		return true
+	}
+	if !info.Mode().IsRegular() {
+		return false
+	}
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(string(data)), "gitdir:")
 }
 
 func dirIsEmpty(path string) (bool, error) {

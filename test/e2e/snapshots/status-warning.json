@@ -41,7 +41,8 @@
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/dirty-source.git",
           "state": "dirty",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "hydrated"
         }
       ]
     }

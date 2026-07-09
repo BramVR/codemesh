@@ -60,8 +60,10 @@ jobs:
           test -s tmp/crabbox-pr-proof/machine-placement-presence.svg
           test -s tmp/crabbox-pr-proof/bootstrap-hydration-plan.svg
           test -s tmp/crabbox-pr-proof/source-less-agent-prep.svg
+          test -s tmp/crabbox-pr-proof/placeholder-workspace-structure.svg
           test -s tmp/crabbox-pr-proof/mutating-flow-before-after.svg
           grep -q 'source-less-agent-prep' tmp/crabbox-pr-proof/proof-manifest.json
+          grep -q 'placeholder-workspace-structure' tmp/crabbox-pr-proof/proof-manifest.json
           grep -q '"source": "real-codemesh-cli"' tmp/crabbox-pr-proof/proof-manifest.json
           grep -q '"confidentiality": "pass"' tmp/crabbox-pr-proof/proof-manifest.json
 

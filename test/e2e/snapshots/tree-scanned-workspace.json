@@ -32,7 +32,8 @@
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/clean-repo.git",
           "state": "present",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "hydrated"
         },
         {
           "alias": "dirty-source",
@@ -54,7 +55,8 @@
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/dirty-source.git",
           "state": "dirty",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "hydrated"
         },
         {
           "alias": "missing-base-branch",
@@ -71,7 +73,8 @@
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/missing-base-branch.git",
           "state": "present",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "hydrated"
         },
         {
           "alias": "policy-docs",
@@ -88,7 +91,8 @@
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/policy-docs.git",
           "state": "present",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "hydrated"
         },
         {
           "alias": "remote-default-dev",
@@ -105,7 +109,8 @@
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/remote-default-dev.git",
           "state": "present",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "hydrated"
         },
         {
           "alias": "required-env-bound",
@@ -127,7 +132,8 @@
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/required-env-bound.git",
           "state": "blocked",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "hydrated"
         },
         {
           "alias": "required-env-missing",
@@ -153,7 +159,8 @@
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/required-env-missing.git",
           "state": "blocked",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "hydrated"
         },
         {
           "alias": "required-env-present",
@@ -175,7 +182,8 @@
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/required-env-present.git",
           "state": "blocked",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "hydrated"
         },
         {
           "alias": "required-env-warn",
@@ -201,7 +209,8 @@
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/required-env-warn.git",
           "state": "present",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "hydrated"
         }
       ]
     }

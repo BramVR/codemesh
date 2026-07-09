@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/BramVR/codemesh/internal/clonestrategy"
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/hydrationexecutor"
 	"github.com/BramVR/codemesh/internal/hydrationplanner"
+	"github.com/BramVR/codemesh/internal/placeholder"
 	"github.com/BramVR/codemesh/internal/reconciliation"
 	"github.com/BramVR/codemesh/internal/state"
 	"github.com/BramVR/codemesh/internal/workspacemanifest"
@@ -37,10 +39,11 @@ type Result struct {
 }
 
 type Applied struct {
-	ParentDirectories []string                          `json:"parent_directories"`
-	AddedProjects     []state.Project                   `json:"added_projects"`
-	UpdatedProjects   []state.Project                   `json:"updated_projects"`
-	ClonedProjects    []hydrationexecutor.ClonedProject `json:"cloned_projects"`
+	ParentDirectories   []string                          `json:"parent_directories"`
+	AddedProjects       []state.Project                   `json:"added_projects"`
+	UpdatedProjects     []state.Project                   `json:"updated_projects"`
+	PlaceholderProjects []placeholder.MaterializedProject `json:"placeholder_projects"`
+	ClonedProjects      []hydrationexecutor.ClonedProject `json:"cloned_projects"`
 }
 
 type BlockedError struct {
@@ -176,6 +179,69 @@ func (b Bootstrapper) Apply(ctx context.Context, entries []workspacemanifest.Ent
 	return result, nil
 }
 
+func (b Bootstrapper) Placeholders(ctx context.Context, entries []workspacemanifest.Entry) (Result, error) {
+	result, err := b.PlanResult(ctx, entries)
+	if err != nil {
+		return Result{}, err
+	}
+	if result.Plan.Blocked {
+		return result, BlockedError{Blockers: result.Plan.Blockers}
+	}
+	if result.HydrationPlan.Blocked {
+		return result, HydrationBlockedError{Actions: refusalActions(result.HydrationPlan.Actions)}
+	}
+	if _, err := preflightPlaceholderMaterialization(result.HydrationPlan); err != nil {
+		if action, ok := actionFromExecutionError(err); ok {
+			result.HydrationPlan.Blocked = true
+			result.HydrationPlan.Actions = append(result.HydrationPlan.Actions, action)
+			return result, HydrationBlockedError{Actions: []hydrationplanner.Action{action}}
+		}
+		return result, err
+	}
+	projects, err := b.Store.ListProjects(ctx)
+	if err != nil {
+		return result, err
+	}
+	importPlan, err := workspacemanifest.PlanImport(entries, projects, result.Plan.WorkspaceRoot)
+	if err != nil {
+		return result, err
+	}
+	for _, change := range importPlan.Changes {
+		if change.Action == workspacemanifest.ChangeConflict {
+			return result, fmt.Errorf("bootstrap import conflict for %q: %s", change.Alias, change.ConflictReason)
+		}
+	}
+	importResult, err := workspacemanifest.ApplyImportPlan(ctx, b.Store, importPlan, projects)
+	if err != nil {
+		return result, err
+	}
+	result.Applied.UpdatedProjects = append(result.Applied.UpdatedProjects, importResult.UpdatedProjects...)
+	result.Applied.AddedProjects = append(result.Applied.AddedProjects, importResult.AddedProjects...)
+	result.HydrationPlan, err = b.planImportedEntries(ctx, entries)
+	if err != nil {
+		return result, err
+	}
+	if result.HydrationPlan.Blocked {
+		return result, HydrationBlockedError{Actions: refusalActions(result.HydrationPlan.Actions)}
+	}
+	placeholders, err := materializePlaceholders(result.HydrationPlan)
+	if err != nil {
+		if action, ok := actionFromExecutionError(err); ok {
+			result.HydrationPlan.Blocked = true
+			result.HydrationPlan.Actions = append(result.HydrationPlan.Actions, action)
+			return result, HydrationBlockedError{Actions: []hydrationplanner.Action{action}}
+		}
+		return result, err
+	}
+	result.Applied.PlaceholderProjects = append(result.Applied.PlaceholderProjects, placeholders...)
+	updatedProjects, err := b.persistClonedCanonicalPlacements(ctx, result.HydrationPlan)
+	if err != nil {
+		return result, err
+	}
+	result.Applied.UpdatedProjects = append(result.Applied.UpdatedProjects, updatedProjects...)
+	return result, nil
+}
+
 func (b Bootstrapper) planImportedEntries(ctx context.Context, entries []workspacemanifest.Entry) (hydrationplanner.Plan, error) {
 	planner := hydrationplanner.New(b.Store)
 	seen := map[string]bool{}
@@ -225,6 +291,163 @@ func (b Bootstrapper) ApplyRegistry(ctx context.Context, aliases []string, all b
 	}
 	result.Applied.UpdatedProjects = append(result.Applied.UpdatedProjects, updatedProjects...)
 	return result, nil
+}
+
+func (b Bootstrapper) PlaceholdersRegistry(ctx context.Context, aliases []string, all bool) (Result, error) {
+	result, err := b.PlanRegistry(ctx, aliases, all)
+	if err != nil {
+		return result, err
+	}
+	if result.HydrationPlan.Blocked {
+		return result, HydrationBlockedError{Actions: refusalActions(result.HydrationPlan.Actions)}
+	}
+	placeholders, err := materializePlaceholders(result.HydrationPlan)
+	if err != nil {
+		if action, ok := actionFromExecutionError(err); ok {
+			result.HydrationPlan.Blocked = true
+			result.HydrationPlan.Actions = append(result.HydrationPlan.Actions, action)
+			return result, HydrationBlockedError{Actions: []hydrationplanner.Action{action}}
+		}
+		return result, err
+	}
+	result.Applied.PlaceholderProjects = append(result.Applied.PlaceholderProjects, placeholders...)
+	updatedProjects, err := b.persistClonedCanonicalPlacements(ctx, result.HydrationPlan)
+	if err != nil {
+		return result, err
+	}
+	result.Applied.UpdatedProjects = append(result.Applied.UpdatedProjects, updatedProjects...)
+	return result, nil
+}
+
+func materializePlaceholders(plan hydrationplanner.Plan) ([]placeholder.MaterializedProject, error) {
+	candidates, err := preflightPlaceholderMaterialization(plan)
+	if err != nil {
+		return nil, err
+	}
+
+	materialized := make([]placeholder.MaterializedProject, 0)
+	for _, project := range candidates {
+		written, err := placeholder.Write(project)
+		if err != nil {
+			return materialized, hydrationexecutor.PathConflictError{Path: project.LocalPath, Reason: err.Error()}
+		}
+		materialized = append(materialized, written)
+	}
+	return materialized, nil
+}
+
+func preflightPlaceholderMaterialization(plan hydrationplanner.Plan) ([]state.Project, error) {
+	candidates := make([]state.Project, 0)
+	plannedPaths := map[string]string{}
+	for _, action := range plan.Actions {
+		project, ok := placeholderProjectForAction(action)
+		if ok {
+			if err := addPlannedPlaceholderPath(plannedPaths, project.LocalPath, project.Alias); err != nil {
+				return nil, err
+			}
+			candidates = append(candidates, project)
+			continue
+		}
+		if action.Action == hydrationplanner.ActionNone && action.State == hydrationplanner.StatePresent {
+			if err := addPlannedPlaceholderPath(plannedPaths, action.Path, action.Project); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for _, project := range candidates {
+		if err := ensurePlaceholderDestinationWithinRoot(plan.WorkspaceRoot, project.LocalPath); err != nil {
+			return nil, err
+		}
+	}
+	return candidates, nil
+}
+
+func placeholderProjectForAction(action hydrationplanner.Action) (state.Project, bool) {
+	if action.Action != hydrationplanner.ActionClone && action.State != hydrationplanner.StatePlaceholder {
+		return state.Project{}, false
+	}
+	project := action.ProjectRow
+	if project.LocalPath == "" {
+		project.LocalPath = action.Path
+	}
+	if project.CanonicalPath == "" {
+		project.CanonicalPath = action.CanonicalPath
+	}
+	return project, true
+}
+
+func addPlannedPlaceholderPath(planned map[string]string, path, project string) error {
+	cleanPath := filepath.Clean(path)
+	for existingPath, existingProject := range planned {
+		if pathsOverlap(cleanPath, existingPath) {
+			return hydrationexecutor.PathConflictError{
+				Path:   path,
+				Reason: fmt.Sprintf("desired path conflicts with project %q", existingProject),
+			}
+		}
+	}
+	planned[cleanPath] = project
+	return nil
+}
+
+func pathsOverlap(a, b string) bool {
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	if a == b {
+		return true
+	}
+	return pathWithin(a, b) || pathWithin(b, a)
+}
+
+func pathWithin(child, parent string) bool {
+	rel, err := filepath.Rel(parent, child)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func ensurePlaceholderDestinationWithinRoot(workspaceRoot, destination string) error {
+	if strings.TrimSpace(workspaceRoot) == "" {
+		return nil
+	}
+	realRoot, err := realPathForPossiblyMissing(workspaceRoot)
+	if err != nil {
+		return fmt.Errorf("check workspace root %q: %w", workspaceRoot, err)
+	}
+	realDestination, err := realPathForPossiblyMissing(destination)
+	if err != nil {
+		return fmt.Errorf("check project path %q: %w", destination, err)
+	}
+	rel, err := filepath.Rel(realRoot, realDestination)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return hydrationexecutor.UnsafePathError{Path: destination, Reason: "desired path resolves outside workspace root"}
+	}
+	return nil
+}
+
+func realPathForPossiblyMissing(path string) (string, error) {
+	path = filepath.Clean(path)
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	ancestor := filepath.Dir(path)
+	suffix := []string{filepath.Base(path)}
+	for {
+		realAncestor, err := filepath.EvalSymlinks(ancestor)
+		if err == nil {
+			parts := append([]string{realAncestor}, suffix...)
+			return filepath.Join(parts...), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		next := filepath.Dir(ancestor)
+		if next == ancestor {
+			return "", os.ErrNotExist
+		}
+		suffix = append([]string{filepath.Base(ancestor)}, suffix...)
+		ancestor = next
+	}
 }
 
 func (b Bootstrapper) persistClonedCanonicalPlacements(ctx context.Context, plan hydrationplanner.Plan) ([]state.Project, error) {

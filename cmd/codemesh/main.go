@@ -25,6 +25,7 @@ import (
 	"github.com/BramVR/codemesh/internal/hydrationexecutor"
 	"github.com/BramVR/codemesh/internal/hydrationplanner"
 	"github.com/BramVR/codemesh/internal/machineregistry"
+	"github.com/BramVR/codemesh/internal/placeholder"
 	"github.com/BramVR/codemesh/internal/presentation"
 	"github.com/BramVR/codemesh/internal/readiness"
 	"github.com/BramVR/codemesh/internal/reconciliation"
@@ -1184,7 +1185,9 @@ func runBootstrap(args []string, stdout, stderr io.Writer) int {
 	var result bootstrap.Result
 	bootstrapper := bootstrap.Bootstrapper{Store: store}
 	if bootstrapArgs.RegistryMode {
-		if bootstrapArgs.Apply {
+		if bootstrapArgs.Placeholders {
+			result, err = bootstrapper.PlaceholdersRegistry(ctx, bootstrapArgs.Projects, bootstrapArgs.All)
+		} else if bootstrapArgs.Apply {
 			result, err = bootstrapper.ApplyRegistry(ctx, bootstrapArgs.Projects, bootstrapArgs.All)
 		} else {
 			result, err = bootstrapper.PlanRegistry(ctx, bootstrapArgs.Projects, bootstrapArgs.All)
@@ -1195,7 +1198,9 @@ func runBootstrap(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "read workspace manifest: %v\n", err)
 			return 1
 		}
-		if bootstrapArgs.Apply {
+		if bootstrapArgs.Placeholders {
+			result, err = bootstrapper.Placeholders(ctx, entries)
+		} else if bootstrapArgs.Apply {
 			result, err = bootstrapper.Apply(ctx, entries)
 		} else {
 			result, err = bootstrapper.PlanResult(ctx, entries)
@@ -1251,6 +1256,7 @@ type parsedBootstrapArgs struct {
 	All          bool
 	Apply        bool
 	DryRun       bool
+	Placeholders bool
 	JSON         bool
 	RegistryMode bool
 }
@@ -1259,6 +1265,7 @@ func parseBootstrapArgs(args []string, stderr io.Writer) (parsedBootstrapArgs, b
 	var manifestPaths []string
 	var apply bool
 	var dryRun bool
+	var placeholders bool
 	var jsonOutput bool
 	var all bool
 	for _, arg := range args {
@@ -1267,6 +1274,8 @@ func parseBootstrapArgs(args []string, stderr io.Writer) (parsedBootstrapArgs, b
 			apply = true
 		case "--dry-run":
 			dryRun = true
+		case "--placeholders":
+			placeholders = true
 		case "--json":
 			jsonOutput = true
 		case "--all":
@@ -1283,11 +1292,11 @@ func parseBootstrapArgs(args []string, stderr io.Writer) (parsedBootstrapArgs, b
 		fmt.Fprint(stderr, "bootstrap requires --all, project names, or one workspace manifest path\n\n")
 		return parsedBootstrapArgs{}, false
 	}
-	if apply && dryRun {
-		fmt.Fprint(stderr, "bootstrap accepts only one of --apply or --dry-run\n\n")
+	if (apply && dryRun) || (apply && placeholders) || (dryRun && placeholders) {
+		fmt.Fprint(stderr, "bootstrap accepts only one of --apply, --dry-run, or --placeholders\n\n")
 		return parsedBootstrapArgs{}, false
 	}
-	parsed := parsedBootstrapArgs{Apply: apply, DryRun: dryRun, JSON: jsonOutput, All: all}
+	parsed := parsedBootstrapArgs{Apply: apply, DryRun: dryRun, Placeholders: placeholders, JSON: jsonOutput, All: all}
 	switch {
 	case all:
 		parsed.RegistryMode = true
@@ -1351,16 +1360,23 @@ func aliasRegistered(ctx context.Context, store interface {
 
 type bootstrapPayload struct {
 	Apply         bool                     `json:"apply"`
+	Placeholders  bool                     `json:"placeholders"`
 	Plan          reconciliation.DriftPlan `json:"plan"`
 	HydrationPlan hydrationplanner.Plan    `json:"hydration_plan"`
 	Applied       bootstrapAppliedPayload  `json:"applied"`
 }
 
 type bootstrapAppliedPayload struct {
-	ParentDirectories []string                  `json:"parent_directories"`
-	AddedProjects     []bootstrapProjectPayload `json:"added_projects"`
-	UpdatedProjects   []bootstrapProjectPayload `json:"updated_projects"`
-	ClonedProjects    []bootstrapProjectPayload `json:"cloned_projects"`
+	ParentDirectories   []string                      `json:"parent_directories"`
+	AddedProjects       []bootstrapProjectPayload     `json:"added_projects"`
+	UpdatedProjects     []bootstrapProjectPayload     `json:"updated_projects"`
+	PlaceholderProjects []bootstrapPlaceholderPayload `json:"placeholder_projects"`
+	ClonedProjects      []bootstrapProjectPayload     `json:"cloned_projects"`
+}
+
+type bootstrapPlaceholderPayload struct {
+	Alias string `json:"alias"`
+	Path  string `json:"path"`
 }
 
 type bootstrapProjectPayload struct {
@@ -1378,6 +1394,7 @@ func newBootstrapResult(args parsedBootstrapArgs, result bootstrap.Result) comma
 	}
 	return commandresult.New("bootstrap", exitClass, diagnostics, bootstrapPayload{
 		Apply:         args.Apply,
+		Placeholders:  args.Placeholders,
 		Plan:          result.Plan,
 		HydrationPlan: result.HydrationPlan,
 		Applied:       bootstrapApplied(result.Applied),
@@ -1396,11 +1413,26 @@ func newBootstrapErrorResult(args parsedBootstrapArgs, result bootstrap.Result, 
 
 func bootstrapApplied(applied bootstrap.Applied) bootstrapAppliedPayload {
 	return bootstrapAppliedPayload{
-		ParentDirectories: append([]string(nil), applied.ParentDirectories...),
-		AddedProjects:     bootstrapProjects(applied.AddedProjects),
-		UpdatedProjects:   bootstrapProjects(applied.UpdatedProjects),
-		ClonedProjects:    bootstrapClonedProjects(applied.ClonedProjects),
+		ParentDirectories:   append([]string(nil), applied.ParentDirectories...),
+		AddedProjects:       bootstrapProjects(applied.AddedProjects),
+		UpdatedProjects:     bootstrapProjects(applied.UpdatedProjects),
+		PlaceholderProjects: bootstrapPlaceholders(applied.PlaceholderProjects),
+		ClonedProjects:      bootstrapClonedProjects(applied.ClonedProjects),
 	}
+}
+
+func bootstrapPlaceholders(projects []placeholder.MaterializedProject) []bootstrapPlaceholderPayload {
+	if projects == nil {
+		return []bootstrapPlaceholderPayload{}
+	}
+	payloads := make([]bootstrapPlaceholderPayload, 0, len(projects))
+	for _, project := range projects {
+		payloads = append(payloads, bootstrapPlaceholderPayload{
+			Alias: project.Project,
+			Path:  project.Path,
+		})
+	}
+	return payloads
 }
 
 func bootstrapProjects(projects []state.Project) []bootstrapProjectPayload {
@@ -1492,6 +1524,7 @@ func renderBootstrapPayloadHuman(w io.Writer, payload bootstrapPayload) error {
 	fmt.Fprintln(w, "bootstrap plan")
 	fmt.Fprintf(w, "workspace_root: %s\n", workspaceRoot)
 	fmt.Fprintf(w, "apply: %t\n", payload.Apply)
+	fmt.Fprintf(w, "placeholders: %t\n", payload.Placeholders)
 	fmt.Fprintf(w, "blocked: %t\n", blocked)
 	if len(payload.Plan.Drifts) == 0 {
 		fmt.Fprintln(w, "drifts: none")
@@ -1505,7 +1538,7 @@ func renderBootstrapPayloadHuman(w io.Writer, payload bootstrapPayload) error {
 	for _, action := range payload.HydrationPlan.Actions {
 		renderHydrationAction(w, action)
 	}
-	if !payload.Apply || payload.Plan.Blocked || payload.HydrationPlan.Blocked {
+	if (!payload.Apply && !payload.Placeholders) || payload.Plan.Blocked || payload.HydrationPlan.Blocked {
 		return nil
 	}
 	fmt.Fprintln(w, "applied")
@@ -1528,6 +1561,13 @@ func renderBootstrapPayloadHuman(w io.Writer, payload bootstrapPayload) error {
 	} else {
 		for _, project := range payload.Applied.UpdatedProjects {
 			fmt.Fprintf(w, "updated: %s %s\n", project.Alias, project.Path)
+		}
+	}
+	if len(payload.Applied.PlaceholderProjects) == 0 {
+		fmt.Fprintln(w, "placeholders: none")
+	} else {
+		for _, project := range payload.Applied.PlaceholderProjects {
+			fmt.Fprintf(w, "placeholder: %s %s\n", project.Alias, project.Path)
 		}
 	}
 	if len(payload.Applied.ClonedProjects) == 0 {
@@ -2169,6 +2209,7 @@ func buildTreeResult(ctx context.Context, projects []state.Project) (commandresu
 			Alias:                report.Project.Alias,
 			WorkspaceSource:      report.Project.Source,
 			State:                string(report.State),
+			WorkspaceState:       workspaceState(report),
 			Path:                 report.Project.LocalPath,
 			PathPresent:          report.LocalPathPresent,
 			CanonicalPath:        report.Project.CanonicalPath,
@@ -2190,7 +2231,7 @@ func renderTreePayloadHuman(w io.Writer, payload treePayload) error {
 		return nil
 	}
 	for _, project := range payload.Projects {
-		fmt.Fprintf(w, "- %s %s %s workspace_source=%s canonical_present=%t machine_path=%s machine_present=%t\n", project.Alias, project.State, project.CanonicalPath, project.WorkspaceSource, project.CanonicalPathPresent, project.MachinePath, project.MachinePathPresent)
+		fmt.Fprintf(w, "- %s %s %s workspace_state=%s workspace_source=%s canonical_present=%t machine_path=%s machine_present=%t\n", project.Alias, project.State, project.CanonicalPath, project.WorkspaceState, project.WorkspaceSource, project.CanonicalPathPresent, project.MachinePath, project.MachinePathPresent)
 	}
 	return nil
 }
@@ -2304,6 +2345,7 @@ type statusProject struct {
 	Alias                string                    `json:"alias"`
 	WorkspaceSource      string                    `json:"workspace_source"`
 	State                string                    `json:"state"`
+	WorkspaceState       string                    `json:"workspace_state"`
 	Path                 string                    `json:"path"`
 	PathPresent          bool                      `json:"path_present"`
 	CanonicalPath        string                    `json:"canonical_path"`
@@ -2351,6 +2393,7 @@ func newStatusResult(projectName string, reports []readiness.ProjectReport, comm
 			Alias:                report.Project.Alias,
 			WorkspaceSource:      report.Project.Source,
 			State:                string(report.State),
+			WorkspaceState:       workspaceState(report),
 			Path:                 report.Project.LocalPath,
 			PathPresent:          report.LocalPathPresent,
 			CanonicalPath:        report.Project.CanonicalPath,
@@ -2371,6 +2414,40 @@ func newStatusResult(projectName string, reports []readiness.ProjectReport, comm
 func pathPresent(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+func workspaceState(report readiness.ProjectReport) string {
+	switch report.State {
+	case readiness.StateMissing:
+		return "missing"
+	case readiness.StatePlaceholder:
+		return "placeholder"
+	case readiness.StateBlocked:
+		if !report.LocalPathPresent {
+			return "missing"
+		}
+		if hasWorkspaceBlocker(report.Blockers) {
+			return "blocked"
+		}
+		return "hydrated"
+	case readiness.StateDirty, readiness.StateStale, readiness.StatePresent:
+		if report.LocalPathPresent {
+			return "hydrated"
+		}
+		return "missing"
+	default:
+		return "blocked"
+	}
+}
+
+func hasWorkspaceBlocker(blockers []readiness.Diagnostic) bool {
+	for _, blocker := range blockers {
+		switch blocker.Code {
+		case "path-not-directory", "git-status-failed", "invalid-placeholder", "placeholder-mismatch", "placeholder-local-changes":
+			return true
+		}
+	}
+	return false
 }
 
 func statusDiagnostics(report readiness.ProjectReport) commandresult.Diagnostics {
@@ -2401,7 +2478,7 @@ func renderStatusPayloadHuman(w io.Writer, payload statusPayload) error {
 			return nil
 		}
 		for _, project := range payload.Projects {
-			fmt.Fprintf(w, "- %s state=%s workspace_source=%s path_present=%t canonical_present=%t warnings=%d blockers=%d path=%s canonical_path=%s machine_path=%s\n", project.Alias, project.State, project.WorkspaceSource, project.PathPresent, project.CanonicalPathPresent, len(project.Diagnostics.Warnings), len(project.Diagnostics.Blockers), project.Path, project.CanonicalPath, project.MachinePath)
+			fmt.Fprintf(w, "- %s state=%s workspace_state=%s workspace_source=%s path_present=%t canonical_present=%t warnings=%d blockers=%d path=%s canonical_path=%s machine_path=%s\n", project.Alias, project.State, project.WorkspaceState, project.WorkspaceSource, project.PathPresent, project.CanonicalPathPresent, len(project.Diagnostics.Warnings), len(project.Diagnostics.Blockers), project.Path, project.CanonicalPath, project.MachinePath)
 		}
 		return nil
 	}
@@ -2415,6 +2492,7 @@ func renderStatusPayloadHuman(w io.Writer, payload statusPayload) error {
 func printProjectStatus(w io.Writer, project statusProject) {
 	fmt.Fprintf(w, "project: %s\n", project.Alias)
 	fmt.Fprintf(w, "state: %s\n", project.State)
+	fmt.Fprintf(w, "workspace_state: %s\n", project.WorkspaceState)
 	fmt.Fprintf(w, "workspace_source: %s\n", project.WorkspaceSource)
 	fmt.Fprintf(w, "path: %s\n", project.Path)
 	fmt.Fprintf(w, "path_present: %t\n", project.PathPresent)
@@ -2521,7 +2599,7 @@ Usage:
   codemesh status [project] [--base branch] [--json]
   codemesh doctor <project> [--base branch] [--strict] [--json]
   codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]
-  codemesh bootstrap [--all | project... | <manifest-path>] [--dry-run|--apply] [--json]
+  codemesh bootstrap [--all | project... | <manifest-path>] [--dry-run|--apply|--placeholders] [--json]
   codemesh manifest export [--output path]
   codemesh manifest import <path>
   codemesh target export <target-name> --scope scope [--kind kind] [--workspace-root path] [--json]
@@ -2683,13 +2761,14 @@ func printBootstrapHelp(w io.Writer) {
 	fmt.Fprint(w, `Bootstrap missing workspace projects.
 
 Usage:
-  codemesh bootstrap [--all | project... | <manifest-path>] [--dry-run|--apply] [--json]
+  codemesh bootstrap [--all | project... | <manifest-path>] [--dry-run|--apply|--placeholders] [--json]
 
 With --all or project names, reads registered Projects from the local Project Registry.
 With a manifest path, reads one manifest entry file or a directory of JSON entries first.
 Default mode and --dry-run report the plan only, including clone/refusal actions.
 --apply refuses blockers before Git, then clones missing planned Projects.
-Bootstrap does not create placeholders, start a daemon, mount a filesystem, or sync arbitrary files.
+--placeholders refuses blockers, then writes metadata-only sentinel directories without source content.
+Bootstrap does not start a daemon, mount a filesystem, or sync arbitrary files.
 Use --json for the stable command result shape.
 `)
 }

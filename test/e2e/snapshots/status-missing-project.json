@@ -41,7 +41,8 @@
           "path_present": false,
           "remote": "<FIXTURE_REMOTES>/contract-missing-project.git",
           "state": "missing",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "missing"
         }
       ]
     }

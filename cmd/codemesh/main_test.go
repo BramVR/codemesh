@@ -381,6 +381,229 @@ func TestBootstrapPlansThenAppliesTopologyWithoutProjectDirectories(t *testing.T
 	}
 }
 
+func TestBootstrapPlaceholdersCreatesHonestWorkspaceStructure(t *testing.T) {
+	tmp := t.TempDir()
+	runGit(t, tmp, "init", "-b", "main")
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	alphaPath := filepath.Join(workspace, "tools", "alpha")
+	remoteSource := createCommittedLocalRemoteClone(t, "placeholder-alpha")
+	remote := strings.TrimSpace(runGitOutput(t, remoteSource, "remote", "get-url", "origin"))
+	manifestDir := filepath.Join(tmp, "manifest")
+	writeManifestEntryWithCloneURL(t, manifestDir, "alpha.json", "https://example.invalid/bram/alpha", "alpha", "tools/alpha", remote)
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", manifestDir, "--placeholders"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("bootstrap placeholders exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{
+		"bootstrap plan",
+		"placeholders: true",
+		"placeholder: alpha " + alphaPath,
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("bootstrap placeholders output missing %q:\n%s", want, stdout.String())
+		}
+	}
+	if _, err := os.Stat(filepath.Join(alphaPath, ".codemesh-placeholder.json")); err != nil {
+		t.Fatalf("placeholder metadata missing: %v", err)
+	}
+	if note, err := os.ReadFile(filepath.Join(alphaPath, "CODEMESH_PLACEHOLDER.txt")); err != nil || !strings.Contains(string(note), "not a Git checkout") {
+		t.Fatalf("placeholder note = %q err %v", note, err)
+	}
+	if barrier, err := os.ReadFile(filepath.Join(alphaPath, ".git")); err != nil || !strings.Contains(string(barrier), "not a Git checkout") {
+		t.Fatalf("placeholder Git barrier = %q err %v", barrier, err)
+	}
+	gitStatus := exec.Command("git", "-C", alphaPath, "status", "--porcelain")
+	if err := gitStatus.Run(); err == nil {
+		t.Fatalf("git status succeeded inside placeholder; ordinary Git must not see a checkout")
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"tree", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("tree --json exit code = %d, want 0 for readiness report\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	treeProjects := decodeWorkspaceProjects(t, stdout.Bytes())
+	assertWorkspaceProject(t, treeProjects["alpha"], workspaceProjectWant{
+		Alias:                "alpha",
+		WorkspaceSource:      "canonical",
+		State:                "placeholder",
+		WorkspaceState:       "placeholder",
+		Path:                 alphaPath,
+		PathPresent:          true,
+		CanonicalPath:        alphaPath,
+		CanonicalPathPresent: true,
+		MachinePath:          alphaPath,
+		MachinePathPresent:   true,
+		Blockers:             1,
+	})
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"status", "alpha", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("status alpha --json exit code = %d, want 0 for readiness report\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	statusProjects := decodeWorkspaceProjects(t, stdout.Bytes())
+	assertWorkspaceProject(t, statusProjects["alpha"], workspaceProjectWant{
+		Alias:                "alpha",
+		WorkspaceSource:      "canonical",
+		State:                "placeholder",
+		WorkspaceState:       "placeholder",
+		Path:                 alphaPath,
+		PathPresent:          true,
+		CanonicalPath:        alphaPath,
+		CanonicalPathPresent: true,
+		MachinePath:          alphaPath,
+		MachinePathPresent:   true,
+		Blockers:             1,
+	})
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"hydrate", "alpha", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("hydrate alpha from placeholder exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if err := assertHydrateJSON(stdout.Bytes(), "success", "alpha", "hydrated", alphaPath, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(alphaPath, "README.md")); err != nil {
+		t.Fatalf("hydrated checkout missing README: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(alphaPath, ".codemesh-placeholder.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("placeholder metadata survived hydration or stat failed unexpectedly: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(alphaPath, ".git")); err != nil {
+		t.Fatalf("hydrated checkout missing .git: %v", err)
+	}
+}
+
+func TestHydrateRefusesModifiedPlaceholder(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	alphaPath := filepath.Join(workspace, "alpha")
+	remoteSource := createCommittedLocalRemoteClone(t, "modified-placeholder-alpha")
+	remote := strings.TrimSpace(runGitOutput(t, remoteSource, "remote", "get-url", "origin"))
+	manifestDir := filepath.Join(tmp, "manifest")
+	writeManifestEntryWithCloneURL(t, manifestDir, "alpha.json", "https://example.invalid/bram/alpha", "alpha", "alpha", remote)
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	if code := run([]string{"bootstrap", manifestDir, "--placeholders"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("bootstrap placeholders exit code = %d, want 0", code)
+	}
+	notePath := filepath.Join(alphaPath, "CODEMESH_PLACEHOLDER.txt")
+	if err := os.WriteFile(notePath, []byte("user edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"hydrate", "alpha", "--json"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("hydrate modified placeholder exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("hydrate modified placeholder stderr = %q, want empty", stderr.String())
+	}
+	if err := assertHydrateJSON(stdout.Bytes(), "readiness-blocked", "alpha", "path-conflict", alphaPath, true, []string{"path-conflict"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(notePath); err != nil || string(got) != "user edit\n" {
+		t.Fatalf("edited placeholder note changed or missing: got %q err %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(alphaPath, "README.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("hydrate wrote checkout content despite modified placeholder: %v", err)
+	}
+}
+
+func TestStatusTreatsCheckoutWithPlaceholderNamedFileAsHydrated(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "codemesh-home")
+	repo := createCommittedLocalRemoteClone(t, "checkout-placeholder-name")
+	if realRepo, err := filepath.EvalSymlinks(repo); err == nil {
+		repo = realRepo
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".codemesh-placeholder.json"), []byte("{not placeholder metadata}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"add", repo, "--alias", "checkout-placeholder-name"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"status", "checkout-placeholder-name", "--base", "main", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("status checkout exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	projects := decodeWorkspaceProjects(t, stdout.Bytes())
+	assertWorkspaceProject(t, projects["checkout-placeholder-name"], workspaceProjectWant{
+		Alias:                "checkout-placeholder-name",
+		State:                "dirty",
+		WorkspaceState:       "hydrated",
+		Path:                 repo,
+		PathPresent:          true,
+		CanonicalPath:        repo,
+		CanonicalPathPresent: true,
+		MachinePath:          repo,
+		MachinePathPresent:   true,
+	})
+}
+
+func TestHydrateReplacesWorkspaceRootPlaceholder(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	remoteSource := createCommittedLocalRemoteClone(t, "root-placeholder-alpha")
+	remote := strings.TrimSpace(runGitOutput(t, remoteSource, "remote", "get-url", "origin"))
+	manifestDir := filepath.Join(tmp, "manifest")
+	writeManifestEntryWithCloneURL(t, manifestDir, "alpha.json", "https://example.invalid/bram/alpha", "alpha", ".", remote)
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	if code := run([]string{"bootstrap", manifestDir, "--placeholders"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("bootstrap root placeholder exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"hydrate", "alpha", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("hydrate root placeholder exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if err := assertHydrateJSON(stdout.Bytes(), "success", "alpha", "hydrated", workspace, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "README.md")); err != nil {
+		t.Fatalf("root placeholder hydrate missing README: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, ".codemesh-placeholder.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("root placeholder metadata survived hydration or stat failed unexpectedly: %v", err)
+	}
+}
+
 func TestBootstrapJSONReportsPathConflictWithoutMutation(t *testing.T) {
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, "codemesh-home")
@@ -1902,6 +2125,7 @@ type workspaceProjectPayload struct {
 	Alias                string `json:"alias"`
 	WorkspaceSource      string `json:"workspace_source"`
 	State                string `json:"state"`
+	WorkspaceState       string `json:"workspace_state"`
 	Path                 string `json:"path"`
 	PathPresent          bool   `json:"path_present"`
 	CanonicalPath        string `json:"canonical_path"`
@@ -1910,16 +2134,28 @@ type workspaceProjectPayload struct {
 	MachinePathPresent   bool   `json:"machine_path_present"`
 	Remote               string `json:"remote"`
 	Base                 string `json:"base"`
+	Diagnostics          struct {
+		Warnings []struct {
+			Code string `json:"code"`
+		} `json:"warnings"`
+		Blockers []struct {
+			Code string `json:"code"`
+		} `json:"blockers"`
+	} `json:"diagnostics"`
 }
 
 type workspaceProjectWant struct {
 	Alias                string
 	WorkspaceSource      string
 	State                string
+	WorkspaceState       string
+	Path                 string
+	PathPresent          bool
 	CanonicalPath        string
 	CanonicalPathPresent bool
 	MachinePath          string
 	MachinePathPresent   bool
+	Blockers             int
 }
 
 func decodeWorkspaceProjects(t *testing.T, data []byte) map[string]workspaceProjectPayload {
@@ -1941,13 +2177,16 @@ func decodeWorkspaceProjects(t *testing.T, data []byte) map[string]workspaceProj
 
 func assertWorkspaceProject(t *testing.T, got workspaceProjectPayload, want workspaceProjectWant) {
 	t.Helper()
-	if got.Alias != want.Alias ||
-		got.WorkspaceSource != want.WorkspaceSource ||
+	if (want.Alias != "" && got.Alias != want.Alias) ||
+		(want.WorkspaceSource != "" && got.WorkspaceSource != want.WorkspaceSource) ||
 		got.State != want.State ||
+		(want.WorkspaceState != "" && got.WorkspaceState != want.WorkspaceState) ||
+		(want.Path != "" && (got.Path != want.Path || got.PathPresent != want.PathPresent)) ||
 		got.CanonicalPath != want.CanonicalPath ||
 		got.CanonicalPathPresent != want.CanonicalPathPresent ||
 		got.MachinePath != want.MachinePath ||
-		got.MachinePathPresent != want.MachinePathPresent {
+		got.MachinePathPresent != want.MachinePathPresent ||
+		(want.Blockers != 0 && len(got.Diagnostics.Blockers) != want.Blockers) {
 		t.Fatalf("workspace project = %#v, want %#v", got, want)
 	}
 }

@@ -25,7 +25,7 @@ func TestPlannerClassifiesCanonicalProjectActionsWithoutGit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(present, ".git"), []byte("gitdir marker\n"), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(present, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(conflict, "local.txt"), []byte("keep\n"), 0o644); err != nil {

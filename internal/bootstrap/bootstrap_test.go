@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BramVR/codemesh/internal/hydrationexecutor"
 	"github.com/BramVR/codemesh/internal/reconciliation"
 	"github.com/BramVR/codemesh/internal/state"
 	"github.com/BramVR/codemesh/internal/workspacemanifest"
@@ -158,6 +159,258 @@ func TestApplyRefusesPathConflictWithoutMutation(t *testing.T) {
 	}
 	if got, err := os.ReadFile(marker); err != nil || string(got) != "keep\n" {
 		t.Fatalf("conflict marker changed or missing: got %q err %v", got, err)
+	}
+}
+
+func TestEnsurePlaceholderDestinationWithinRootRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(workspace, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(link, "alpha")
+
+	err := ensurePlaceholderDestinationWithinRoot(workspace, destination)
+	if err == nil {
+		t.Fatal("ensurePlaceholderDestinationWithinRoot error = nil, want unsafe path")
+	}
+	var unsafe hydrationexecutor.UnsafePathError
+	if !errors.As(err, &unsafe) {
+		t.Fatalf("ensurePlaceholderDestinationWithinRoot error = %T %v, want UnsafePathError", err, err)
+	}
+	if unsafe.Path != destination {
+		t.Fatalf("unsafe path = %q, want %q", unsafe.Path, destination)
+	}
+}
+
+func TestPlaceholdersRegistryRefusesOverlappingPathsBeforeMutation(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	parentPath := filepath.Join(workspace, "tools", "parent")
+	childPath := filepath.Join(parentPath, "child")
+	store := newMemoryStore(machine(workspace))
+	store.projects = []state.Project{
+		{
+			ID:               1,
+			Alias:            "parent",
+			NormalizedRemote: "https://example.invalid/bram/parent",
+			CloneURL:         "https://example.invalid/bram/parent.git",
+			LocalPath:        parentPath,
+			CanonicalPath:    parentPath,
+			Source:           "canonical",
+		},
+		{
+			ID:               2,
+			Alias:            "child",
+			NormalizedRemote: "https://example.invalid/bram/child",
+			CloneURL:         "https://example.invalid/bram/child.git",
+			LocalPath:        childPath,
+			CanonicalPath:    childPath,
+			Source:           "canonical",
+		},
+	}
+	store.nextID = 3
+
+	result, err := Bootstrapper{Store: store}.PlaceholdersRegistry(context.Background(), nil, true)
+	if err == nil {
+		t.Fatal("PlaceholdersRegistry error = nil, want overlapping path blocker")
+	}
+	var blocked HydrationBlockedError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("PlaceholdersRegistry error = %T %v, want HydrationBlockedError", err, err)
+	}
+	if !result.HydrationPlan.Blocked || len(result.HydrationPlan.Actions) == 0 {
+		t.Fatalf("hydration plan = %#v, want blocked path-conflict action", result.HydrationPlan)
+	}
+	if _, err := os.Stat(parentPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("parent placeholder was created before overlap refusal: %v", err)
+	}
+	if _, err := os.Stat(childPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("child placeholder was created before overlap refusal: %v", err)
+	}
+}
+
+func TestPlaceholdersRegistryRefusesPlaceholderInsidePresentCheckout(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	parentPath := filepath.Join(workspace, "tools", "parent")
+	childPath := filepath.Join(parentPath, "child")
+	if err := os.MkdirAll(filepath.Join(parentPath, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := newMemoryStore(machine(workspace))
+	store.projects = []state.Project{
+		{
+			ID:               1,
+			Alias:            "parent",
+			NormalizedRemote: "https://example.invalid/bram/parent",
+			CloneURL:         "https://example.invalid/bram/parent.git",
+			LocalPath:        parentPath,
+			CanonicalPath:    parentPath,
+			Source:           "canonical",
+		},
+		{
+			ID:               2,
+			Alias:            "child",
+			NormalizedRemote: "https://example.invalid/bram/child",
+			CloneURL:         "https://example.invalid/bram/child.git",
+			LocalPath:        childPath,
+			CanonicalPath:    childPath,
+			Source:           "canonical",
+		},
+	}
+	store.nextID = 3
+
+	result, err := Bootstrapper{Store: store}.PlaceholdersRegistry(context.Background(), nil, true)
+	if err == nil {
+		t.Fatal("PlaceholdersRegistry error = nil, want present checkout overlap blocker")
+	}
+	var blocked HydrationBlockedError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("PlaceholdersRegistry error = %T %v, want HydrationBlockedError", err, err)
+	}
+	if !result.HydrationPlan.Blocked {
+		t.Fatalf("hydration plan = %#v, want blocked path-conflict action", result.HydrationPlan)
+	}
+	if _, err := os.Stat(childPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("child placeholder was created inside present checkout: %v", err)
+	}
+}
+
+func TestPlaceholdersRegistryPersistsCanonicalPlacement(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	observedPath := filepath.Join(workspace, "old-alpha")
+	canonicalPath := filepath.Join(workspace, "tools", "alpha")
+	store := newMemoryStore(machine(workspace))
+	store.projects = []state.Project{{
+		ID:               1,
+		Alias:            "alpha",
+		NormalizedRemote: "https://example.invalid/bram/alpha",
+		CloneURL:         "https://example.invalid/bram/alpha.git",
+		LocalPath:        observedPath,
+		CanonicalPath:    canonicalPath,
+		Source:           "canonical",
+	}}
+	store.nextID = 2
+
+	result, err := Bootstrapper{Store: store}.PlaceholdersRegistry(context.Background(), nil, true)
+	if err != nil {
+		t.Fatalf("PlaceholdersRegistry error = %v", err)
+	}
+	if len(result.Applied.PlaceholderProjects) != 1 || result.Applied.PlaceholderProjects[0].Path != canonicalPath {
+		t.Fatalf("placeholder projects = %#v, want alpha at canonical path", result.Applied.PlaceholderProjects)
+	}
+	if len(result.Applied.UpdatedProjects) != 1 || result.Applied.UpdatedProjects[0].LocalPath != canonicalPath {
+		t.Fatalf("updated projects = %#v, want canonical placement persisted", result.Applied.UpdatedProjects)
+	}
+	if store.projects[0].LocalPath != canonicalPath || store.projects[0].CanonicalPath != canonicalPath {
+		t.Fatalf("project row = %#v, want canonical path persisted", store.projects[0])
+	}
+	if _, err := os.Stat(filepath.Join(canonicalPath, ".codemesh-placeholder.json")); err != nil {
+		t.Fatalf("placeholder metadata missing at canonical path: %v", err)
+	}
+	if _, err := os.Stat(observedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("observed path mutated unexpectedly: %v", err)
+	}
+}
+
+func TestPlaceholdersRefusesSymlinkEscapeBeforeImportMutation(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	outside := filepath.Join(root, "outside")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "link")); err != nil {
+		t.Fatal(err)
+	}
+	store := newMemoryStore(machine(workspace))
+
+	result, err := Bootstrapper{Store: store}.Placeholders(context.Background(), []workspacemanifest.Entry{
+		manifestEntry("https://example.invalid/bram/alpha", "alpha", "link/alpha", "https://example.invalid/bram/alpha.git"),
+	})
+	if err == nil {
+		t.Fatal("Placeholders error = nil, want unsafe path blocker")
+	}
+	var hydrationBlocked HydrationBlockedError
+	var planBlocked BlockedError
+	if !errors.As(err, &hydrationBlocked) && !errors.As(err, &planBlocked) {
+		t.Fatalf("Placeholders error = %T %v, want blocked placeholder refusal", err, err)
+	}
+	if !result.Plan.Blocked && !result.HydrationPlan.Blocked {
+		t.Fatalf("result = %#v, want blocked unsafe path", result)
+	}
+	if len(store.projects) != 0 {
+		t.Fatalf("project rows = %#v, want no import mutation", store.projects)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "alpha")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("placeholder escaped outside workspace or stat failed unexpectedly: %v", err)
+	}
+}
+
+func TestPlaceholdersRegistryRefusesUnsafePathBeforeAnyPlaceholderWrite(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	outside := filepath.Join(root, "outside")
+	safePath := filepath.Join(workspace, "alpha")
+	unsafePath := filepath.Join(workspace, "link", "beta")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "link")); err != nil {
+		t.Fatal(err)
+	}
+	store := newMemoryStore(machine(workspace))
+	store.projects = []state.Project{
+		{
+			ID:               1,
+			Alias:            "alpha",
+			NormalizedRemote: "https://example.invalid/bram/alpha",
+			CloneURL:         "https://example.invalid/bram/alpha.git",
+			LocalPath:        safePath,
+			CanonicalPath:    safePath,
+			Source:           "canonical",
+		},
+		{
+			ID:               2,
+			Alias:            "beta",
+			NormalizedRemote: "https://example.invalid/bram/beta",
+			CloneURL:         "https://example.invalid/bram/beta.git",
+			LocalPath:        unsafePath,
+			CanonicalPath:    unsafePath,
+			Source:           "canonical",
+		},
+	}
+	store.nextID = 3
+
+	result, err := Bootstrapper{Store: store}.PlaceholdersRegistry(context.Background(), nil, true)
+	if err == nil {
+		t.Fatal("PlaceholdersRegistry error = nil, want unsafe path blocker")
+	}
+	var blocked HydrationBlockedError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("PlaceholdersRegistry error = %T %v, want HydrationBlockedError", err, err)
+	}
+	if !result.HydrationPlan.Blocked {
+		t.Fatalf("hydration plan = %#v, want blocked unsafe path", result.HydrationPlan)
+	}
+	if _, err := os.Stat(safePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("safe placeholder was written before unsafe refusal: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "beta")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsafe placeholder escaped outside workspace or stat failed unexpectedly: %v", err)
 	}
 }
 

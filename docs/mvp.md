@@ -265,7 +265,7 @@ States:
 - stale
 - env-missing
 
-Output includes canonical path presence and current-machine path presence. Imported manifest Projects can be shown as canonical and missing before hydration. Local-only scanned Projects remain visible as local-only until manifest topology makes them canonical.
+Output includes canonical path presence, current-machine path presence, and `workspace_state` for hydrated, placeholder, missing, or blocked path states. Imported manifest Projects can be shown as canonical and missing before hydration. Local-only scanned Projects remain visible as local-only until manifest topology makes them canonical.
 
 ### `codemesh status [project] [--base branch] [--json]`
 
@@ -299,18 +299,19 @@ Rules:
 
 Clones a missing project into its desired local path through the selected Clone Strategy after the shared Hydration Planner classifies the Project as present, missing, path-conflicted, unsafe, or unknown. Full clone remains the default; `--partial-clone` and repeatable `--sparse path` are explicit Git-native lazy checkout opt-ins.
 
-Does not create placeholders.
+Can replace an unmodified CodeMesh-owned placeholder with a real checkout. Does not perform lazy hydration on path access.
 
 ### `codemesh bootstrap [--all | project... | <manifest-path>]`
 
-Reads registered Projects or Workspace Manifest JSON entries, compares them against the registered local machine workspace root and Project Registry, and prints a plan with planned clone/refusal actions from the same Hydration Planner used by `hydrate`. `--dry-run` is explicit preview mode. `--apply` refuses blockers before Git, creates needed parent directories and registry rows when a manifest is supplied, then clones planned missing Projects.
+Reads registered Projects or Workspace Manifest JSON entries, compares them against the registered local machine workspace root and Project Registry, and prints a plan with planned clone/refusal actions from the same Hydration Planner used by `hydrate`. `--dry-run` is explicit preview mode. `--placeholders` refuses the same blockers, creates registry rows when a manifest is supplied, and writes metadata-only placeholder sentinels. `--apply` refuses blockers before Git, creates needed parent directories and registry rows when a manifest is supplied, then clones planned missing Projects.
 
 Rules:
 
 - requires local machine registration
 - blocks path conflicts before mutation
+- writes honest placeholder directories only when explicitly requested
 - clones only explicit planned missing Projects on `--apply`
-- does not create project placeholder directories
+- does not start a daemon, mount a filesystem, or hydrate lazily on path access
 
 ### `codemesh manifest export [--output path]`
 
