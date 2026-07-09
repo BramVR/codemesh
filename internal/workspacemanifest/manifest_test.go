@@ -1214,23 +1214,59 @@ func TestImportPlanRejectsCredentialBearingCloneHintWithoutEchoingIt(t *testing.
 }
 
 func TestImportPlanAllowsSecretFreeLocalCloneHint(t *testing.T) {
-	plan, err := PlanImport([]Entry{
-		{
-			ManifestVersion: ManifestVersion,
-			Project: ProjectEntry{
-				Identity:    "https://example.invalid/org/repo",
-				Alias:       "repo",
-				DesiredPath: "repo",
-				CloneHints:  CloneHints{URL: "/tmp/codemesh-fixtures/repo.git"},
-				Groups:      []string{},
-			},
-		},
-	}, nil, "/workspace")
-	if err != nil {
-		t.Fatalf("PlanImport error = %v", err)
+	for _, cloneHint := range []string{
+		"/tmp/codemesh-fixtures/repo.git",
+		"file:///tmp/codemesh-fixtures/repo.git",
+		"file:///C:/tmp/codemesh-fixtures/repo.git",
+	} {
+		t.Run(cloneHint, func(t *testing.T) {
+			plan, err := PlanImport([]Entry{
+				{
+					ManifestVersion: ManifestVersion,
+					Project: ProjectEntry{
+						Identity:    "https://example.invalid/org/repo",
+						Alias:       "repo",
+						DesiredPath: "repo",
+						CloneHints:  CloneHints{URL: cloneHint},
+						Groups:      []string{},
+					},
+				},
+			}, nil, "/workspace")
+			if err != nil {
+				t.Fatalf("PlanImport error = %v", err)
+			}
+			if len(plan.Changes) != 1 || plan.Changes[0].CloneURL != cloneHint {
+				t.Fatalf("plan changes = %#v, want local clone hint preserved", plan.Changes)
+			}
+		})
 	}
-	if len(plan.Changes) != 1 || plan.Changes[0].CloneURL != "/tmp/codemesh-fixtures/repo.git" {
-		t.Fatalf("plan changes = %#v, want local clone hint preserved", plan.Changes)
+}
+
+func TestImportPlanRejectsUnsafeFileCloneHints(t *testing.T) {
+	for _, cloneHint := range []string{
+		"file://example.invalid/tmp/repo.git",
+		"file:repo.git",
+	} {
+		t.Run(cloneHint, func(t *testing.T) {
+			_, err := PlanImport([]Entry{
+				{
+					ManifestVersion: ManifestVersion,
+					Project: ProjectEntry{
+						Identity:    "https://example.invalid/org/repo",
+						Alias:       "repo",
+						DesiredPath: "repo",
+						CloneHints:  CloneHints{URL: cloneHint},
+						Groups:      []string{},
+					},
+				},
+			}, nil, "/workspace")
+			if err == nil {
+				t.Fatal("PlanImport error = nil, want unsafe file clone hint rejection")
+			}
+			if strings.Contains(err.Error(), cloneHint) {
+				t.Fatalf("PlanImport error leaked unsafe clone hint: %v", err)
+			}
+		})
 	}
 }
 
