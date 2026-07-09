@@ -299,14 +299,16 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	if gitSeesPlaceholder {
 		return errors.New("placeholder looked like a usable Git checkout")
 	}
-	hydratePlaceholder, err := r.runCodeMesh("machine C hydrate placeholder mesh-target", machineC, "hydrate", "mesh-target")
+	accessPlaceholder, err := r.runCodeMesh("machine C access placeholder mesh-target", machineC, "access", "mesh-target", "--json")
 	if err != nil {
 		return err
 	}
-	if !strings.Contains(hydratePlaceholder.stdout, "hydrated project: mesh-target") {
-		return errors.New("placeholder hydrate proof did not report hydrated project")
+	if !strings.Contains(accessPlaceholder.stdout, `"trigger":"command-access"`) ||
+		!strings.Contains(accessPlaceholder.stdout, `"transition":{"from":"placeholder","to":"hydrated"}`) ||
+		!strings.Contains(accessPlaceholder.stdout, `"outcome":"hydrated"`) {
+		return errors.New("access-triggered hydration proof did not report placeholder-to-hydrated transition")
 	}
-	treeAfterPlaceholderHydrate, err := r.runCodeMesh("machine C tree after placeholder hydrate", machineC, "tree")
+	treeAfterAccessHydrate, err := r.runCodeMesh("machine C tree after access hydrate", machineC, "tree")
 	if err != nil {
 		return err
 	}
@@ -428,14 +430,26 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	placeholderLines = append(placeholderLines, "", "Placeholder status", "")
 	placeholderLines = append(placeholderLines, linesFromText(statusAfterPlaceholders.stdout)...)
 	placeholderLines = append(placeholderLines, "", "Tool honesty", "git_status_exit_nonzero: true")
-	placeholderLines = append(placeholderLines, "", "Explicit hydrate from placeholder", "")
-	placeholderLines = append(placeholderLines, linesFromText(hydratePlaceholder.stdout)...)
-	placeholderLines = append(placeholderLines, "", "After placeholder hydrate", "")
-	placeholderLines = append(placeholderLines, linesFromText(treeAfterPlaceholderHydrate.stdout)...)
+	placeholderLines = append(placeholderLines, "", "Access-triggered hydration from placeholder", "")
+	placeholderLines = append(placeholderLines, linesFromText(accessPlaceholder.stdout)...)
+	placeholderLines = append(placeholderLines, "", "After access hydration", "")
+	placeholderLines = append(placeholderLines, linesFromText(treeAfterAccessHydrate.stdout)...)
 	if err := writeText(filepath.Join(outAbs, "placeholder-workspace-structure.txt"), strings.Join(placeholderLines, "\n")+"\n"); err != nil {
 		return err
 	}
 	if err := writeSVG(filepath.Join(outAbs, "placeholder-workspace-structure.svg"), "Placeholder workspace structure", placeholderLines); err != nil {
+		return err
+	}
+	accessLines := []string{"Before access-triggered hydration", ""}
+	accessLines = append(accessLines, linesFromText(statusAfterPlaceholders.stdout)...)
+	accessLines = append(accessLines, "", "Command access", "")
+	accessLines = append(accessLines, linesFromText(accessPlaceholder.stdout)...)
+	accessLines = append(accessLines, "", "After access-triggered hydration", "")
+	accessLines = append(accessLines, linesFromText(treeAfterAccessHydrate.stdout)...)
+	if err := writeText(filepath.Join(outAbs, "access-triggered-hydration.txt"), strings.Join(accessLines, "\n")+"\n"); err != nil {
+		return err
+	}
+	if err := writeSVG(filepath.Join(outAbs, "access-triggered-hydration.svg"), "Access-triggered lazy hydration", accessLines); err != nil {
 		return err
 	}
 	flowLines := []string{"Before bootstrap", ""}
@@ -470,6 +484,8 @@ func runProof(bin, outDir, fixtureRoot string) error {
 		{"source-less-agent-prep.txt", "source-less-agent-prep.txt", "text"},
 		{"placeholder-workspace-structure.svg", "placeholder-workspace-structure.svg", "visual"},
 		{"placeholder-workspace-structure.txt", "placeholder-workspace-structure.txt", "text"},
+		{"access-triggered-hydration.svg", "access-triggered-hydration.svg", "visual"},
+		{"access-triggered-hydration.txt", "access-triggered-hydration.txt", "text"},
 		{"mutating-flow-before-after.svg", "mutating-flow-before-after.svg", "visual"},
 		{"mutating-flow-before-after.txt", "mutating-flow-before-after.txt", "text"},
 		{"workspace-manifest.json", "workspace-manifest.json", "manifest"},
@@ -508,6 +524,7 @@ func runProof(bin, outDir, fixtureRoot string) error {
 			"bootstrap-hydration-plan",
 			"source-less-agent-prep",
 			"placeholder-workspace-structure",
+			"access-triggered-hydration",
 			"mutating-flow-before-after",
 		},
 		Commands:     r.commands,
@@ -1028,7 +1045,7 @@ func validateProofBundle(root string) error {
 	if len(manifest.Commands) == 0 {
 		problems = append(problems, "real command list is empty")
 	}
-	for _, required := range []string{"canonical-workspace-tree", "machine-placement-presence", "bootstrap-hydration-plan", "source-less-agent-prep", "placeholder-workspace-structure", "mutating-flow-before-after"} {
+	for _, required := range []string{"canonical-workspace-tree", "machine-placement-presence", "bootstrap-hydration-plan", "source-less-agent-prep", "placeholder-workspace-structure", "access-triggered-hydration", "mutating-flow-before-after"} {
 		if !contains(manifest.Coverage, required) {
 			problems = append(problems, "coverage missing "+required)
 		}
@@ -1039,6 +1056,7 @@ func validateProofBundle(root string) error {
 		"bootstrap-hydration-plan.svg":        false,
 		"source-less-agent-prep.svg":          false,
 		"placeholder-workspace-structure.svg": false,
+		"access-triggered-hydration.svg":      false,
 		"mutating-flow-before-after.svg":      false,
 		"summary.md":                          false,
 		"workspace-manifest.json":             false,

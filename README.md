@@ -65,7 +65,7 @@ Use `make docs:list` before docs or behavior changes to find relevant `Read when
 
 ## Status
 
-Local state bootstrap, Project Registry, Readiness status reporting, manifest-driven topology bootstrap without cloning, explicit missing-project hydration, Agent Prep, run listing, and guarded cleanup. The current command surface is documented in the [Command Catalog](docs/commands.md) and checked against CLI help.
+Local state bootstrap, Project Registry, Readiness status reporting, manifest-driven topology bootstrap, explicit missing-project hydration, command-triggered lazy hydration through `codemesh access`, Agent Prep, run listing, and guarded cleanup. The current command surface is documented in the [Command Catalog](docs/commands.md) and checked against CLI help.
 
 ## Docs
 

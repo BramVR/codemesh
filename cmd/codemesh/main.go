@@ -70,6 +70,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runDoctor(args[1:], stdout, stderr)
 	case "hydrate":
 		return runHydrate(args[1:], stdout, stderr)
+	case "access":
+		return runAccess(args[1:], stdout, stderr)
 	case "bootstrap":
 		return runBootstrap(args[1:], stdout, stderr)
 	case "manifest":
@@ -1015,6 +1017,202 @@ func runHydrate(args []string, stdout, stderr io.Writer) int {
 		return commandresult.ExitInternalError.Code()
 	}
 	return 0
+}
+
+func runAccess(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+		printAccessHelp(stdout)
+		return 0
+	}
+	accessArgs, ok := parseAccessArgs(args, stderr)
+	if !ok {
+		printAccessHelp(stderr)
+		return 2
+	}
+	store, err := openMigratedStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open CodeMesh state: %v\n", err)
+		return 1
+	}
+	defer store.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), hydrateTimeout)
+	defer cancel()
+	result, err := registry.New(store).Hydrate(ctx, accessArgs.Project, accessArgs.CloneOptions)
+	if err != nil {
+		commandResult := newAccessErrorResult(accessArgs.Project, result, err)
+		if accessArgs.JSON {
+			if err := presentation.RenderJSON(stdout, commandResult); err != nil {
+				fmt.Fprintf(stderr, "encode access result: %v\n", err)
+				return commandresult.ExitInternalError.Code()
+			}
+			return accessExitCode(commandResult)
+		}
+		if commandResult.ExitClass == commandresult.ExitReadinessBlocked {
+			if err := presentation.RenderHuman(stdout, commandResult, renderAccessPayloadHuman); err != nil {
+				fmt.Fprintf(stderr, "render access result: %v\n", err)
+				return commandresult.ExitInternalError.Code()
+			}
+			return accessExitCode(commandResult)
+		}
+		fmt.Fprintf(stderr, "access project: %v\n", err)
+		return commandResult.ExitClass.Code()
+	}
+	commandResult := newAccessResult(result)
+	if accessArgs.JSON {
+		if err := presentation.RenderJSON(stdout, commandResult); err != nil {
+			fmt.Fprintf(stderr, "encode access result: %v\n", err)
+			return commandresult.ExitInternalError.Code()
+		}
+		return accessExitCode(commandResult)
+	}
+	if err := presentation.RenderHuman(stdout, commandResult, renderAccessPayloadHuman); err != nil {
+		fmt.Fprintf(stderr, "render access result: %v\n", err)
+		return commandresult.ExitInternalError.Code()
+	}
+	return accessExitCode(commandResult)
+}
+
+type parsedAccessArgs struct {
+	Project      string
+	CloneOptions clonestrategy.Options
+	JSON         bool
+}
+
+func parseAccessArgs(args []string, stderr io.Writer) (parsedAccessArgs, bool) {
+	var projects []string
+	var jsonOutput bool
+	var cloneOptions clonestrategy.Options
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOutput = true
+		case "--partial-clone":
+			cloneOptions.Partial = true
+		case "--sparse":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				fmt.Fprint(stderr, "access --sparse requires a project-relative path\n\n")
+				return parsedAccessArgs{}, false
+			}
+			path, ok := parseSparsePath(args[i+1])
+			if !ok {
+				fmt.Fprintf(stderr, "access --sparse path must be project-relative and outside .git: %s\n\n", args[i+1])
+				return parsedAccessArgs{}, false
+			}
+			cloneOptions.SparsePaths = append(cloneOptions.SparsePaths, path)
+			i++
+		default:
+			projects = append(projects, args[i])
+		}
+	}
+	if len(projects) != 1 {
+		fmt.Fprint(stderr, "access requires exactly one project\n\n")
+		return parsedAccessArgs{}, false
+	}
+	return parsedAccessArgs{Project: projects[0], CloneOptions: cloneOptions, JSON: jsonOutput}, true
+}
+
+type accessPayload struct {
+	Project     string           `json:"project"`
+	Outcome     string           `json:"outcome"`
+	Trigger     string           `json:"trigger"`
+	Path        string           `json:"path"`
+	PathPresent bool             `json:"path_present"`
+	Remote      string           `json:"remote"`
+	Transition  accessTransition `json:"transition"`
+	Hydrate     hydratePayload   `json:"hydrate"`
+}
+
+type accessTransition struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+func newAccessResult(result registry.HydrateResult) commandresult.Result[accessPayload] {
+	hydrateResult := newHydrateResult(result)
+	payload := accessPayload{
+		Project:     hydrateResult.Payload.Project,
+		Outcome:     hydrateResult.Payload.Outcome,
+		Trigger:     "command-access",
+		Path:        hydrateResult.Payload.Path,
+		PathPresent: hydrateResult.Payload.PathPresent,
+		Remote:      hydrateResult.Payload.Remote,
+		Transition: accessTransition{
+			From: accessStateFromPlan(result.Action.State),
+			To:   "hydrated",
+		},
+		Hydrate: hydrateResult.Payload,
+	}
+	return commandresult.New("access", hydrateResult.ExitClass, hydrateResult.Diagnostics, payload)
+}
+
+func newAccessErrorResult(projectName string, result registry.HydrateResult, err error) commandresult.Result[accessPayload] {
+	hydrateResult := newHydrateErrorResult(projectName, result, err)
+	payload := accessPayload{
+		Project:     hydrateResult.Payload.Project,
+		Outcome:     hydrateResult.Payload.Outcome,
+		Trigger:     "command-access",
+		Path:        hydrateResult.Payload.Path,
+		PathPresent: hydrateResult.Payload.PathPresent,
+		Remote:      hydrateResult.Payload.Remote,
+		Transition: accessTransition{
+			From: accessStateFromPlan(result.Action.State),
+			To:   accessFailureState(hydrateResult.Payload.Outcome),
+		},
+		Hydrate: hydrateResult.Payload,
+	}
+	return commandresult.New("access", hydrateResult.ExitClass, hydrateResult.Diagnostics, payload)
+}
+
+func accessStateFromPlan(state hydrationplanner.State) string {
+	switch state {
+	case hydrationplanner.StatePresent:
+		return "hydrated"
+	case hydrationplanner.StatePlaceholder:
+		return "placeholder"
+	case hydrationplanner.StateMissing:
+		return "missing"
+	case hydrationplanner.StatePathConflict:
+		return "path-conflict"
+	case hydrationplanner.StateUnsafePath:
+		return "unsafe-path"
+	case hydrationplanner.StateUnknownProject:
+		return "unknown-project"
+	default:
+		return "unknown"
+	}
+}
+
+func accessFailureState(outcome string) string {
+	switch outcome {
+	case "path-conflict", "unsafe-path", "unknown-project":
+		return outcome
+	default:
+		return "failed"
+	}
+}
+
+func renderAccessPayloadHuman(w io.Writer, payload accessPayload) error {
+	fmt.Fprintf(w, "access trigger: %s\n", payload.Trigger)
+	fmt.Fprintf(w, "project: %s\n", payload.Project)
+	fmt.Fprintf(w, "transition: %s -> %s\n", payload.Transition.From, payload.Transition.To)
+	if payload.Outcome == "already-present" {
+		fmt.Fprintf(w, "project already present: %s\npath: %s\n", payload.Project, payload.Path)
+		return nil
+	}
+	if payload.Outcome != "hydrated" {
+		fmt.Fprintf(w, "outcome: %s\npath: %s\n", payload.Outcome, payload.Path)
+		return nil
+	}
+	fmt.Fprintf(w, "hydrated project: %s\npath: %s\nremote: %s\n", payload.Project, payload.Path, payload.Remote)
+	return nil
+}
+
+func accessExitCode(result commandresult.Result[accessPayload]) int {
+	if result.ExitClass == commandresult.ExitReadinessBlocked {
+		return 1
+	}
+	return result.ExitClass.Code()
 }
 
 type parsedHydrateArgs struct {
@@ -2599,6 +2797,7 @@ Usage:
   codemesh status [project] [--base branch] [--json]
   codemesh doctor <project> [--base branch] [--strict] [--json]
   codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]
+  codemesh access <project> [--partial-clone] [--sparse path] [--json]
   codemesh bootstrap [--all | project... | <manifest-path>] [--dry-run|--apply|--placeholders] [--json]
   codemesh manifest export [--output path]
   codemesh manifest import <path>
@@ -2619,6 +2818,7 @@ Commands:
   status     report project readiness
   doctor     preflight agent handoff readiness without creating a run
   hydrate    clone a missing project into its desired path
+  access     lazily hydrate a known project on explicit command access
   bootstrap  plan or clone missing registered projects
   manifest   export or import portable workspace manifests
   target     export target-ready workspace specs
@@ -2753,6 +2953,19 @@ Usage:
 Clones the registered remote into the desired local path.
 Refuses existing non-empty non-Git paths.
 Use --partial-clone and repeatable --sparse path for explicit Git-native laziness.
+Use --json for the stable command result shape.
+`)
+}
+
+func printAccessHelp(w io.Writer) {
+	fmt.Fprint(w, `Access one known project, lazily hydrating if needed.
+
+Usage:
+  codemesh access <project> [--partial-clone] [--sparse path] [--json]
+
+Uses the same Hydration Planner and clone safety checks as hydrate.
+Reports the command-access transition from missing or placeholder to hydrated.
+Does not start a daemon, watch paths, mount a filesystem, or sync background content.
 Use --json for the stable command result shape.
 `)
 }

@@ -15,6 +15,7 @@
         "commands/status.md",
         "commands/doctor.md",
         "commands/hydrate.md",
+        "commands/access.md",
         "commands/bootstrap.md",
         "commands/manifest-export.md",
         "commands/manifest-import.md",

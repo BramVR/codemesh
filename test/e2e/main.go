@@ -3427,6 +3427,15 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 		h.record(result{Name: "hydration other canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
+	accessTarget, err := h.createClonedFixture(s.fixtures, "access-target", nil)
+	if err != nil {
+		h.record(result{Name: "hydration fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if accessTarget.Source, err = filepath.EvalSymlinks(accessTarget.Source); err != nil {
+		h.record(result{Name: "access target canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
 	conflict, err := h.createClonedFixture(s.fixtures, "hydrate-conflict", nil)
 	if err != nil {
 		h.record(result{Name: "hydration fixture workflow", Status: "FAIL", Error: err.Error(), ExitCode: -1})
@@ -3436,7 +3445,7 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 		h.record(result{Name: "hydration conflict canonical path", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
-	for _, project := range []gitFixtureProject{target, other, conflict} {
+	for _, project := range []gitFixtureProject{target, other, accessTarget, conflict} {
 		add := s.command("hydration add "+project.Name, "add", project.Source)
 		if add.Status != "PASS" {
 			return
@@ -3448,6 +3457,10 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 	}
 	if err := os.RemoveAll(other.Source); err != nil {
 		h.record(result{Name: "hydration remove other source", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if err := os.RemoveAll(accessTarget.Source); err != nil {
+		h.record(result{Name: "hydration remove access target source", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
 	if err := os.RemoveAll(conflict.Source); err != nil {
@@ -3465,7 +3478,7 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 	}
 
 	before := s.command("hydration tree before", "tree")
-	if before.Status != "PASS" || !s.expectOutput(before, "hydrate-target missing", "hydrate-other missing", "hydrate-conflict blocked") {
+	if before.Status != "PASS" || !s.expectOutput(before, "hydrate-target missing", "hydrate-other missing", "access-target missing", "hydrate-conflict blocked") {
 		return
 	}
 
@@ -3502,6 +3515,16 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 	if noopJSON.Status != "PASS" || !s.expectHydrateJSON(noopJSON, "success", "hydrate-other", "already-present", other.Source, true, nil) {
 		return
 	}
+	accessJSON := s.command("access missing fixture json", "access", "access-target", "--json")
+	if accessJSON.Status != "PASS" || !s.expectAccessJSON(accessJSON, "success", "access-target", "hydrated", accessTarget.Source, true, "missing", "hydrated", nil) {
+		return
+	}
+	if !s.expectGitCheckoutAtBase("access checkout branch", accessTarget.Source, accessTarget.BaseBranch) {
+		return
+	}
+	if !s.expectGitOrigin("access checkout origin", accessTarget.Source, accessTarget.Remote) {
+		return
+	}
 
 	conflictResult := s.expectedFailure("hydrate path conflict refusal", "hydrate", "hydrate-conflict", "--json")
 	if conflictResult.Status != "FAIL" {
@@ -3525,7 +3548,7 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 	}
 
 	after := s.command("hydration tree after", "tree")
-	if after.Status != "PASS" || !s.expectOutput(after, "hydrate-target present", "hydrate-other present", "hydrate-conflict blocked") {
+	if after.Status != "PASS" || !s.expectOutput(after, "hydrate-target present", "hydrate-other present", "access-target present", "hydrate-conflict blocked") {
 		return
 	}
 
@@ -5884,6 +5907,51 @@ func (s *scenario) expectHydrateJSON(r result, exitClass, alias, outcome, path s
 		return false
 	}
 	if err := diagnosticCodesMatch("hydrate blockers", hydrateBlockerCodes(payload.Diagnostics.Blockers), blockerCodes); err != nil {
+		s.failCommandAssertion(r, err.Error())
+		return false
+	}
+	return true
+}
+
+func (s *scenario) expectAccessJSON(r result, exitClass, alias, outcome, path string, pathPresent bool, from, to string, blockerCodes []string) bool {
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Project     string `json:"project"`
+			Outcome     string `json:"outcome"`
+			Trigger     string `json:"trigger"`
+			Path        string `json:"path"`
+			PathPresent bool   `json:"path_present"`
+			Remote      string `json:"remote"`
+			Transition  struct {
+				From string `json:"from"`
+				To   string `json:"to"`
+			} `json:"transition"`
+			Hydrate struct {
+				Outcome string `json:"outcome"`
+			} `json:"hydrate"`
+		} `json:"payload"`
+		Diagnostics struct {
+			Blockers []struct {
+				Code string `json:"code"`
+			} `json:"blockers"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
+		s.failCommandAssertion(r, "stdout was not JSON: "+err.Error())
+		return false
+	}
+	got := payload.Payload
+	if payload.Command != "access" || payload.ExitClass != exitClass || got.Project != alias || got.Outcome != outcome || got.Trigger != "command-access" || got.Path != path || got.PathPresent != pathPresent || got.Remote == "" {
+		s.failCommandAssertion(r, fmt.Sprintf("access JSON payload = %#v, want class=%s alias=%s outcome=%s path=%s present=%t", payload, exitClass, alias, outcome, path, pathPresent))
+		return false
+	}
+	if got.Transition.From != from || got.Transition.To != to || got.Hydrate.Outcome != outcome {
+		s.failCommandAssertion(r, fmt.Sprintf("access transition = %#v hydrate=%#v, want %s -> %s outcome %s", got.Transition, got.Hydrate, from, to, outcome))
+		return false
+	}
+	if err := diagnosticCodesMatch("access blockers", hydrateBlockerCodes(payload.Diagnostics.Blockers), blockerCodes); err != nil {
 		s.failCommandAssertion(r, err.Error())
 		return false
 	}

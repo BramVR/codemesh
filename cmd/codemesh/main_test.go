@@ -490,6 +490,178 @@ func TestBootstrapPlaceholdersCreatesHonestWorkspaceStructure(t *testing.T) {
 	}
 }
 
+func TestAccessLazilyHydratesPlaceholderAndReportsTransition(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	alphaPath := filepath.Join(workspace, "tools", "alpha")
+	remoteSource := createCommittedLocalRemoteClone(t, "access-placeholder-alpha")
+	remote := strings.TrimSpace(runGitOutput(t, remoteSource, "remote", "get-url", "origin"))
+	manifestDir := filepath.Join(tmp, "manifest")
+	writeManifestEntryWithCloneURL(t, manifestDir, "alpha.json", "https://example.invalid/bram/alpha", "alpha", "tools/alpha", remote)
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	if code := run([]string{"bootstrap", manifestDir, "--placeholders"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("bootstrap placeholders exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"access", "alpha", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("access alpha --json exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("access stderr = %q, want empty", stderr.String())
+	}
+	var payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
+			Project     string `json:"project"`
+			Outcome     string `json:"outcome"`
+			Trigger     string `json:"trigger"`
+			Path        string `json:"path"`
+			PathPresent bool   `json:"path_present"`
+			Transition  struct {
+				From string `json:"from"`
+				To   string `json:"to"`
+			} `json:"transition"`
+			Hydrate struct {
+				Outcome string `json:"outcome"`
+			} `json:"hydrate"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("access stdout was not JSON: %v\n%s", err, stdout.String())
+	}
+	if payload.Command != "access" || payload.ExitClass != "success" {
+		t.Fatalf("access command metadata = %#v", payload)
+	}
+	if payload.Payload.Project != "alpha" || payload.Payload.Outcome != "hydrated" || payload.Payload.Trigger != "command-access" {
+		t.Fatalf("access payload = %#v", payload.Payload)
+	}
+	if payload.Payload.Path != alphaPath || !payload.Payload.PathPresent {
+		t.Fatalf("access path payload = %#v", payload.Payload)
+	}
+	if payload.Payload.Transition.From != "placeholder" || payload.Payload.Transition.To != "hydrated" {
+		t.Fatalf("access transition = %#v", payload.Payload.Transition)
+	}
+	if payload.Payload.Hydrate.Outcome != "hydrated" {
+		t.Fatalf("access hydrate payload = %#v", payload.Payload.Hydrate)
+	}
+	if _, err := os.Stat(filepath.Join(alphaPath, "README.md")); err != nil {
+		t.Fatalf("access-hydrated checkout missing README: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(alphaPath, ".codemesh-placeholder.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("placeholder metadata survived access hydration or stat failed unexpectedly: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"tree", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("tree --json exit code = %d, want 0 after access hydration\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	treeProjects := decodeWorkspaceProjects(t, stdout.Bytes())
+	assertWorkspaceProject(t, treeProjects["alpha"], workspaceProjectWant{
+		Alias:                "alpha",
+		WorkspaceSource:      "canonical",
+		State:                "present",
+		WorkspaceState:       "hydrated",
+		Path:                 alphaPath,
+		PathPresent:          true,
+		CanonicalPath:        alphaPath,
+		CanonicalPathPresent: true,
+		MachinePath:          alphaPath,
+		MachinePathPresent:   true,
+	})
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"status", "alpha", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("status alpha --json exit code = %d, want 0 after access hydration\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	statusProjects := decodeWorkspaceProjects(t, stdout.Bytes())
+	assertWorkspaceProject(t, statusProjects["alpha"], workspaceProjectWant{
+		Alias:                "alpha",
+		WorkspaceSource:      "canonical",
+		State:                "present",
+		WorkspaceState:       "hydrated",
+		Path:                 alphaPath,
+		PathPresent:          true,
+		CanonicalPath:        alphaPath,
+		CanonicalPathPresent: true,
+		MachinePath:          alphaPath,
+		MachinePathPresent:   true,
+	})
+}
+
+func TestAccessLazilyHydratesMissingCanonicalProject(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	alphaPath := filepath.Join(workspace, "alpha")
+	remoteSource := createCommittedLocalRemoteClone(t, "access-missing-alpha")
+	remote := strings.TrimSpace(runGitOutput(t, remoteSource, "remote", "get-url", "origin"))
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.UpsertProject(context.Background(), state.Project{
+		Alias:            "alpha",
+		NormalizedRemote: "https://example.invalid/bram/alpha",
+		CloneURL:         remote,
+		CanonicalPath:    alphaPath,
+		LocalPath:        alphaPath,
+		Source:           "canonical",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"access", "alpha", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("access missing alpha --json exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	var payload struct {
+		Payload struct {
+			Outcome    string `json:"outcome"`
+			Transition struct {
+				From string `json:"from"`
+				To   string `json:"to"`
+			} `json:"transition"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("access missing stdout was not JSON: %v\n%s", err, stdout.String())
+	}
+	if payload.Payload.Outcome != "hydrated" || payload.Payload.Transition.From != "missing" || payload.Payload.Transition.To != "hydrated" {
+		t.Fatalf("access missing payload = %#v", payload.Payload)
+	}
+	if _, err := os.Stat(filepath.Join(alphaPath, "README.md")); err != nil {
+		t.Fatalf("access-hydrated missing checkout missing README: %v", err)
+	}
+}
+
 func TestHydrateRefusesModifiedPlaceholder(t *testing.T) {
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, "codemesh-home")

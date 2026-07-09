@@ -49,6 +49,7 @@ Used by:
 - `tree`
 - `status`
 - `hydrate`
+- `access`
 - `agent prepare`
 
 ### Readiness
@@ -299,7 +300,13 @@ Rules:
 
 Clones a missing project into its desired local path through the selected Clone Strategy after the shared Hydration Planner classifies the Project as present, missing, path-conflicted, unsafe, or unknown. Full clone remains the default; `--partial-clone` and repeatable `--sparse path` are explicit Git-native lazy checkout opt-ins.
 
-Can replace an unmodified CodeMesh-owned placeholder with a real checkout. Does not perform lazy hydration on path access.
+Can replace an unmodified CodeMesh-owned placeholder with a real checkout. Does not perform path-triggered lazy hydration.
+
+### `codemesh access <project>`
+
+Lazily hydrates a known Project through explicit command access. It uses the same Hydration Planner and executor as `hydrate`, can move a missing or unmodified Placeholder Project to hydrated, and reports `trigger: command-access` plus the before/after workspace-state transition in JSON output.
+
+Does not watch filesystem paths, mount a workspace, start a daemon, sync in the background, or hide Git clone/conflict behavior.
 
 ### `codemesh bootstrap [--all | project... | <manifest-path>]`
 
@@ -311,7 +318,7 @@ Rules:
 - blocks path conflicts before mutation
 - writes honest placeholder directories only when explicitly requested
 - clones only explicit planned missing Projects on `--apply`
-- does not start a daemon, mount a filesystem, or hydrate lazily on path access
+- does not start a daemon, mount a filesystem, or hydrate lazily on filesystem path access
 
 ### `codemesh manifest export [--output path]`
 
@@ -422,11 +429,12 @@ Initial tables:
 7. `init`, `add`, `scan`, `tree`, `status`.
 8. Agent Prep, `agent prepare`, `runs`, `clean`.
 9. `hydrate`.
-10. Machine Registry, `machine register`, and `machine status`.
-11. Doctor preflight and strict warning failure.
-12. Fake-provider Env Binding and agent-scoped env bundle metadata.
-13. Toolchain readiness declaration, doctor reporting, and Agent Run Contract status metadata.
-14. Bootstrap topology and clone execution.
+10. `access`.
+11. Machine Registry, `machine register`, and `machine status`.
+12. Doctor preflight and strict warning failure.
+13. Fake-provider Env Binding and agent-scoped env bundle metadata.
+14. Toolchain readiness declaration, doctor reporting, and Agent Run Contract status metadata.
+15. Bootstrap topology and clone execution.
 
 ## Planned Later
 
@@ -436,7 +444,7 @@ Initial tables:
 - shared object cache or worktree Clone Strategies
 - live secret providers or env file writing
 - live toolchain provider integrations
-- daemon, mount, UI, placeholders, or file-level lazy hydration
+- daemon, mount, UI, automatic placeholders, path-triggered lazy hydration, or file-level lazy hydration
 
 ## Non-Goals
 
@@ -447,4 +455,4 @@ Initial tables:
 - toolchain installation or environment builds
 - cloud sync
 - UI
-- file-level lazy hydration
+- path-triggered or file-level lazy hydration
