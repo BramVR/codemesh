@@ -5400,7 +5400,7 @@ func (h *harness) expectProjectRowsAt(name, codemeshHome string, want ...project
 	for i := range want {
 		wantRow := normalizeProjectRow(want[i])
 		if got[i] != wantRow {
-			h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row %d = %#v, want %#v", i, got[i], want[i]), ExitCode: -1})
+			h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row %d = %#v, want %#v", i, got[i], wantRow), ExitCode: -1})
 			return false
 		}
 	}
@@ -6664,7 +6664,7 @@ func (s *scenario) expectProjectRows(name string, want ...projectRow) bool {
 	for i := range want {
 		wantRow := normalizeProjectRow(want[i])
 		if got[i] != wantRow {
-			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row %d = %#v, want %#v", i, got[i], want[i]), ExitCode: -1})
+			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row %d = %#v, want %#v", i, got[i], wantRow), ExitCode: -1})
 			return false
 		}
 	}
@@ -6684,7 +6684,7 @@ func (s *scenario) expectProjectRowsRaw(name string, want ...projectRow) bool {
 	for i := range want {
 		wantRow := normalizeProjectRow(want[i])
 		if got[i] != wantRow {
-			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row %d = %#v, want %#v", i, got[i], want[i]), ExitCode: -1})
+			s.h.record(result{Name: name, Status: "FAIL", Error: fmt.Sprintf("project row %d = %#v, want %#v", i, got[i], wantRow), ExitCode: -1})
 			return false
 		}
 	}
