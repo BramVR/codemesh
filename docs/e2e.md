@@ -251,11 +251,13 @@ Readiness e2e coverage runs `codemesh tree` and `codemesh status` against the sa
 
 Doctor preflight e2e coverage runs `codemesh doctor` through the built CLI against local fixtures. It verifies green human output for a clean handoff, strict JSON failure for warning-only dirty checkout readiness, toolchain readiness in human and JSON output, actionable missing-base blockers, and no `agent_runs` rows or agent run directories after doctor checks.
 
-Bootstrap e2e coverage writes isolated Workspace Manifest JSON entries, registers a fresh machine workspace root, verifies dry-run plan output does not mutate filesystem or registry state, applies topology, checks parent directories and Project Registry rows, verifies ordinary apply can clone from local remotes, verifies explicit `--placeholders` writes sentinel-only directories that are not Git checkouts, and confirms `tree` and `status` distinguish missing, placeholder, and hydrated workspace states. It also covers path conflict refusal with no registry mutation and preserved local files.
+Bootstrap and lazy Hydration e2e coverage writes isolated Workspace Manifest JSON entries, registers a fresh machine workspace root, verifies dry-run plan output does not mutate filesystem or registry state, applies topology, checks parent directories and Project Registry rows, verifies ordinary apply can clone from local remotes, verifies explicit `--placeholders` writes sentinel-only directories that are not Git checkouts, verifies explicit `codemesh access` can hydrate a known missing or Placeholder Project through the shared planner, and confirms `tree` and `status` distinguish missing, placeholder, and hydrated workspace states. It also covers path conflict refusal with no registry mutation and preserved local files.
 
 Workspace Target e2e coverage uses only local fake target data. It bootstraps isolated manifest topology, registers local machine facts, stores fake-provider env binding references, runs `codemesh target export --json`, and verifies the export includes topology, machine/target facts, scoped references, and `values: not-recorded` without env values, readiness state, dirty/stale state, Agent Runs, or provider calls.
 
 Hydration e2e coverage uses the local bare Git remotes from the offline fixture set. It registers a known project, removes its desired local path to make it missing, runs `codemesh hydrate <project>`, verifies the real CLI recreates the checkout through the default `full-clone` strategy, checks explicit partial/sparse strategy JSON in focused command tests, and confirms it does not reach GitHub or create directories for unrelated missing projects.
+
+Access-triggered lazy Hydration coverage uses the same local bare Git remotes and known Project Registry rows. Focused command tests cover `codemesh access <project> --json` moving both Placeholder and missing canonical Projects to hydrated state, reporting `trigger: command-access` and a clear transition, and leaving `tree` and `status` to explain the derived final state. This is not filesystem path interception, a daemon, a mount, or background sync.
 
 Two-machine e2e coverage uses two isolated local CodeMesh homes, Git configs, machine IDs, and workspace roots on one host. It registers topology from Machine A, writes manifest entries, bootstraps Machine B without default cloning, hydrates one selected project through a local-only Git endpoint, verifies Machine B did not reuse Machine A's source checkout, and confirms a changed manifest produces a reconcile dry-run drift plan before mutation.
 
@@ -340,10 +342,11 @@ The GitHub Actions workflow is `crabbox-pr-proof`. Reviewers find the proof on t
 - `bootstrap-hydration-plan.svg`
 - `source-less-agent-prep.svg`
 - `placeholder-workspace-structure.svg`
+- `access-triggered-hydration.svg`
 - `mutating-flow-before-after.svg`
 - matching `.txt` command-output companions and `commands/*.txt` transcripts
 
-The visuals show canonical workspace tree/status output, manifest import/export placement, per-machine placement and presence, planned bootstrap/hydration actions, source-less Agent Prep from a registry clone source, explicit placeholder structure before/after hydration, and before/after state for bootstrap apply plus idempotent hydrate. Paths are sanitized to isolated fixture placeholders before upload.
+The visuals show canonical workspace tree/status output, manifest import/export placement, per-machine placement and presence, planned bootstrap/hydration actions, source-less Agent Prep from a registry clone source, explicit placeholder structure before/after command-access hydration, access-triggered lazy Hydration before/after state, and before/after state for bootstrap apply plus idempotent hydrate. Paths are sanitized to isolated fixture placeholders before upload.
 
 ## Owned-Host Crabbox Proof
 

@@ -16,7 +16,7 @@ func TestValidateProofBundleRejectsMissingRequiredVisual(t *testing.T) {
 		"runner": "github-hosted-free",
 		"fixture": "isolated-local",
 		"source": "real-codemesh-cli",
-		"coverage": ["canonical-workspace-tree", "machine-placement-presence", "bootstrap-hydration-plan", "source-less-agent-prep", "placeholder-workspace-structure", "mutating-flow-before-after"],
+		"coverage": ["canonical-workspace-tree", "machine-placement-presence", "bootstrap-hydration-plan", "source-less-agent-prep", "placeholder-workspace-structure", "access-triggered-hydration", "mutating-flow-before-after"],
 		"commands": [{"name": "codemesh tree", "exit_code": 0}],
 		"artifacts": [
 			{"name": "canonical-workspace-tree.svg", "path": "canonical-workspace-tree.svg", "kind": "visual", "required": true}
@@ -43,7 +43,7 @@ func TestValidateProofBundleRejectsFakeOnlyProof(t *testing.T) {
 		"runner": "github-hosted-free",
 		"fixture": "isolated-local",
 		"source": "fake-only",
-		"coverage": ["canonical-workspace-tree", "machine-placement-presence", "bootstrap-hydration-plan", "source-less-agent-prep", "placeholder-workspace-structure", "mutating-flow-before-after"],
+		"coverage": ["canonical-workspace-tree", "machine-placement-presence", "bootstrap-hydration-plan", "source-less-agent-prep", "placeholder-workspace-structure", "access-triggered-hydration", "mutating-flow-before-after"],
 		"commands": [],
 		"artifacts": []
 	}`), 0o644); err != nil {

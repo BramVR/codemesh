@@ -17,6 +17,7 @@ CodeMesh command docs separate current commands from planned behavior. The curre
 - [`codemesh status [project] [--base branch] [--json]`](commands/status.md)
 - [`codemesh doctor <project> [--base branch] [--strict] [--json]`](commands/doctor.md)
 - [`codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]`](commands/hydrate.md)
+- [`codemesh access <project> [--partial-clone] [--sparse path] [--json]`](commands/access.md)
 - [`codemesh bootstrap [--all | project... | <manifest-path>] [--dry-run|--apply|--placeholders] [--json]`](commands/bootstrap.md)
 - [`codemesh manifest export [--output path]`](commands/manifest-export.md)
 - [`codemesh manifest import <path>`](commands/manifest-import.md)
@@ -33,7 +34,7 @@ Each linked reference page documents the current syntax, purpose, safe local exa
 
 `codemesh env bind` stores provider-specific secret references in local CodeMesh state, outside repo-local Project Policy. The first runnable provider is deterministic `fake`, for local tests and agent-scoped bundle proof only.
 
-`codemesh hydrate` and `codemesh agent prepare` use the `full-clone` Clone Strategy by default: full Git history and a complete working tree. `--partial-clone` opts into Git partial clone with `blob:none`; repeatable `--sparse path` opts into Git sparse checkout. These are Git-native lazy clone/checkouts, not mounts, VFS behavior, daemon hydration, or file-level sync.
+`codemesh hydrate`, `codemesh access`, and `codemesh agent prepare` use the `full-clone` Clone Strategy by default: full Git history and a complete working tree. `--partial-clone` opts into Git partial clone with `blob:none`; repeatable `--sparse path` opts into Git sparse checkout. These are Git-native lazy clone/checkouts, not mounts, VFS behavior, daemon hydration, or file-level sync.
 
 `codemesh agent prepare` prints the ready workspace path plus `handoff_docs: N`, where `N` is the count of selected handoff docs. The detailed handoff doc metadata is path-only in the versioned `codemesh-run.json` Agent Run Contract; CodeMesh does not copy docs, embed doc contents, or read doc contents into metadata. With `--env-provider fake` and matching `--allow-env-scope`, Agent Prep can materialize an env bundle under the managed run directory, outside the prepared Git checkout. The contract records clone strategy metadata, requirement names, allowed scopes, bundle presence/path, and `values: not-recorded`.
 
@@ -85,6 +86,8 @@ Use `codemesh scan "$workspace"` instead of `codemesh add ...` when discovering 
 
 Use `codemesh hydrate <project>` after a project is already registered and its desired local path is missing. Hydration uses the shared Hydration Planner to classify present, missing, path-conflict, unsafe-path, and unknown-project states before cloning the registered remote into the planned path.
 
+Use `codemesh access <project>` when a user or agent explicitly touches a known Project by command and wants CodeMesh to hydrate missing or Placeholder content first. Access-triggered lazy Hydration reports `trigger: command-access` plus a missing/placeholder/hydrated transition in JSON output, then `tree` and `status` show the derived final workspace state.
+
 Use `codemesh bootstrap --all` or `codemesh bootstrap <project>...` after Projects are registered to preview planned clone/refusal actions on the current machine. Add `--dry-run` to make preview mode explicit. Add `--placeholders` to refuse blockers and write metadata-only sentinel directories for missing planned Projects. Add `--apply` to refuse blockers before Git and clone missing planned Projects into their desired paths. `codemesh bootstrap <manifest-path> --apply` and `--placeholders` still import manifest topology first, then consume the same Hydration Planner actions for clone or placeholder execution.
 
 Use `codemesh manifest export --output <path>` on a registered machine to write the canonical Workspace Manifest as a deterministic portable JSON file. Use `codemesh manifest import <path>` on another registered machine to validate that manifest and persist matching Project Registry rows under that machine's workspace root.
@@ -98,7 +101,7 @@ These directions remain product direction, not runnable commands today:
 - multi-machine sync
 - synced manifests or remote project indexes
 - live secret providers or env file writing
-- daemon, mount, UI, automatic placeholders, or file-level lazy hydration
+- daemon, mount, UI, automatic placeholders, path-triggered lazy hydration, or file-level lazy hydration
 - generic cloud drive behavior
 
 Research docs may sketch future commands for those areas. Treat them as planned until they appear in current CLI help and this catalog.

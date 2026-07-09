@@ -6,7 +6,7 @@ The north star is Theo Browne's "Dropbox for developers": one predictable code w
 
 CodeMesh should implement that vision in slices:
 
-- Current MVP: local Project Registry, Readiness, explicit Hydration, and Agent workspace prep.
+- Current MVP: local Project Registry, Readiness, explicit Hydration, command-triggered lazy Hydration for known Projects, and Agent workspace prep.
 - First Dropbox-for-developers slice: canonical manifest import/export, Machine registration, per-Machine placement/presence, bootstrap, and Agent workspace prep from registry without a local Source checkout.
 - North-star implementation slices: placeholder structure, lazy Hydration, safe env/config Materialization from Secret references, Local-only path policy enforcement, optional transport adapters for selected non-Git content, and managed Workspace integration that still feels boring from editors, shells, agents, and Git.
 
@@ -20,7 +20,7 @@ CodeMesh should not become a generic cloud drive. It should stay developer-aware
 - Tests, e2e harness improvements, and docs-list/front-matter cleanup.
 - Documentation updates that sharpen glossary terms, state model, trust, or command behavior.
 - First-slice Dropbox-for-developers work that preserves current local MVP behavior and keeps sync explicit: manifest import/export, Machine registration, per-Machine placement, bootstrap dry-run/clone, and source-less Agent workspace prep.
-- Pull-request proof for Dropbox-for-developers slices that runs on free GitHub-hosted runners and publishes sanitized visual artifacts for canonical tree, per-Machine placement or presence, planned bootstrap/hydration, and mutating before/after fixture state.
+- Pull-request proof for Dropbox-for-developers slices that runs on free GitHub-hosted runners and publishes sanitized visual artifacts for canonical tree, per-Machine placement or presence, planned bootstrap/hydration, access-triggered lazy Hydration, and mutating before/after fixture state.
 
 ## Needs Sign-Off
 
@@ -31,5 +31,5 @@ These are high-risk north-star decisions, not exclusions from the vision.
 - Daemon, mount, placeholder filesystem, or automatic hydration semantics.
 - Broad command-surface changes, schema migrations, or manifest format changes.
 - Toolchain installation or machine bootstrap behavior beyond reporting and explicit Git hydration.
-- Lazy Hydration triggered by path access, filesystem hooks, or editor/Finder integration.
+- Lazy Hydration triggered by path access, filesystem hooks, or editor/Finder integration beyond explicit `codemesh access`.
 - Transport adapters for non-Git content, including R2/S3, Syncthing/Mutagen-style sync, or NAS-backed mirroring.

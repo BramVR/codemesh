@@ -4,6 +4,7 @@
 
 Target next patch: `v0.1.1`.
 
+- Added command-triggered lazy Hydration with `codemesh access <project>`, so known missing or Placeholder Projects hydrate through the shared safety planner and report before/after workspace-state transitions without daemon, mount, or background sync behavior: https://github.com/BramVR/codemesh/issues/141
 - Added explicit Placeholder workspace structure, so `codemesh bootstrap --placeholders` writes metadata-only sentinels for missing canonical Projects while `tree`, `status`, and `hydrate` distinguish placeholder, missing, blocked, and hydrated states: https://github.com/BramVR/codemesh/issues/140
 - Added registry-clone Agent Prep for source-less Projects, with selected source mode in Agent Run metadata and Crabbox PR proof from an isolated local Git remote: https://github.com/BramVR/codemesh/issues/139
 - Added bootstrap execution for registered missing Projects, so `codemesh bootstrap --all`, project-targeted bootstrap, and manifest bootstrap `--apply` now reuse the Hydration Planner to refuse unsafe paths before Git and clone from registered clone sources: https://github.com/BramVR/codemesh/issues/138
