@@ -319,7 +319,7 @@ func TestBootstrapPlansThenAppliesTopologyWithoutProjectDirectories(t *testing.T
 		t.Fatalf("machine register exit code = %d, want 0", code)
 	}
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"bootstrap", manifestDir}, &stdout, &stderr)
+	code := run([]string{"bootstrap", manifestDir, "--dry-run"}, &stdout, &stderr)
 
 	if code != 0 {
 		t.Fatalf("bootstrap plan exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
@@ -327,7 +327,7 @@ func TestBootstrapPlansThenAppliesTopologyWithoutProjectDirectories(t *testing.T
 	if stderr.Len() != 0 {
 		t.Fatalf("bootstrap plan stderr = %q, want empty", stderr.String())
 	}
-	for _, want := range []string{"bootstrap plan", "workspace_root: " + workspace, "blocked: false", "missing: alpha " + filepath.Join(workspace, "tools", "alpha"), "missing: beta " + filepath.Join(workspace, "beta")} {
+	for _, want := range []string{"bootstrap plan", "workspace_root: " + workspace, "blocked: false", "missing: alpha " + filepath.Join(workspace, "tools", "alpha"), "missing: beta " + filepath.Join(workspace, "beta"), "clone: alpha " + filepath.Join(workspace, "tools", "alpha"), "clone: beta " + filepath.Join(workspace, "beta")} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("bootstrap plan output missing %q:\n%s", want, stdout.String())
 		}
@@ -454,6 +454,56 @@ func TestBootstrapJSONReportsPathConflictWithoutMutation(t *testing.T) {
 	if got, err := os.ReadFile(marker); err != nil || string(got) != "keep\n" {
 		t.Fatalf("conflict marker changed or missing: got %q err %v", got, err)
 	}
+}
+
+func TestBootstrapDryRunJSONCarriesSharedHydrationPlan(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	manifestDir := filepath.Join(tmp, "manifest")
+	writeManifestEntry(t, manifestDir, "alpha.json", "https://github.com/BramVR/alpha", "alpha", "tools/alpha")
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", manifestDir, "--dry-run", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("bootstrap dry-run exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	var payload struct {
+		Command string `json:"command"`
+		Payload struct {
+			Apply         bool `json:"apply"`
+			HydrationPlan struct {
+				Actions []struct {
+					Project string `json:"project"`
+					Action  string `json:"action"`
+					State   string `json:"state"`
+					Path    string `json:"path"`
+				} `json:"actions"`
+			} `json:"hydration_plan"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("bootstrap dry-run stdout was not JSON: %v\n%s", err, stdout.String())
+	}
+	if payload.Command != "bootstrap" || payload.Payload.Apply || len(payload.Payload.HydrationPlan.Actions) != 1 {
+		t.Fatalf("bootstrap dry-run payload = %#v", payload)
+	}
+	action := payload.Payload.HydrationPlan.Actions[0]
+	if action.Project != "alpha" || action.Action != "clone" || action.State != "missing" || action.Path != filepath.Join(workspace, "tools", "alpha") {
+		t.Fatalf("bootstrap hydration action = %#v", action)
+	}
+	if _, err := os.Stat(workspace); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run bootstrap created workspace or stat failed unexpectedly: %v", err)
+	}
+	assertProjectRows(t, home, 0)
 }
 
 func TestManifestExportImportMovesCanonicalWorkspaceBetweenMachines(t *testing.T) {
@@ -2697,6 +2747,50 @@ func firstRunID(t *testing.T, output string) string {
 	}
 	t.Fatalf("run id missing in output:\n%s", output)
 	return ""
+}
+
+func TestHydrateJSONReportsAbsentUnsafePathAsNotPresent(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	unsafePath := filepath.Join(tmp, "outside", "unsafe-project")
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	store, err := state.Open(filepath.Join(home, "codemesh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddProject(context.Background(), state.Project{
+		Alias:            "unsafe-project",
+		NormalizedRemote: "https://example.invalid/org/unsafe-project",
+		CloneURL:         "https://example.invalid/org/unsafe-project.git",
+		LocalPath:        unsafePath,
+		CanonicalPath:    unsafePath,
+		Source:           "canonical",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"hydrate", "unsafe-project", "--json"}, &stdout, &stderr)
+
+	if code != 1 {
+		t.Fatalf("hydrate unsafe exit code = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("hydrate unsafe stderr = %q, want empty", stderr.String())
+	}
+	if err := assertHydrateJSON(stdout.Bytes(), "readiness-blocked", "unsafe-project", "unsafe-path", unsafePath, false, []string{"unsafe-path"}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func assertHydrateJSON(data []byte, exitClass, alias, outcome, path string, pathPresent bool, blockerCodes []string) error {

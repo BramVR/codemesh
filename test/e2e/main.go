@@ -882,7 +882,7 @@ func (h *harness) runOwnedHostLocalWorkspaceFlow(target ownedHostTarget, bundleP
 		h.record(result{Name: "owned-host " + target.Name + " distinct machine identities", Status: "FAIL", Error: "machine IDs matched across isolated homes", ExitCode: -1})
 		return false
 	}
-	if plan := h.ownedHostCommand(target, hostReport, bundlePath, "bootstrap dry-run plan", "bootstrap_dry_run", machineB, h.bin, "bootstrap", manifest); plan.Status != "PASS" || !resultContainsAll(plan, "bootstrap plan", "apply: false", "missing: owned-target "+targetPathB, "missing: owned-unrelated "+unrelatedPathB) {
+	if plan := h.ownedHostCommand(target, hostReport, bundlePath, "bootstrap dry-run plan", "bootstrap_dry_run", machineB, h.bin, "bootstrap", manifest); plan.Status != "PASS" || !resultContainsAll(plan, "bootstrap plan", "apply: false", "missing: owned-target "+targetPathB, "missing: owned-unrelated "+unrelatedPathB, "clone: owned-target "+targetPathB, "clone: owned-unrelated "+unrelatedPathB) {
 		return false
 	}
 	if apply := h.ownedHostCommand(target, hostReport, bundlePath, "bootstrap apply topology", "bootstrap_apply", machineB, h.bin, "bootstrap", manifest, "--apply"); apply.Status != "PASS" || !resultContainsAll(apply, "apply: true", "added: owned-target "+targetPathB, "added: owned-unrelated "+unrelatedPathB) {
@@ -3104,7 +3104,7 @@ func (h *harness) caseBootstrapTopologyWorkflow() {
 	}
 
 	plan := s.command("bootstrap topology plan", "bootstrap", manifest)
-	if plan.Status != "PASS" || !s.expectOutput(plan, "bootstrap plan", "workspace_root: "+workspace, "blocked: false", "missing: alpha "+alphaPath, "missing: beta "+betaPath) {
+	if plan.Status != "PASS" || !s.expectOutput(plan, "bootstrap plan", "workspace_root: "+workspace, "blocked: false", "missing: alpha "+alphaPath, "missing: beta "+betaPath, "clone: alpha "+alphaPath, "clone: beta "+betaPath) {
 		return
 	}
 	if !s.expectPathMissing("bootstrap topology dry-run workspace missing", workspace) {
@@ -3460,7 +3460,7 @@ func (h *harness) caseHydrationFixtureWorkflow() {
 	}
 
 	hydrate := s.command("hydrate missing fixture", "hydrate", "hydrate-target")
-	if hydrate.Status != "PASS" || !s.expectOutput(hydrate, "hydrated project: hydrate-target") {
+	if hydrate.Status != "PASS" || !s.expectOutput(hydrate, "clone: hydrate-target "+target.Source, "hydrated project: hydrate-target") {
 		return
 	}
 	if !s.expectPathExists("hydrate checkout exists", filepath.Join(target.Source, "README.md")) {
@@ -3644,7 +3644,7 @@ func (h *harness) caseTwoMachineManifestBootstrapReconcileSmoke() {
 	h.record(result{Name: "two-machine distinct machine identities", Status: "PASS", ExitCode: 0})
 
 	plan := h.twoMachineCommand("two-machine bootstrap dry-run plan", machineB, h.bin, "bootstrap", manifest)
-	if plan.Status != "PASS" || !resultContainsAll(plan, "bootstrap plan", "apply: false", "blocked: false", "missing: mesh-target "+targetPathB, "missing: mesh-unrelated "+unrelatedPathB) {
+	if plan.Status != "PASS" || !resultContainsAll(plan, "bootstrap plan", "apply: false", "blocked: false", "missing: mesh-target "+targetPathB, "missing: mesh-unrelated "+unrelatedPathB, "clone: mesh-target "+targetPathB, "clone: mesh-unrelated "+unrelatedPathB) {
 		if plan.Status == "PASS" {
 			plan.Status = "FAIL"
 			plan.Error = "bootstrap dry-run did not report both missing projects"

@@ -12,14 +12,14 @@ permalink: /commands/bootstrap
 ## Syntax
 
 ```sh
-codemesh bootstrap <manifest-path> [--apply] [--json]
+codemesh bootstrap <manifest-path> [--dry-run|--apply] [--json]
 ```
 
 ## Purpose
 
 Read one Workspace Manifest JSON entry file or a directory of JSON entries, compare that shared topology with the registered machine workspace root, and report a plan.
 
-By default bootstrap is a dry run. With `--apply`, it creates needed parent directories and local Project Registry rows only. It does not clone project content, create project placeholder directories, start a daemon, mount a filesystem, or sync files.
+By default bootstrap is a dry run; `--dry-run` makes that explicit. The dry-run output includes the shared Hydration Planner actions that future execution will consume: planned clones for missing Projects and refusals for path conflicts or unsafe paths. With `--apply`, bootstrap creates needed parent directories and local Project Registry rows only. It does not clone project content, create project placeholder directories, start a daemon, mount a filesystem, or sync files.
 
 Use `--json` to emit the stable Command Result shape.
 
@@ -51,6 +51,7 @@ cat > "$manifest/demo.json" <<'JSON'
 JSON
 
 codemesh bootstrap "$manifest"
+codemesh bootstrap "$manifest" --dry-run
 codemesh bootstrap "$manifest" --apply
 codemesh tree
 ```
@@ -59,7 +60,7 @@ codemesh tree
 
 - Requires `codemesh machine register` first so the machine workspace root is known.
 - Reads local manifest files only; it does not fetch, publish, or sync manifests.
-- Refuses path conflicts without mutation.
+- Refuses path conflicts and unsafe paths without mutation.
 - Creates parent directories and registry rows only. Project paths remain missing until [`codemesh hydrate`](hydrate.md).
 
 Back to [Command Catalog](../commands.md).

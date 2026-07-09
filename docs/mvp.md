@@ -297,13 +297,13 @@ Rules:
 
 ### `codemesh hydrate <project>`
 
-Clones a missing project into its desired local path through the selected Clone Strategy. Full clone remains the default; `--partial-clone` and repeatable `--sparse path` are explicit Git-native lazy checkout opt-ins.
+Clones a missing project into its desired local path through the selected Clone Strategy after the shared Hydration Planner classifies the Project as present, missing, path-conflicted, unsafe, or unknown. Full clone remains the default; `--partial-clone` and repeatable `--sparse path` are explicit Git-native lazy checkout opt-ins.
 
 Does not create placeholders.
 
 ### `codemesh bootstrap <manifest-path>`
 
-Reads Workspace Manifest JSON entries, compares them against the registered local machine workspace root and Project Registry, and prints a plan. `--apply` creates parent directories and local registry rows for desired topology only.
+Reads Workspace Manifest JSON entries, compares them against the registered local machine workspace root and Project Registry, and prints a plan with planned clone/refusal actions from the same Hydration Planner used by `hydrate`. `--dry-run` is explicit preview mode. `--apply` creates parent directories and local registry rows for desired topology only.
 
 Rules:
 

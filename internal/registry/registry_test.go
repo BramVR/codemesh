@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -301,6 +302,39 @@ func TestHydrateAlreadyPresentDoesNotReportRequestedCloneOptions(t *testing.T) {
 	}
 }
 
+func TestHydrateAlreadyPresentCanonicalProjectPersistsDesiredMachinePath(t *testing.T) {
+	ctx := context.Background()
+	remote := createBareRemote(t, "present-canonical")
+	canonicalPath := filepath.Join(t.TempDir(), "present-canonical")
+	runGit(t, filepath.Dir(canonicalPath), "clone", remote, canonicalPath)
+	normalized, err := NormalizeRemote(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observedPath := filepath.Join(t.TempDir(), "stale-observed")
+	store := &projectUpdateStore{projects: []state.Project{{
+		ID:               1,
+		Alias:            "present-canonical",
+		NormalizedRemote: normalized,
+		CloneURL:         remote,
+		LocalPath:        observedPath,
+		CanonicalPath:    canonicalPath,
+		Source:           "canonical",
+	}}}
+
+	result, err := New(store).Hydrate(ctx, "present-canonical")
+
+	if err != nil {
+		t.Fatalf("Hydrate error = %v", err)
+	}
+	if !result.AlreadyPresent || result.Project.LocalPath != canonicalPath {
+		t.Fatalf("Hydrate result = %#v, want already-present at canonical path", result)
+	}
+	if store.projects[0].LocalPath != canonicalPath || store.projects[0].CanonicalPath != canonicalPath || store.projects[0].Source != "canonical" {
+		t.Fatalf("stored project = %#v, want canonical placement persisted", store.projects[0])
+	}
+}
+
 func TestHydrateCleansDestinationAfterPostCloneStrategyFailure(t *testing.T) {
 	ctx := context.Background()
 	target := filepath.Join(t.TempDir(), "partial-failure")
@@ -354,6 +388,34 @@ func TestHydrateDoesNotTreatSubdirectoryInsideCheckoutAsPresent(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "path conflict") {
 		t.Fatalf("Hydrate error = %v, want path conflict", err)
+	}
+}
+
+func TestHydrateRefusesPresentCheckoutForDifferentRemote(t *testing.T) {
+	ctx := context.Background()
+	registeredRemote := createBareRemote(t, "registered")
+	wrongRemote := createBareRemote(t, "wrong")
+	target := filepath.Join(t.TempDir(), "checkout")
+	runGit(t, filepath.Dir(target), "clone", wrongRemote, target)
+	normalizedRegistered, err := NormalizeRemote(registeredRemote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &projectListStore{projects: []state.Project{{
+		Alias:            "registered",
+		NormalizedRemote: normalizedRegistered,
+		CloneURL:         registeredRemote,
+		LocalPath:        target,
+	}}}
+
+	_, err = New(store).Hydrate(ctx, "registered")
+
+	if err == nil {
+		t.Fatal("Hydrate error = nil, want path conflict for wrong checkout")
+	}
+	var conflict PathConflictError
+	if !errors.As(err, &conflict) || conflict.Path != target {
+		t.Fatalf("Hydrate error = %T %v, want PathConflictError at %s", err, err, target)
 	}
 }
 
@@ -457,6 +519,10 @@ type projectListStore struct {
 	projects []state.Project
 }
 
+type projectUpdateStore struct {
+	projects []state.Project
+}
+
 type postCloneFailureRunner struct{}
 
 func (r *postCloneFailureRunner) Run(ctx context.Context, dir string, args ...string) (string, error) {
@@ -488,6 +554,29 @@ func (s *projectListStore) UpsertProject(context.Context, state.Project) (state.
 
 func (s *projectListStore) ListProjects(context.Context) ([]state.Project, error) {
 	return s.projects, nil
+}
+
+func (s *projectUpdateStore) AddProject(context.Context, state.Project) (state.Project, error) {
+	panic("not implemented")
+}
+
+func (s *projectUpdateStore) UpsertProject(context.Context, state.Project) (state.Project, state.ProjectUpsertAction, error) {
+	panic("not implemented")
+}
+
+func (s *projectUpdateStore) ListProjects(context.Context) ([]state.Project, error) {
+	return s.projects, nil
+}
+
+func (s *projectUpdateStore) UpdateProject(_ context.Context, id int64, project state.Project) (state.Project, error) {
+	for i := range s.projects {
+		if s.projects[i].ID == id {
+			project.ID = id
+			s.projects[i] = project
+			return project, nil
+		}
+	}
+	return state.Project{}, os.ErrNotExist
 }
 
 func createGitRepo(t *testing.T, path, remote string) string {
