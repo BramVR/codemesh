@@ -263,6 +263,11 @@ func evaluateMissingSourceHandoff(ctx context.Context, report ProjectReport, req
 		report.Blockers = append(report.Blockers, Diagnostic{Code: "origin-missing", Message: "registered project has no clone URL"})
 		return HandoffDecision{Report: report, Policy: policy.Defaults(), SourcePathMissing: true}, nil
 	}
+	if err := gitops.ValidateCloneSource(clone); err != nil {
+		report.State = StateBlocked
+		report.Blockers = append(report.Blockers, Diagnostic{Code: "unsafe-clone-url", Message: err.Error()})
+		return HandoffDecision{Report: report, Policy: policy.Defaults(), SourcePathMissing: true}, nil
+	}
 	base := requestedBase
 	if base == "" {
 		base = policy.Defaults().BaseBranch

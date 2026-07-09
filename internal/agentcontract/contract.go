@@ -48,6 +48,7 @@ type ProjectInput struct {
 	Alias             string
 	Remote            string
 	CloneURL          string
+	SourceMode        string
 	SourcePath        string
 	LocalPath         string
 	SourcePathMissing bool
@@ -78,6 +79,7 @@ type ProjectInfo struct {
 	Alias             string `json:"alias"`
 	Remote            string `json:"remote"`
 	CloneURL          string `json:"clone_url"`
+	SourceMode        string `json:"source_mode"`
 	SourcePath        string `json:"source_path"`
 	LocalPath         string `json:"local_path"`
 	SourcePathMissing bool   `json:"source_path_missing"`
@@ -178,6 +180,7 @@ func New(input Input) Contract {
 			Alias:             input.Project.Alias,
 			Remote:            input.Project.Remote,
 			CloneURL:          RedactCloneURL(input.Project.CloneURL),
+			SourceMode:        normalizeSourceMode(input.Project.SourceMode, input.Project.SourcePathMissing),
 			SourcePath:        input.Project.SourcePath,
 			LocalPath:         input.Project.LocalPath,
 			SourcePathMissing: input.Project.SourcePathMissing,
@@ -332,6 +335,7 @@ func normalizeContract(contract Contract) Contract {
 	}
 	contract.Producer = normalizeProducer(contract.Producer)
 	contract.Project.CloneURL = RedactCloneURL(contract.Project.CloneURL)
+	contract.Project.SourceMode = normalizeSourceMode(contract.Project.SourceMode, contract.Project.SourcePathMissing)
 	contract.BaseProvenance = normalizeBaseProvenance(contract.BaseProvenance, contract.Base, contract.ResolvedCommit, contract.Project.Remote)
 	contract.CloneStrategy = clonestrategy.NormalizeSelection(contract.CloneStrategy)
 	contract.Env = normalizeEnv(contract.Env)
@@ -364,6 +368,17 @@ func normalizeToolchain(results []toolchain.Result) []toolchain.Result {
 		return out[i].Name < out[j].Name
 	})
 	return out
+}
+
+func normalizeSourceMode(mode string, sourcePathMissing bool) string {
+	mode = strings.TrimSpace(mode)
+	if mode != "" {
+		return mode
+	}
+	if sourcePathMissing {
+		return "registry_clone"
+	}
+	return "source_checkout"
 }
 
 func normalizeBaseProvenance(provenance BaseProvenance, base, resolvedCommit, remote string) BaseProvenance {

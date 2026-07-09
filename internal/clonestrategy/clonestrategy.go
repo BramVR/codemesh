@@ -160,7 +160,7 @@ func (s FullClone) Clone(ctx context.Context, req Request) (Result, error) {
 	if branch := strings.TrimSpace(req.Branch); branch != "" {
 		args = append(args, "--branch", branch, "--single-branch")
 	}
-	args = append(args, cloneURL, destination)
+	args = append(args, "--", cloneURL, destination)
 	output, err := git.OutputDetail(ctx, "", args...)
 	if err != nil {
 		detail := gitops.RedactCloneOutput(gitops.CommandDetail(err), cloneURL)

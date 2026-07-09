@@ -222,6 +222,68 @@ func RemoteMatchesSource(normalized, registeredRemote, cloneURL, baseDir string)
 	return err == nil && normalized == cloneIdentity
 }
 
+func ValidateCloneSource(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return errors.New("clone URL is required")
+	}
+	if strings.ContainsAny(raw, "?#") {
+		return errors.New("clone URL must not contain query strings or fragments")
+	}
+	if isWindowsDrivePath(raw) {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err == nil && strings.EqualFold(parsed.Scheme, "file") {
+		if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return errors.New("clone URL must not contain credentials, query strings, or fragments")
+		}
+		if parsed.Host != "" {
+			return errors.New("file clone URL must not include a host")
+		}
+		if !isAbsoluteFileURLPath(parsed.Path) {
+			return errors.New("file clone URL must use an absolute local path")
+		}
+		return nil
+	}
+	if err == nil && parsed.Scheme != "" {
+		scheme := strings.ToLower(parsed.Scheme)
+		switch scheme {
+		case "https", "ssh", "git":
+		default:
+			return errors.New("clone URL scheme is not supported")
+		}
+		if !safeCloneURLComponent(parsed.Host) || !safeCloneURLPath(parsed.Path) {
+			return errors.New("clone URL contains unsafe components")
+		}
+		if parsed.User != nil {
+			if scheme == "https" || scheme == "git" {
+				return errors.New("clone URL must not contain credentials, query strings, or fragments")
+			}
+			if !safeCloneURLComponent(parsed.User.Username()) {
+				return errors.New("clone URL contains unsafe components")
+			}
+			if _, hasPassword := parsed.User.Password(); hasPassword {
+				return errors.New("clone URL must not contain credentials, query strings, or fragments")
+			}
+		}
+		if parsed.RawQuery != "" || parsed.Fragment != "" {
+			return errors.New("clone URL must not contain credentials, query strings, or fragments")
+		}
+		return nil
+	}
+	if user, host, path, ok := splitSCPLikeRemote(raw); ok {
+		if !safeSCPLikePart(user) || !safeSCPLikePart(host) || !safeSCPLikePart(path) {
+			return errors.New("scp-like clone URL contains unsafe components")
+		}
+		return nil
+	}
+	if filepath.IsAbs(raw) {
+		return nil
+	}
+	return errors.New("clone URL must be an absolute local path or URL")
+}
+
 func CloneURLFor(remote, baseDir string) string {
 	remote = strings.TrimSpace(remote)
 	if remote == "" {
@@ -248,6 +310,45 @@ func CloneURLFor(remote, baseDir string) string {
 		return filepath.Clean(filepath.Join(baseDir, remote))
 	}
 	return remote
+}
+
+func isWindowsDrivePath(path string) bool {
+	if len(path) < 3 || path[1] != ':' {
+		return false
+	}
+	drive := path[0]
+	if !((drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')) {
+		return false
+	}
+	return path[2] == '/' || path[2] == '\\'
+}
+
+func isAbsoluteFileURLPath(path string) bool {
+	if filepath.IsAbs(path) || isWindowsDrivePath(path) {
+		return true
+	}
+	return strings.HasPrefix(path, "/") && isWindowsDrivePath(strings.TrimPrefix(path, "/"))
+}
+
+func safeSCPLikePart(part string) bool {
+	return safeCloneURLComponent(part)
+}
+
+func safeCloneURLPath(path string) bool {
+	path = strings.TrimLeft(path, "/")
+	return safeCloneURLComponent(path)
+}
+
+func safeCloneURLComponent(part string) bool {
+	if part == "" || strings.TrimSpace(part) != part || strings.HasPrefix(part, "-") {
+		return false
+	}
+	for _, r := range part {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return !strings.ContainsAny(part, " \t\r\n")
 }
 
 func RedactURLForMetadata(raw string) string {
