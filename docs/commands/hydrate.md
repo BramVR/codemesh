@@ -17,7 +17,7 @@ codemesh hydrate <project> [--partial-clone] [--sparse path] [--json]
 
 ## Purpose
 
-Clone one registered project into its desired local path when that path is missing. Hydration first consumes the shared Hydration Planner, which classifies the registered Project as present, missing, path-conflicted, unsafe, or unknown without contacting the Git remote. Execution then uses the same planned clone input.
+Clone one registered project into its desired local path when that path is missing or contains an unmodified CodeMesh-owned placeholder. Hydration first consumes the shared Hydration Planner, which classifies the registered Project as present, placeholder, missing, path-conflicted, unsafe, or unknown without contacting the Git remote. Execution then uses the same planned clone input.
 
 By default hydration uses `full-clone`: full Git history and a complete working tree. `--partial-clone` opts into Git partial clone with `blob:none`; repeatable `--sparse path` opts into Git sparse checkout for project-relative paths. If Git reports that the remote ignored or did not record the partial clone filter, hydration fails with a clone diagnostic instead of recording misleading partial metadata. This is Git-native laziness only. It does not create placeholders, mounts, VFS behavior, daemon hydration, or file-level sync.
 
@@ -51,7 +51,7 @@ codemesh hydrate demo-project --partial-clone --sparse README.md --json
 
 - Works for canonical Projects already present in the local Project Registry, including manifest-imported or bootstrapped rows whose checkout is absent locally.
 - Refuses existing non-empty path conflicts.
-- Defaults to an explicit `full-clone` Git clone; partial clone and sparse checkout require explicit command flags. It does not create lazy placeholders, mounts, VFS behavior, or file-level hydration.
+- Defaults to an explicit `full-clone` Git clone; partial clone and sparse checkout require explicit command flags. It does not create placeholders, mounts, VFS behavior, or file-level hydration.
 - Does not fetch project definitions from a remote manifest.
 
 Back to [Command Catalog](../commands.md).

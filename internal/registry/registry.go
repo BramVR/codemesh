@@ -255,7 +255,7 @@ func (r *Registry) Hydrate(ctx context.Context, alias string, opts ...clonestrat
 		result.AlreadyPresent = true
 		result.CloneStrategy = clonestrategy.FullCloneSelection()
 		return result, nil
-	case hydrationplanner.StateMissing:
+	case hydrationplanner.StateMissing, hydrationplanner.StatePlaceholder:
 		cloneResult, err := hydrationexecutor.New(r.git).Execute(ctx, hydrationplanner.Plan{WorkspaceRoot: plan.WorkspaceRoot, Actions: []hydrationplanner.Action{action}}, options)
 		if len(cloneResult.ClonedProjects) != 0 {
 			result.CloneStrategy = cloneResult.ClonedProjects[0].CloneStrategy

@@ -53,6 +53,6 @@ codemesh status demo-project --base main --json
 - Local-only scanned Projects remain visible as `workspace_source: local-only` until a manifest imports matching canonical topology.
 - Dirty source checkouts warn but do not block agent handoff by themselves.
 - Env readiness checks names and paths only; secret values are not read or stored.
-- Multi-machine freshness, automatic placeholders, lazy hydration, and remote manifest sync are not implemented.
+- Multi-machine freshness, automatic placeholders, lazy hydration, and remote manifest sync are not implemented. Explicit bootstrap placeholders report as metadata-only blockers until hydrated.
 
 Back to [Command Catalog](../commands.md).

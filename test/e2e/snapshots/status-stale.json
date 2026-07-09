@@ -41,7 +41,8 @@
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/missing-contract-fetch-remote.git",
           "state": "stale",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "hydrated"
         }
       ]
     }

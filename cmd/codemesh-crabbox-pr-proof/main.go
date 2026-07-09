@@ -274,6 +274,42 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	if err := sanitizeFile(manifestPath, r.replacements); err != nil {
 		return err
 	}
+	placeholderApply, err := r.runCodeMesh("machine C bootstrap placeholders", machineC, "bootstrap", "--all", "--placeholders")
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(placeholderApply.stdout, "placeholder: mesh-target") || !strings.Contains(placeholderApply.stdout, "placeholders: true") {
+		return errors.New("placeholder proof did not report materialized placeholder projects")
+	}
+	treeAfterPlaceholders, err := r.runCodeMesh("machine C tree after placeholders", machineC, "tree")
+	if err != nil {
+		return err
+	}
+	statusAfterPlaceholders, err := r.runCodeMesh("machine C status after placeholders", machineC, "status", "--json")
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(statusAfterPlaceholders.stdout, `"workspace_state":"placeholder"`) || !strings.Contains(statusAfterPlaceholders.stdout, `"state":"placeholder"`) {
+		return errors.New("placeholder status proof did not show placeholder workspace state")
+	}
+	gitSeesPlaceholder, err := gitStatusSucceeds(machineC.env, targetC)
+	if err != nil {
+		return err
+	}
+	if gitSeesPlaceholder {
+		return errors.New("placeholder looked like a usable Git checkout")
+	}
+	hydratePlaceholder, err := r.runCodeMesh("machine C hydrate placeholder mesh-target", machineC, "hydrate", "mesh-target")
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(hydratePlaceholder.stdout, "hydrated project: mesh-target") {
+		return errors.New("placeholder hydrate proof did not report hydrated project")
+	}
+	treeAfterPlaceholderHydrate, err := r.runCodeMesh("machine C tree after placeholder hydrate", machineC, "tree")
+	if err != nil {
+		return err
+	}
 
 	if _, err := r.runCodeMesh("machine B init", machineB, "init", machineB.workspace); err != nil {
 		return err
@@ -383,6 +419,25 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	if err := writeSVG(filepath.Join(outAbs, "source-less-agent-prep.svg"), "Source-less Agent Prep from registry clone source", sourceLessLines); err != nil {
 		return err
 	}
+	placeholderLines := []string{"Before placeholders", ""}
+	placeholderLines = append(placeholderLines, linesFromText(treeAfterImport.stdout)...)
+	placeholderLines = append(placeholderLines, "", "Placeholder materialization", "")
+	placeholderLines = append(placeholderLines, linesFromText(placeholderApply.stdout)...)
+	placeholderLines = append(placeholderLines, "", "After placeholders", "")
+	placeholderLines = append(placeholderLines, linesFromText(treeAfterPlaceholders.stdout)...)
+	placeholderLines = append(placeholderLines, "", "Placeholder status", "")
+	placeholderLines = append(placeholderLines, linesFromText(statusAfterPlaceholders.stdout)...)
+	placeholderLines = append(placeholderLines, "", "Tool honesty", "git_status_exit_nonzero: true")
+	placeholderLines = append(placeholderLines, "", "Explicit hydrate from placeholder", "")
+	placeholderLines = append(placeholderLines, linesFromText(hydratePlaceholder.stdout)...)
+	placeholderLines = append(placeholderLines, "", "After placeholder hydrate", "")
+	placeholderLines = append(placeholderLines, linesFromText(treeAfterPlaceholderHydrate.stdout)...)
+	if err := writeText(filepath.Join(outAbs, "placeholder-workspace-structure.txt"), strings.Join(placeholderLines, "\n")+"\n"); err != nil {
+		return err
+	}
+	if err := writeSVG(filepath.Join(outAbs, "placeholder-workspace-structure.svg"), "Placeholder workspace structure", placeholderLines); err != nil {
+		return err
+	}
 	flowLines := []string{"Before bootstrap", ""}
 	flowLines = append(flowLines, linesFromText(treeBefore.stdout)...)
 	flowLines = append(flowLines, "", "After bootstrap apply", "")
@@ -413,6 +468,8 @@ func runProof(bin, outDir, fixtureRoot string) error {
 		{"bootstrap-hydration-plan.txt", "bootstrap-hydration-plan.txt", "text"},
 		{"source-less-agent-prep.svg", "source-less-agent-prep.svg", "visual"},
 		{"source-less-agent-prep.txt", "source-less-agent-prep.txt", "text"},
+		{"placeholder-workspace-structure.svg", "placeholder-workspace-structure.svg", "visual"},
+		{"placeholder-workspace-structure.txt", "placeholder-workspace-structure.txt", "text"},
 		{"mutating-flow-before-after.svg", "mutating-flow-before-after.svg", "visual"},
 		{"mutating-flow-before-after.txt", "mutating-flow-before-after.txt", "text"},
 		{"workspace-manifest.json", "workspace-manifest.json", "manifest"},
@@ -450,6 +507,7 @@ func runProof(bin, outDir, fixtureRoot string) error {
 			"machine-placement-presence",
 			"bootstrap-hydration-plan",
 			"source-less-agent-prep",
+			"placeholder-workspace-structure",
 			"mutating-flow-before-after",
 		},
 		Commands:     r.commands,
@@ -633,6 +691,20 @@ func (r *runner) startLocalGitDaemon(basePath, probeRepo string) (string, func()
 
 func (r *runner) runCodeMesh(label string, node machineNode, args ...string) (commandCapture, error) {
 	return r.run(label, node.workspace, node.env, r.bin, args...)
+}
+
+func gitStatusSucceeds(env []string, dir string) (bool, error) {
+	cmd := exec.Command("git", "-C", dir, "status", "--porcelain")
+	cmd.Env = append(os.Environ(), env...)
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return false, nil
+	}
+	return false, err
 }
 
 func (r *runner) run(label, dir string, extraEnv []string, name string, args ...string) (commandCapture, error) {
@@ -850,6 +922,7 @@ func writeSummary(outDir string, manifest proofManifest) error {
 		"- per-machine placement and presence",
 		"- planned bootstrap and hydration actions",
 		"- source-less agent workspace prep from registry clone source",
+		"- placeholder workspace structure before explicit hydration",
 		"- before and after state for bootstrap apply plus idempotent hydrate",
 		"",
 		"## Confidentiality",
@@ -955,19 +1028,20 @@ func validateProofBundle(root string) error {
 	if len(manifest.Commands) == 0 {
 		problems = append(problems, "real command list is empty")
 	}
-	for _, required := range []string{"canonical-workspace-tree", "machine-placement-presence", "bootstrap-hydration-plan", "source-less-agent-prep", "mutating-flow-before-after"} {
+	for _, required := range []string{"canonical-workspace-tree", "machine-placement-presence", "bootstrap-hydration-plan", "source-less-agent-prep", "placeholder-workspace-structure", "mutating-flow-before-after"} {
 		if !contains(manifest.Coverage, required) {
 			problems = append(problems, "coverage missing "+required)
 		}
 	}
 	requiredVisuals := map[string]bool{
-		"canonical-workspace-tree.svg":   false,
-		"machine-placement-presence.svg": false,
-		"bootstrap-hydration-plan.svg":   false,
-		"source-less-agent-prep.svg":     false,
-		"mutating-flow-before-after.svg": false,
-		"summary.md":                     false,
-		"workspace-manifest.json":        false,
+		"canonical-workspace-tree.svg":        false,
+		"machine-placement-presence.svg":      false,
+		"bootstrap-hydration-plan.svg":        false,
+		"source-less-agent-prep.svg":          false,
+		"placeholder-workspace-structure.svg": false,
+		"mutating-flow-before-after.svg":      false,
+		"summary.md":                          false,
+		"workspace-manifest.json":             false,
 	}
 	for _, artifact := range manifest.Artifacts {
 		if !artifact.Required {

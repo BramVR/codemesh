@@ -41,7 +41,8 @@
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/contract-invalid-policy.git",
           "state": "blocked",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "hydrated"
         }
       ]
     }

@@ -11,6 +11,7 @@ import (
 	"github.com/BramVR/codemesh/internal/clonestrategy"
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/hydrationplanner"
+	"github.com/BramVR/codemesh/internal/placeholder"
 )
 
 type Executor struct {
@@ -142,12 +143,42 @@ func (e Executor) clone(ctx context.Context, workspaceRoot string, action hydrat
 	selection := clonestrategy.SelectionForOptions(options)
 	cleanupOnCloneFailure := false
 	moveIntoExistingDestination := false
+	replacePlaceholderDestination := false
+	cloneInsidePlaceholderDestination := false
 	clonePath := project.LocalPath
 	info, err := os.Stat(project.LocalPath)
 	switch {
 	case err == nil:
 		if !info.IsDir() {
 			return ClonedProject{}, PathConflictError{Path: project.LocalPath, Reason: "exists and is not a directory"}
+		}
+		if action.State == hydrationplanner.StatePlaceholder {
+			owned, err := placeholder.OwnedBy(project.LocalPath, project.Alias, project.NormalizedRemote)
+			if err != nil {
+				return ClonedProject{}, PathConflictError{Path: project.LocalPath, Reason: err.Error()}
+			}
+			if !owned {
+				return ClonedProject{}, PathConflictError{Path: project.LocalPath, Reason: "placeholder directory has local changes"}
+			}
+			if err := ensureRealDestinationWithinRoot(workspaceRoot, project.LocalPath); err != nil {
+				return ClonedProject{}, err
+			}
+			tempParent := filepath.Dir(project.LocalPath)
+			if workspaceRoot != "" && samePath(project.LocalPath, workspaceRoot) {
+				tempParent = project.LocalPath
+				cloneInsidePlaceholderDestination = true
+			}
+			clonePath, err = os.MkdirTemp(tempParent, ".codemesh-clone-"+filepath.Base(project.LocalPath)+"-")
+			if err != nil {
+				return ClonedProject{}, fmt.Errorf("create temporary clone directory: %w", err)
+			}
+			if err := ensureRealDestinationWithinRoot(workspaceRoot, clonePath); err != nil {
+				_ = os.RemoveAll(clonePath)
+				return ClonedProject{}, err
+			}
+			cleanupOnCloneFailure = true
+			replacePlaceholderDestination = true
+			break
 		}
 		empty, err := dirIsEmpty(project.LocalPath)
 		if err != nil {
@@ -223,6 +254,42 @@ func (e Executor) clone(ctx context.Context, workspaceRoot string, action hydrat
 			return ClonedProject{}, fmt.Errorf("remove temporary clone directory: %w", err)
 		}
 	}
+	if replacePlaceholderDestination {
+		owned, err := placeholder.OwnedByAllowing(project.LocalPath, project.Alias, project.NormalizedRemote, clonePath)
+		if err != nil {
+			_ = os.RemoveAll(clonePath)
+			return ClonedProject{}, PathConflictError{Path: project.LocalPath, Reason: err.Error()}
+		}
+		if !owned {
+			_ = os.RemoveAll(clonePath)
+			return ClonedProject{}, PathConflictError{Path: project.LocalPath, Reason: "placeholder changed while clone was running"}
+		}
+		if cloneInsidePlaceholderDestination {
+			for _, name := range placeholder.SentinelFiles() {
+				if err := os.Remove(filepath.Join(project.LocalPath, name)); err != nil {
+					_ = os.RemoveAll(clonePath)
+					return ClonedProject{}, fmt.Errorf("remove placeholder sentinel: %w", err)
+				}
+			}
+			if err := moveDirectoryContents(clonePath, project.LocalPath); err != nil {
+				_ = os.RemoveAll(clonePath)
+				return ClonedProject{}, fmt.Errorf("move cloned project into %q: %w", project.LocalPath, err)
+			}
+			if err := os.Remove(clonePath); err != nil {
+				return ClonedProject{}, fmt.Errorf("remove temporary clone directory: %w", err)
+			}
+			goto cloned
+		}
+		if err := os.RemoveAll(project.LocalPath); err != nil {
+			_ = os.RemoveAll(clonePath)
+			return ClonedProject{}, fmt.Errorf("remove placeholder directory: %w", err)
+		}
+		if err := os.Rename(clonePath, project.LocalPath); err != nil {
+			_ = os.RemoveAll(clonePath)
+			return ClonedProject{}, fmt.Errorf("move cloned project into %q: %w", project.LocalPath, err)
+		}
+	}
+cloned:
 	return ClonedProject{
 		Project:       project.Alias,
 		ProjectID:     action.ProjectID,

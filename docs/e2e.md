@@ -251,7 +251,7 @@ Readiness e2e coverage runs `codemesh tree` and `codemesh status` against the sa
 
 Doctor preflight e2e coverage runs `codemesh doctor` through the built CLI against local fixtures. It verifies green human output for a clean handoff, strict JSON failure for warning-only dirty checkout readiness, toolchain readiness in human and JSON output, actionable missing-base blockers, and no `agent_runs` rows or agent run directories after doctor checks.
 
-Bootstrap e2e coverage writes isolated Workspace Manifest JSON entries, registers a fresh machine workspace root, verifies dry-run plan output does not mutate filesystem or registry state, applies topology, checks parent directories and Project Registry rows, verifies project directories are not created, and confirms `tree` and `status` still report bootstrapped projects as missing. It also covers path conflict refusal with no registry mutation and preserved local files.
+Bootstrap e2e coverage writes isolated Workspace Manifest JSON entries, registers a fresh machine workspace root, verifies dry-run plan output does not mutate filesystem or registry state, applies topology, checks parent directories and Project Registry rows, verifies ordinary apply can clone from local remotes, verifies explicit `--placeholders` writes sentinel-only directories that are not Git checkouts, and confirms `tree` and `status` distinguish missing, placeholder, and hydrated workspace states. It also covers path conflict refusal with no registry mutation and preserved local files.
 
 Workspace Target e2e coverage uses only local fake target data. It bootstraps isolated manifest topology, registers local machine facts, stores fake-provider env binding references, runs `codemesh target export --json`, and verifies the export includes topology, machine/target facts, scoped references, and `values: not-recorded` without env values, readiness state, dirty/stale state, Agent Runs, or provider calls.
 
@@ -329,7 +329,7 @@ Run the same lane locally with:
 make crabbox-pr-proof-free
 ```
 
-The target builds the packaged CLI, creates isolated local Git remotes and two isolated CodeMesh machine homes, runs real `codemesh` commands, and writes visual proof under `tmp/crabbox-pr-proof/`. It must fail rather than skip when the packaged CLI cannot run, a required visual is missing, command provenance is fake-only, or the public artifact confidentiality scan finds raw secrets, private endpoints, personal local paths outside fixture placeholders, internal model names, or sensitive logs.
+The target builds the packaged CLI, creates isolated local Git remotes and three isolated CodeMesh machine homes, runs real `codemesh` commands, and writes visual proof under `tmp/crabbox-pr-proof/`. It must fail rather than skip when the packaged CLI cannot run, a required visual is missing, command provenance is fake-only, or the public artifact confidentiality scan finds raw secrets, private endpoints, personal local paths outside fixture placeholders, internal model names, or sensitive logs.
 
 The GitHub Actions workflow is `crabbox-pr-proof`. Reviewers find the proof on the PR's Checks tab by opening the `Free Crabbox PR visual proof` job summary and downloading the `codemesh-crabbox-pr-proof` artifact. Required proof files include:
 
@@ -339,10 +339,11 @@ The GitHub Actions workflow is `crabbox-pr-proof`. Reviewers find the proof on t
 - `machine-placement-presence.svg`
 - `bootstrap-hydration-plan.svg`
 - `source-less-agent-prep.svg`
+- `placeholder-workspace-structure.svg`
 - `mutating-flow-before-after.svg`
 - matching `.txt` command-output companions and `commands/*.txt` transcripts
 
-The visuals show canonical workspace tree/status output, manifest import/export placement, per-machine placement and presence, planned bootstrap/hydration actions, source-less Agent Prep from a registry clone source, and before/after state for bootstrap apply plus idempotent hydrate. Paths are sanitized to isolated fixture placeholders before upload.
+The visuals show canonical workspace tree/status output, manifest import/export placement, per-machine placement and presence, planned bootstrap/hydration actions, source-less Agent Prep from a registry clone source, explicit placeholder structure before/after hydration, and before/after state for bootstrap apply plus idempotent hydrate. Paths are sanitized to isolated fixture placeholders before upload.
 
 ## Owned-Host Crabbox Proof
 

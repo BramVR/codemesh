@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/BramVR/codemesh/internal/gitops"
+	"github.com/BramVR/codemesh/internal/placeholder"
 	"github.com/BramVR/codemesh/internal/policy"
 	"github.com/BramVR/codemesh/internal/state"
 	"github.com/BramVR/codemesh/internal/toolchain"
@@ -17,11 +18,12 @@ import (
 type State string
 
 const (
-	StatePresent State = "present"
-	StateMissing State = "missing"
-	StateDirty   State = "dirty"
-	StateStale   State = "stale"
-	StateBlocked State = "blocked"
+	StatePresent     State = "present"
+	StatePlaceholder State = "placeholder"
+	StateMissing     State = "missing"
+	StateDirty       State = "dirty"
+	StateStale       State = "stale"
+	StateBlocked     State = "blocked"
 )
 
 var errRemoteDefaultNotAdvertised = errors.New("remote HEAD did not advertise a default branch")
@@ -94,6 +96,35 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 			Message: fmt.Sprintf("local path is not a directory: %s", project.LocalPath),
 		})
 		return report, nil
+	}
+	if !isGitCheckoutRoot(ctx, project.LocalPath) {
+		if metadata, ok, err := placeholder.Is(project.LocalPath); err != nil {
+			report.State = StateBlocked
+			report.Blockers = append(report.Blockers, Diagnostic{
+				Code:    "invalid-placeholder",
+				Message: err.Error(),
+			})
+			return report, nil
+		} else if ok {
+			report.State = StatePlaceholder
+			code := "placeholder"
+			message := "metadata-only placeholder; run codemesh hydrate " + project.Alias + " to clone source content"
+			if metadata.Project != project.Alias || metadata.Identity != project.NormalizedRemote {
+				report.State = StateBlocked
+				code = "placeholder-mismatch"
+				message = "placeholder metadata does not match registered project"
+			} else if owned, err := placeholder.OwnedBy(project.LocalPath, project.Alias, project.NormalizedRemote); err != nil {
+				report.State = StateBlocked
+				code = "invalid-placeholder"
+				message = err.Error()
+			} else if !owned {
+				report.State = StateBlocked
+				code = "placeholder-local-changes"
+				message = "placeholder directory has local changes"
+			}
+			report.Blockers = append(report.Blockers, Diagnostic{Code: code, Message: message})
+			return report, nil
+		}
 	}
 
 	projectPolicy, err := policy.Resolve(project.LocalPath)
@@ -631,4 +662,21 @@ func validateBaseBranch(ctx context.Context, base string) error {
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	return gitops.Process().Output(ctx, dir, args...)
+}
+
+func isGitCheckoutRoot(ctx context.Context, path string) bool {
+	root, err := gitOutput(ctx, path, "rev-parse", "--show-toplevel")
+	return err == nil && sameLocalPath(strings.TrimSpace(root), path)
+}
+
+func sameLocalPath(a, b string) bool {
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	if realA, err := filepath.EvalSymlinks(a); err == nil {
+		a = realA
+	}
+	if realB, err := filepath.EvalSymlinks(b); err == nil {
+		b = realB
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
 }

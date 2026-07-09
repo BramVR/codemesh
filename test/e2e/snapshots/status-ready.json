@@ -36,7 +36,8 @@
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/clean-repo.git",
           "state": "present",
-          "workspace_source": "local-only"
+          "workspace_source": "local-only",
+          "workspace_state": "hydrated"
         }
       ]
     }

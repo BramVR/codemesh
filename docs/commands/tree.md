@@ -47,7 +47,7 @@ codemesh tree --json
 ## Current Limitations
 
 - Reads local registry state only.
-- Shows missing imported manifest Projects as metadata; it does not create placeholder project directories.
+- Shows missing imported manifest Projects as metadata. Placeholder directories are created only by explicit [`codemesh bootstrap --placeholders`](bootstrap.md).
 - Does not create directories, mounts, or clones.
 - Does not check remote freshness; use [`codemesh status`](status.md) for readiness details.
 

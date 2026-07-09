@@ -3,7 +3,7 @@ summary: "Command reference for codemesh bootstrap."
 read_when:
   - "Updating public command reference pages."
 title: "codemesh bootstrap"
-description: "Clone missing registered projects through the Hydration Planner."
+description: "Clone or placeholder missing registered projects through the Hydration Planner."
 permalink: /commands/bootstrap
 ---
 
@@ -12,16 +12,16 @@ permalink: /commands/bootstrap
 ## Syntax
 
 ```sh
-codemesh bootstrap [--all | project... | <manifest-path>] [--dry-run|--apply] [--json]
+codemesh bootstrap [--all | project... | <manifest-path>] [--dry-run|--apply|--placeholders] [--json]
 ```
 
 ## Purpose
 
-Clone missing registered Projects into their desired local paths after the shared Hydration Planner classifies clone/refusal actions. Use `--all` for every registered Project, or pass one or more Project aliases.
+Clone missing registered Projects into their desired local paths, or materialize honest placeholder directories, after the shared Hydration Planner classifies clone/refusal actions. Use `--all` for every registered Project, or pass one or more Project aliases.
 
-Bootstrap also keeps the manifest topology path from earlier MVP slices: when the positional argument is a manifest file or directory, CodeMesh reads the Workspace Manifest entries, compares them with the registered machine workspace root, inserts or updates local Project Registry rows on `--apply`, and then consumes the same planned clone/refusal actions.
+Bootstrap also keeps the manifest topology path from earlier MVP slices: when the positional argument is a manifest file or directory, CodeMesh reads the Workspace Manifest entries, compares them with the registered machine workspace root, inserts or updates local Project Registry rows on `--apply` or `--placeholders`, and then consumes the same planned clone/refusal actions.
 
-By default bootstrap is a dry run; `--dry-run` makes that explicit. The dry-run output includes planned clones for missing Projects and refusals for path conflicts, unsafe paths, or unknown Projects. With `--apply`, bootstrap refuses blockers before invoking Git, then clones planned missing Projects from their registered clone source. It does not create project placeholders, start a daemon, mount a filesystem, sync arbitrary files, install tools, or touch env materialization.
+By default bootstrap is a dry run; `--dry-run` makes that explicit. The dry-run output includes planned clones for missing Projects and refusals for path conflicts, unsafe paths, or unknown Projects. With `--placeholders`, bootstrap refuses the same blockers, writes `.codemesh-placeholder.json`, `CODEMESH_PLACEHOLDER.txt`, and an invalid `.git` barrier file, and does not clone source content. With `--apply`, bootstrap refuses blockers before invoking Git, then clones planned missing Projects from their registered clone source. Bootstrap does not start a daemon, mount a filesystem, sync arbitrary files, install tools, or touch env materialization.
 
 Use `--json` to emit the stable Command Result shape.
 
@@ -62,6 +62,7 @@ JSON
 
 codemesh bootstrap "$manifest"
 codemesh bootstrap "$manifest" --dry-run
+codemesh bootstrap "$manifest" --placeholders
 codemesh bootstrap "$manifest" --apply
 codemesh bootstrap --all --dry-run
 codemesh bootstrap demo --apply
@@ -73,6 +74,7 @@ codemesh tree
 - Requires `codemesh machine register` first so the machine workspace root is known.
 - Reads local manifest files only; it does not fetch, publish, or sync manifests.
 - Refuses path conflicts and unsafe paths without mutation.
+- Placeholder directories are metadata-only sentinels, not usable Git checkouts; explicit `codemesh hydrate <project>` can replace an unmodified CodeMesh-owned placeholder with a real clone.
 - Executes Git clones only for planned missing registered Projects. Existing present Projects are left alone, and conflicts are refused before Git.
 
 Back to [Command Catalog](../commands.md).
