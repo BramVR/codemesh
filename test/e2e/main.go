@@ -3813,12 +3813,10 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 	}
 
 	localOnlyStatus := s.command("agent prep local-only status json", "status", localOnlyProject.Name, "--base", "main", "--json")
-	if localOnlyStatus.Status != "PASS" || !resultContainsAll(localOnlyStatus, `"local_only_paths":[{"path":"node_modules","category":"dependency"},{"path":"dist","category":"build"}]`) {
-		if localOnlyStatus.Status == "PASS" {
-			localOnlyStatus.Status = "FAIL"
-			localOnlyStatus.Error = "status JSON did not report local-only path policy"
-			s.updateResult(localOnlyStatus)
-		}
+	if localOnlyStatus.Status != "PASS" || !s.expectStatusLocalOnlyPaths(localOnlyStatus, localOnlyProject.Name, map[string]string{
+		"node_modules": "dependency",
+		"dist":         "build",
+	}) {
 		return
 	}
 
@@ -5881,6 +5879,46 @@ func (s *scenario) expectStatusJSON(r result, alias, exitClass, state, base stri
 		return false
 	}
 	return true
+}
+
+func (s *scenario) expectStatusLocalOnlyPaths(r result, alias string, want map[string]string) bool {
+	var payload struct {
+		Payload struct {
+			Projects []struct {
+				Alias          string `json:"alias"`
+				LocalOnlyPaths []struct {
+					Path     string `json:"path"`
+					Category string `json:"category"`
+				} `json:"local_only_paths"`
+			} `json:"projects"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
+		s.failCommandAssertion(r, "stdout was not JSON: "+err.Error())
+		return false
+	}
+	for _, project := range payload.Payload.Projects {
+		if project.Alias != alias {
+			continue
+		}
+		got := make(map[string]string, len(project.LocalOnlyPaths))
+		for _, rule := range project.LocalOnlyPaths {
+			got[rule.Path] = rule.Category
+		}
+		if len(got) != len(want) {
+			s.failCommandAssertion(r, fmt.Sprintf("local_only_paths = %#v, want %#v", got, want))
+			return false
+		}
+		for path, category := range want {
+			if got[path] != category {
+				s.failCommandAssertion(r, fmt.Sprintf("local_only_paths = %#v, want %#v", got, want))
+				return false
+			}
+		}
+		return true
+	}
+	s.failCommandAssertion(r, fmt.Sprintf("project %s missing from status JSON", alias))
+	return false
 }
 
 func (s *scenario) expectTreeJSON(r result, exitClass string, states map[string]string) bool {

@@ -254,15 +254,19 @@ func parseLocalOnlyPaths(path string, values []localOnlyPath) ([]PathRule, error
 		if filepath.IsAbs(policyPath) || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 			return nil, fmt.Errorf("invalid %s: %s.path %q must be relative to the project checkout", path, field, policyPath)
 		}
-		category := PathCategory(strings.TrimSpace(value.Category))
+		categoryText := strings.TrimSpace(value.Category)
+		category := PathCategory(categoryText)
 		if category == "" {
 			return nil, fmt.Errorf("invalid %s: %s.category must not be empty", path, field)
+		}
+		if categoryText != value.Category {
+			return nil, fmt.Errorf("invalid %s: %s.category %q must not have leading or trailing whitespace", path, field, value.Category)
 		}
 		if category == PathCategorySource {
 			return nil, fmt.Errorf("invalid %s: %s.category %q is ambiguous for local-only paths; source content must stay in Git-managed source", path, field, category)
 		}
 		if !validLocalOnlyCategory(category) {
-			return nil, fmt.Errorf("invalid %s: %s.category %q must be dependency, build, cache, generated, env-config, os-specific, or source", path, field, category)
+			return nil, fmt.Errorf("invalid %s: %s.category %q must be dependency, build, cache, generated, env-config, or os-specific", path, field, category)
 		}
 		rules = append(rules, PathRule{Path: filepath.ToSlash(clean), Category: category})
 	}
@@ -271,7 +275,7 @@ func parseLocalOnlyPaths(path string, values []localOnlyPath) ([]PathRule, error
 
 func validLocalOnlyCategory(category PathCategory) bool {
 	switch category {
-	case PathCategoryDependency, PathCategoryBuild, PathCategoryCache, PathCategoryGenerated, PathCategoryEnvConfig, PathCategoryOSSpecific, PathCategorySource:
+	case PathCategoryDependency, PathCategoryBuild, PathCategoryCache, PathCategoryGenerated, PathCategoryEnvConfig, PathCategoryOSSpecific:
 		return true
 	default:
 		return false

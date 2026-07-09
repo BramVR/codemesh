@@ -119,6 +119,42 @@ func TestResolveRejectsAmbiguousLocalOnlySourceDeclaration(t *testing.T) {
 	}
 }
 
+func TestResolveRejectsLocalOnlyCategoryWhitespace(t *testing.T) {
+	root := t.TempDir()
+	writePolicy(t, root, `local_only:
+  paths:
+    - path: node_modules
+      category: " dependency "
+`)
+
+	_, err := Resolve(root)
+	if err == nil {
+		t.Fatal("Resolve error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "local_only.paths[0].category") ||
+		!strings.Contains(err.Error(), "must not have leading or trailing whitespace") {
+		t.Fatalf("error is not actionable: %v", err)
+	}
+}
+
+func TestResolveInvalidLocalOnlyCategoryDoesNotListSourceAsAllowed(t *testing.T) {
+	root := t.TempDir()
+	writePolicy(t, root, `local_only:
+  paths:
+    - path: node_modules
+      category: vendor
+`)
+
+	_, err := Resolve(root)
+	if err == nil {
+		t.Fatal("Resolve error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "must be dependency, build, cache, generated, env-config, or os-specific") ||
+		strings.Contains(err.Error(), "or source") {
+		t.Fatalf("error lists the wrong allowed categories: %v", err)
+	}
+}
+
 func TestResolveInvalidIncludeDocsPathReturnsActionableError(t *testing.T) {
 	tests := []struct {
 		name  string
