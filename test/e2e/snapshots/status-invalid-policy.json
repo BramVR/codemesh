@@ -35,6 +35,7 @@
             ],
             "warnings": []
           },
+          "local_only_paths": [],
           "machine_path": "<FIXTURE_SOURCES>/contract-invalid-policy",
           "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/contract-invalid-policy",

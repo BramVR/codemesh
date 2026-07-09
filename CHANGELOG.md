@@ -4,6 +4,7 @@
 
 Target next patch: `v0.1.1`.
 
+- Added Local-only path policy declarations for dependency, build, cache, generated, env/config, and OS-specific paths, with `tree`, `status`, hydration/bootstrap plans, and Agent Prep metadata surfacing those decisions while rejecting ambiguous source-as-local-only policy: https://github.com/BramVR/codemesh/issues/143
 - Added command-triggered lazy Hydration with `codemesh access <project>`, so known missing or Placeholder Projects hydrate through the shared safety planner and report before/after workspace-state transitions without daemon, mount, or background sync behavior: https://github.com/BramVR/codemesh/issues/141
 - Added explicit Placeholder workspace structure, so `codemesh bootstrap --placeholders` writes metadata-only sentinels for missing canonical Projects while `tree`, `status`, and `hydrate` distinguish placeholder, missing, blocked, and hydrated states: https://github.com/BramVR/codemesh/issues/140
 - Added registry-clone Agent Prep for source-less Projects, with selected source mode in Agent Run metadata and Crabbox PR proof from an isolated local Git remote: https://github.com/BramVR/codemesh/issues/139

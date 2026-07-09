@@ -30,6 +30,7 @@
             "blockers": [],
             "warnings": []
           },
+          "local_only_paths": [],
           "machine_path": "<FIXTURE_SOURCES>/clean-repo",
           "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/clean-repo",

@@ -3794,9 +3794,31 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 		h.record(result{Name: "agent prep toolchain setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
 		return
 	}
+	localOnlyProject, err := h.createClonedFixtureWithSeed(s.fixtures, "agent-local-only", writeLocalOnlyPolicy, func(source string) error {
+		localOnlyDir := filepath.Join(source, "node_modules", "left-pad")
+		if err := os.MkdirAll(localOnlyDir, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(localOnlyDir, "index.js"), []byte("module.exports = 1\n"), 0o644)
+	})
+	if err != nil {
+		h.record(result{Name: "agent prep local-only setup", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
 	s.fixtures.Projects = append(s.fixtures.Projects, toolchainProject)
+	s.fixtures.Projects = append(s.fixtures.Projects, localOnlyProject)
 	scan := s.command("agent prep scan fixtures", "scan", s.fixtures.Sources)
 	if scan.Status != "PASS" {
+		return
+	}
+
+	localOnlyStatus := s.command("agent prep local-only status json", "status", localOnlyProject.Name, "--base", "main", "--json")
+	if localOnlyStatus.Status != "PASS" || !resultContainsAll(localOnlyStatus, `"local_only_paths":[{"path":"node_modules","category":"dependency"},{"path":"dist","category":"build"}]`) {
+		if localOnlyStatus.Status == "PASS" {
+			localOnlyStatus.Status = "FAIL"
+			localOnlyStatus.Error = "status JSON did not report local-only path policy"
+			s.updateResult(localOnlyStatus)
+		}
 		return
 	}
 
@@ -3885,6 +3907,31 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 	if jsonPrepare.Status != "PASS" || !s.expectAgentPrepareJSON(jsonPrepare, "success", "clean-repo", true, "main", "codex", 4, nil, nil) {
 		return
 	}
+
+	localOnlyPrepare := s.command("agent prep local-only json", "agent", "prepare", localOnlyProject.Name, "--base", "main", "--profile", "codex", "--json")
+	if localOnlyPrepare.Status != "PASS" {
+		return
+	}
+	localOnlyReadyPath, localOnlyContractPath, ok := agentPrepareReadyPaths(localOnlyPrepare.Stdout)
+	if !ok {
+		localOnlyPrepare.Status = "FAIL"
+		localOnlyPrepare.Error = "agent prepare JSON did not include ready path and contract path"
+		s.updateResult(localOnlyPrepare)
+		return
+	}
+	if !s.expectPathMissing("agent prep excludes local-only dependency directory", filepath.Join(localOnlyReadyPath, "node_modules")) {
+		return
+	}
+	contractData, err := os.ReadFile(localOnlyContractPath)
+	if err != nil {
+		h.record(result{Name: "agent prep local-only contract read", Status: "FAIL", Error: err.Error(), ExitCode: -1})
+		return
+	}
+	if !strings.Contains(string(contractData), `"local_only_paths":`) || !strings.Contains(string(contractData), `"path": "node_modules"`) || strings.Contains(string(contractData), "left-pad") {
+		h.record(result{Name: "agent prep local-only contract policy", Status: "FAIL", Error: "contract missing local-only metadata or leaked dependency content", ExitCode: -1})
+		return
+	}
+	h.record(result{Name: "agent prep local-only contract policy", Status: "PASS", ExitCode: 0})
 
 	toolchainPrep := s.command("agent prep toolchain contract", "agent", "prepare", "agent-toolchain", "--base", "main")
 	if toolchainPrep.Status != "PASS" || !s.expectOutput(toolchainPrep, "warnings: none", "blockers: none", "ready_path: ") {
@@ -5173,6 +5220,11 @@ func writeToolchainPolicy(path string) error {
 	return os.WriteFile(filepath.Join(path, ".codemesh.yml"), policy, 0o644)
 }
 
+func writeLocalOnlyPolicy(path string) error {
+	policy := []byte("local_only:\n  paths:\n    - path: node_modules\n      category: dependency\n    - path: dist\n      category: build\n")
+	return os.WriteFile(filepath.Join(path, ".codemesh.yml"), policy, 0o644)
+}
+
 func writeLiveGoToolchainPolicy(path string) error {
 	if err := os.WriteFile(filepath.Join(path, "go.mod"), []byte("module example.invalid/live-toolchain-go\n\ngo 1.26\n"), 0o644); err != nil {
 		return err
@@ -6253,6 +6305,23 @@ func agentPrepareReadyPath(raw string) (string, error) {
 		return "", errors.New("agent prepare JSON did not include ready_path")
 	}
 	return payload.Payload.ReadyPath, nil
+}
+
+func agentPrepareReadyPaths(raw string) (string, string, bool) {
+	var payload struct {
+		Command string `json:"command"`
+		Payload struct {
+			ReadyPath       string `json:"ready_path"`
+			RunContractPath string `json:"run_contract_path"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", "", false
+	}
+	if payload.Command != "agent prepare" || strings.TrimSpace(payload.Payload.ReadyPath) == "" || strings.TrimSpace(payload.Payload.RunContractPath) == "" {
+		return "", "", false
+	}
+	return payload.Payload.ReadyPath, payload.Payload.RunContractPath, true
 }
 
 func doctorWarningCodes(items []struct {

@@ -29,6 +29,7 @@ type Policy struct {
 	Env           EnvPolicy
 	Toolchain     ToolchainPolicy
 	IncludeDocs   []string
+	LocalOnly     LocalOnlyPolicy
 }
 
 type EnvPolicy struct {
@@ -42,8 +43,30 @@ type ToolchainPolicy struct {
 	Requirements []string
 }
 
+type LocalOnlyPolicy struct {
+	Paths []PathRule
+}
+
+type PathRule struct {
+	Path     string       `json:"path"`
+	Category PathCategory `json:"category"`
+}
+
+type PathCategory string
+
+const (
+	PathCategoryDependency PathCategory = "dependency"
+	PathCategoryBuild      PathCategory = "build"
+	PathCategoryCache      PathCategory = "cache"
+	PathCategoryGenerated  PathCategory = "generated"
+	PathCategoryEnvConfig  PathCategory = "env-config"
+	PathCategoryOSSpecific PathCategory = "os-specific"
+	PathCategorySource     PathCategory = "source"
+)
+
 type policyFile struct {
-	Agent agentPolicy `yaml:"agent"`
+	Agent     agentPolicy     `yaml:"agent"`
+	LocalOnly localOnlyPolicy `yaml:"local_only"`
 }
 
 type agentPolicy struct {
@@ -62,6 +85,15 @@ type envPolicy struct {
 type toolchainPolicy struct {
 	Mode         string   `yaml:"mode"`
 	Requirements []string `yaml:"requirements"`
+}
+
+type localOnlyPolicy struct {
+	Paths []localOnlyPath `yaml:"paths"`
+}
+
+type localOnlyPath struct {
+	Path     string `yaml:"path"`
+	Category string `yaml:"category"`
 }
 
 func Defaults() Policy {
@@ -148,10 +180,15 @@ func ParseBytes(path string, data []byte) (Policy, error) {
 	if err := validateIncludeDocs(path, raw.Agent.IncludeDocs); err != nil {
 		return Policy{}, err
 	}
+	localOnlyPaths, err := parseLocalOnlyPaths(path, raw.LocalOnly.Paths)
+	if err != nil {
+		return Policy{}, err
+	}
 	p.Env.RequiredFiles = append([]string(nil), raw.Agent.Env.RequiredFiles...)
 	p.Env.RequiredKeys = append([]string(nil), raw.Agent.Env.RequiredKeys...)
 	p.Toolchain.Requirements = append([]string(nil), raw.Agent.Toolchain.Requirements...)
 	p.IncludeDocs = append([]string(nil), raw.Agent.IncludeDocs...)
+	p.LocalOnly.Paths = localOnlyPaths
 	return p, nil
 }
 
@@ -200,6 +237,45 @@ func validateIncludeDocs(path string, values []string) error {
 		}
 	}
 	return nil
+}
+
+func parseLocalOnlyPaths(path string, values []localOnlyPath) ([]PathRule, error) {
+	rules := make([]PathRule, 0, len(values))
+	for i, value := range values {
+		field := fmt.Sprintf("local_only.paths[%d]", i)
+		policyPath := strings.TrimSpace(value.Path)
+		if policyPath == "" {
+			return nil, fmt.Errorf("invalid %s: %s.path must not be empty", path, field)
+		}
+		if policyPath != value.Path {
+			return nil, fmt.Errorf("invalid %s: %s.path %q must not have leading or trailing whitespace", path, field, value.Path)
+		}
+		clean := filepath.Clean(filepath.FromSlash(policyPath))
+		if filepath.IsAbs(policyPath) || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("invalid %s: %s.path %q must be relative to the project checkout", path, field, policyPath)
+		}
+		category := PathCategory(strings.TrimSpace(value.Category))
+		if category == "" {
+			return nil, fmt.Errorf("invalid %s: %s.category must not be empty", path, field)
+		}
+		if category == PathCategorySource {
+			return nil, fmt.Errorf("invalid %s: %s.category %q is ambiguous for local-only paths; source content must stay in Git-managed source", path, field, category)
+		}
+		if !validLocalOnlyCategory(category) {
+			return nil, fmt.Errorf("invalid %s: %s.category %q must be dependency, build, cache, generated, env-config, os-specific, or source", path, field, category)
+		}
+		rules = append(rules, PathRule{Path: filepath.ToSlash(clean), Category: category})
+	}
+	return rules, nil
+}
+
+func validLocalOnlyCategory(category PathCategory) bool {
+	switch category {
+	case PathCategoryDependency, PathCategoryBuild, PathCategoryCache, PathCategoryGenerated, PathCategoryEnvConfig, PathCategoryOSSpecific, PathCategorySource:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateStrings(path, field string, values []string) error {

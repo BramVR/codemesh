@@ -26,6 +26,7 @@
             "blockers": [],
             "warnings": []
           },
+          "local_only_paths": [],
           "machine_path": "<FIXTURE_SOURCES>/clean-repo",
           "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/clean-repo",
@@ -49,6 +50,7 @@
               }
             ]
           },
+          "local_only_paths": [],
           "machine_path": "<FIXTURE_SOURCES>/dirty-source",
           "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/dirty-source",
@@ -67,6 +69,7 @@
             "blockers": [],
             "warnings": []
           },
+          "local_only_paths": [],
           "machine_path": "<FIXTURE_SOURCES>/missing-base-branch",
           "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/missing-base-branch",
@@ -85,6 +88,7 @@
             "blockers": [],
             "warnings": []
           },
+          "local_only_paths": [],
           "machine_path": "<FIXTURE_SOURCES>/policy-docs",
           "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/policy-docs",
@@ -103,6 +107,7 @@
             "blockers": [],
             "warnings": []
           },
+          "local_only_paths": [],
           "machine_path": "<FIXTURE_SOURCES>/remote-default-dev",
           "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/remote-default-dev",
@@ -126,6 +131,7 @@
             ],
             "warnings": []
           },
+          "local_only_paths": [],
           "machine_path": "<FIXTURE_SOURCES>/required-env-bound",
           "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/required-env-bound",
@@ -153,6 +159,7 @@
             ],
             "warnings": []
           },
+          "local_only_paths": [],
           "machine_path": "<FIXTURE_SOURCES>/required-env-missing",
           "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/required-env-missing",
@@ -176,6 +183,7 @@
             ],
             "warnings": []
           },
+          "local_only_paths": [],
           "machine_path": "<FIXTURE_SOURCES>/required-env-present",
           "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/required-env-present",
@@ -203,6 +211,7 @@
               }
             ]
           },
+          "local_only_paths": [],
           "machine_path": "<FIXTURE_SOURCES>/required-env-warn",
           "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/required-env-warn",

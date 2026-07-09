@@ -85,7 +85,7 @@ Re-running registration updates mutable facts without changing `machine_id` or `
 
 Machine rows are local observed state. They are not exported to shared topology by default.
 
-The Hydration Planner is the shared safety model for bootstrap previews, placeholder materialization, bootstrap execution, and explicit hydration. It reads the local Project Registry, current Machine workspace root when available, and filesystem path shape only; it does not contact Git remotes or shell out to Git. It classifies each planned action as present, placeholder, missing, path-conflict, unsafe-path, or unknown-project, with `clone`, `none`, or `refuse` as the execution action.
+The Hydration Planner is the shared safety model for bootstrap previews, placeholder materialization, bootstrap execution, and explicit hydration. It reads the local Project Registry, current Machine workspace root when available, filesystem path shape, and repo-local Project Policy when the source checkout is present; it does not contact Git remotes or shell out to Git. It classifies each planned action as present, placeholder, missing, path-conflict, unsafe-path, or unknown-project, with `clone`, `none`, or `refuse` as the execution action. Planned actions include `local_only_paths` from valid policy, and invalid policy is a refusal before clone or placeholder mutation.
 
 `codemesh hydrate <project>` resolves an existing registry row by alias, consumes the Hydration Planner, and clones `clone_url` into the planned desired path when that path is absent or contains an unmodified CodeMesh-owned placeholder. `codemesh access <project>` is command-triggered lazy Hydration over the same planner and executor: it records `trigger: command-access`, the before/after workspace-state transition, and the nested hydrate result, then leaves `tree` and `status` to report the derived final state. `codemesh bootstrap --all` and `codemesh bootstrap <project>... --apply` consume the same planned clone/refusal actions for registered Projects; `codemesh bootstrap <manifest-path> --apply` first imports manifest topology, then executes the same planned clone actions. Hydration defaults to the `full-clone` Clone Strategy: full Git history and a complete working tree. `--partial-clone` and repeatable `--sparse path` explicitly opt into Git-native partial clone and sparse checkout for `hydrate` and `access`. Hydration, access, and bootstrap may create the parent directory needed for the desired path. If the target path already contains user files, a changed placeholder, or a mismatched placeholder, CodeMesh refuses to overwrite it with an actionable path-conflict error before invoking Git. If the target path already looks like a present checkout, hydration and access report that no clone was needed.
 
@@ -130,7 +130,7 @@ Diagnostics are split into warnings and blockers. Dirty source checkouts and sta
 
 ## Project Policy
 
-Project policy is resolved at readiness time from the source checkout. See [Project Policy Reference](project-policy.md) for `.codemesh.yml` fields, defaults, validation, env readiness, toolchain readiness, include-docs intent, and no-secret-values behavior.
+Project policy is resolved at readiness time from the source checkout. See [Project Policy Reference](project-policy.md) for `.codemesh.yml` fields, defaults, validation, env readiness, toolchain readiness, include-docs intent, local-only path classification, and no-secret-values behavior.
 
 Resolution:
 
@@ -138,6 +138,8 @@ Resolution:
 2. Built-in defaults when absent.
 
 Policy is metadata only. The MVP does not store effective policy in SQLite.
+
+Local-only path policy classifies project-relative machine-specific paths such as dependency directories, build output, caches, generated files, env/config files, and OS-specific files. `tree`, `status`, Hydration Planner JSON, bootstrap JSON, hydrate/access JSON, and Agent Run Contracts surface the declarations as metadata. CodeMesh does not sync, clone, create, delete, or materialize those paths from policy. Ordinary Git source remains the default `source` category; declaring `source` under `local_only.paths` is invalid because it would blur Git-owned content and machine-local content.
 
 ## Env Readiness
 
@@ -200,6 +202,7 @@ The contract records metadata only:
 - project alias, normalized remote, redacted clone URL, and source path
 - selected source mode: `source_checkout` for an existing local Source checkout or `registry_clone` for source-less prep from the registered clone URL
 - whether the registered source checkout path was missing during prep
+- declared local-only paths from the selected base policy
 - effective base and profile
 - resolved commit and readiness decision
 - base provenance with fetched base, fetched commit, prepared HEAD, and whether the prepared HEAD matches the fetched commit

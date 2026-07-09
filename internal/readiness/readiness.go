@@ -47,6 +47,7 @@ type ProjectReport struct {
 	BaseBranch       string
 	FetchedBase      string
 	FetchedCommit    string
+	LocalOnlyPaths   []policy.PathRule
 	Toolchain        []toolchain.Result
 	Warnings         []Diagnostic
 	Blockers         []Diagnostic
@@ -140,6 +141,7 @@ func EvaluateProject(ctx context.Context, project state.Project, opts Options) (
 		base = projectPolicy.BaseBranch
 		report.BaseBranch = base
 	}
+	report.LocalOnlyPaths = append([]policy.PathRule(nil), projectPolicy.LocalOnly.Paths...)
 
 	dirty, err := gitOutput(ctx, project.LocalPath, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
@@ -235,6 +237,7 @@ func EvaluateHandoff(ctx context.Context, project state.Project, opts Options) (
 			report.BaseBranch = base
 		}
 	}
+	report.LocalOnlyPaths = append([]policy.PathRule(nil), sourcePolicy.LocalOnly.Paths...)
 
 	dirty, err := gitOutput(ctx, project.LocalPath, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {

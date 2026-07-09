@@ -967,6 +967,63 @@ func TestBootstrapDryRunJSONCarriesSharedHydrationPlan(t *testing.T) {
 	assertProjectRows(t, home, 0)
 }
 
+func TestBootstrapAllDryRunJSONCarriesLocalOnlyPolicyDecisions(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	repo := createCommittedLocalRemoteClone(t, "bootstrap-local-only-policy")
+	if err := os.WriteFile(filepath.Join(repo, ".codemesh.yml"), []byte(`local_only:
+  paths:
+    - path: node_modules
+      category: dependency
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".codemesh.yml")
+	runGit(t, repo, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Declare local-only policy")
+	runGit(t, repo, "push", "origin", "main")
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"machine", "register", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("machine register exit code = %d, want 0", code)
+	}
+	if code := run([]string{"add", repo, "--alias", "alpha"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"bootstrap", "--all", "--dry-run", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("bootstrap --all dry-run exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	var payload struct {
+		Payload struct {
+			HydrationPlan struct {
+				Actions []struct {
+					Project        string `json:"project"`
+					LocalOnlyPaths []struct {
+						Path     string `json:"path"`
+						Category string `json:"category"`
+					} `json:"local_only_paths"`
+				} `json:"actions"`
+			} `json:"hydration_plan"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("bootstrap stdout was not JSON: %v\n%s", err, stdout.String())
+	}
+	if len(payload.Payload.HydrationPlan.Actions) != 1 {
+		t.Fatalf("actions = %#v", payload.Payload.HydrationPlan.Actions)
+	}
+	action := payload.Payload.HydrationPlan.Actions[0]
+	if action.Project != "alpha" || len(action.LocalOnlyPaths) != 1 || action.LocalOnlyPaths[0].Path != "node_modules" || action.LocalOnlyPaths[0].Category != "dependency" {
+		t.Fatalf("hydration action local_only_paths = %#v", action)
+	}
+}
+
 func TestBootstrapAllClonesRegisteredMissingProjects(t *testing.T) {
 	tmp := t.TempDir()
 	home := filepath.Join(tmp, "codemesh-home")
@@ -2294,10 +2351,14 @@ func TestTreeJSONReportsCanonicalWorkspace(t *testing.T) {
 }
 
 type workspaceProjectPayload struct {
-	Alias                string `json:"alias"`
-	WorkspaceSource      string `json:"workspace_source"`
-	State                string `json:"state"`
-	WorkspaceState       string `json:"workspace_state"`
+	Alias           string `json:"alias"`
+	WorkspaceSource string `json:"workspace_source"`
+	State           string `json:"state"`
+	WorkspaceState  string `json:"workspace_state"`
+	LocalOnlyPaths  []struct {
+		Path     string `json:"path"`
+		Category string `json:"category"`
+	} `json:"local_only_paths"`
 	Path                 string `json:"path"`
 	PathPresent          bool   `json:"path_present"`
 	CanonicalPath        string `json:"canonical_path"`
@@ -2360,6 +2421,45 @@ func assertWorkspaceProject(t *testing.T, got workspaceProjectPayload, want work
 		got.MachinePathPresent != want.MachinePathPresent ||
 		(want.Blockers != 0 && len(got.Diagnostics.Blockers) != want.Blockers) {
 		t.Fatalf("workspace project = %#v, want %#v", got, want)
+	}
+}
+
+func TestStatusJSONReportsLocalOnlyPolicyDecisions(t *testing.T) {
+	tmp := t.TempDir()
+	home := filepath.Join(tmp, "codemesh-home")
+	workspace := filepath.Join(tmp, "workspace")
+	repo := createCommittedLocalRemoteClone(t, "local-only-policy")
+	policyPath := filepath.Join(repo, ".codemesh.yml")
+	if err := os.WriteFile(policyPath, []byte(`local_only:
+  paths:
+    - path: node_modules
+      category: dependency
+    - path: dist
+      category: build
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".codemesh.yml")
+	runGit(t, repo, "-c", "user.name=CodeMesh Test", "-c", "user.email=test@example.invalid", "commit", "-m", "Declare local-only policy")
+	runGit(t, repo, "push", "origin", "main")
+	t.Setenv("CODEMESH_HOME", home)
+	if code := run([]string{"init", workspace}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("init exit code = %d, want 0", code)
+	}
+	if code := run([]string{"add", repo, "--alias", "local-only-policy"}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+		t.Fatalf("add exit code = %d, want 0", code)
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"status", "local-only-policy", "--base", "main", "--json"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("status exit code = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
+	}
+	projects := decodeWorkspaceProjects(t, stdout.Bytes())
+	got := projects["local-only-policy"].LocalOnlyPaths
+	if len(got) != 2 || got[0].Path != "node_modules" || got[0].Category != "dependency" || got[1].Path != "dist" || got[1].Category != "build" {
+		t.Fatalf("local_only_paths = %#v", got)
 	}
 }
 

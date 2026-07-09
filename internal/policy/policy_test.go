@@ -47,6 +47,20 @@ func TestResolveValidPolicy(t *testing.T) {
   include_docs:
     - AGENTS.md
     - docs/adr/**
+local_only:
+  paths:
+    - path: node_modules
+      category: dependency
+    - path: dist
+      category: build
+    - path: .cache/codemesh
+      category: cache
+    - path: generated/client
+      category: generated
+    - path: .env.local
+      category: env-config
+    - path: .DS_Store
+      category: os-specific
 `)
 
 	got, err := Resolve(root)
@@ -77,6 +91,31 @@ func TestResolveValidPolicy(t *testing.T) {
 	}
 	if strings.Join(got.IncludeDocs, ",") != "AGENTS.md,docs/adr/**" {
 		t.Fatalf("IncludeDocs = %v", got.IncludeDocs)
+	}
+	if got.LocalOnly.Paths[0].Path != "node_modules" || got.LocalOnly.Paths[0].Category != PathCategoryDependency {
+		t.Fatalf("LocalOnly.Paths[0] = %#v, want dependency node_modules", got.LocalOnly.Paths[0])
+	}
+	if len(got.LocalOnly.Paths) != 6 {
+		t.Fatalf("LocalOnly.Paths len = %d, want 6", len(got.LocalOnly.Paths))
+	}
+}
+
+func TestResolveRejectsAmbiguousLocalOnlySourceDeclaration(t *testing.T) {
+	root := t.TempDir()
+	writePolicy(t, root, `local_only:
+  paths:
+    - path: src
+      category: source
+`)
+
+	_, err := Resolve(root)
+	if err == nil {
+		t.Fatal("Resolve error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), ".codemesh.yml") ||
+		!strings.Contains(err.Error(), "local_only.paths[0].category") ||
+		!strings.Contains(err.Error(), "source") {
+		t.Fatalf("error is not actionable: %v", err)
 	}
 }
 
@@ -169,6 +208,9 @@ func TestDocumentedPolicyExampleParses(t *testing.T) {
 	}
 	if strings.Join(got.IncludeDocs, ",") != "AGENTS.md,CONTEXT.md,docs/adr/**" {
 		t.Fatalf("IncludeDocs = %v", got.IncludeDocs)
+	}
+	if len(got.LocalOnly.Paths) != 6 || got.LocalOnly.Paths[0].Path != "node_modules" || got.LocalOnly.Paths[0].Category != PathCategoryDependency {
+		t.Fatalf("LocalOnly.Paths = %#v", got.LocalOnly.Paths)
 	}
 }
 

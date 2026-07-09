@@ -35,6 +35,7 @@
             ],
             "warnings": []
           },
+          "local_only_paths": [],
           "machine_path": "<FIXTURE_SOURCES>/contract-fetch-failure",
           "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/contract-fetch-failure",

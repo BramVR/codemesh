@@ -12,6 +12,7 @@ import (
 	"github.com/BramVR/codemesh/internal/clonestrategy"
 	"github.com/BramVR/codemesh/internal/gitops"
 	"github.com/BramVR/codemesh/internal/placeholder"
+	"github.com/BramVR/codemesh/internal/policy"
 	"github.com/BramVR/codemesh/internal/reconciliation"
 	"github.com/BramVR/codemesh/internal/state"
 	"github.com/BramVR/codemesh/internal/workspacemanifest"
@@ -55,20 +56,21 @@ type Plan struct {
 }
 
 type Action struct {
-	Project       string                  `json:"project"`
-	ProjectID     int64                   `json:"project_id,omitempty"`
-	Identity      string                  `json:"identity,omitempty"`
-	Path          string                  `json:"path,omitempty"`
-	ObservedPath  string                  `json:"observed_path,omitempty"`
-	CanonicalPath string                  `json:"canonical_path,omitempty"`
-	CloneURL      string                  `json:"clone_url,omitempty"`
-	Source        string                  `json:"source,omitempty"`
-	State         State                   `json:"state"`
-	Action        ActionKind              `json:"action"`
-	Reason        string                  `json:"reason,omitempty"`
-	PathPresent   bool                    `json:"path_present"`
-	CloneStrategy clonestrategy.Selection `json:"clone_strategy"`
-	ProjectRow    state.Project           `json:"-"`
+	Project        string                  `json:"project"`
+	ProjectID      int64                   `json:"project_id,omitempty"`
+	Identity       string                  `json:"identity,omitempty"`
+	Path           string                  `json:"path,omitempty"`
+	ObservedPath   string                  `json:"observed_path,omitempty"`
+	CanonicalPath  string                  `json:"canonical_path,omitempty"`
+	CloneURL       string                  `json:"clone_url,omitempty"`
+	Source         string                  `json:"source,omitempty"`
+	LocalOnlyPaths []policy.PathRule       `json:"local_only_paths"`
+	State          State                   `json:"state"`
+	Action         ActionKind              `json:"action"`
+	Reason         string                  `json:"reason,omitempty"`
+	PathPresent    bool                    `json:"path_present"`
+	CloneStrategy  clonestrategy.Selection `json:"clone_strategy"`
+	ProjectRow     state.Project           `json:"-"`
 }
 
 func New(store Store) Planner {
@@ -113,10 +115,11 @@ func (p Planner) PlanProject(ctx context.Context, alias string, options clonestr
 		}
 	}
 	plan.addAction(Action{
-		Project: alias,
-		State:   StateUnknownProject,
-		Action:  ActionRefuse,
-		Reason:  fmt.Sprintf("unknown project: %s", alias),
+		Project:        alias,
+		LocalOnlyPaths: []policy.PathRule{},
+		State:          StateUnknownProject,
+		Action:         ActionRefuse,
+		Reason:         fmt.Sprintf("unknown project: %s", alias),
 	})
 	return plan, nil
 }
@@ -193,16 +196,17 @@ func classifyProject(project state.Project, workspaceRoot string, options clones
 	project = withPlacementDefaults(project)
 	path := hydrationPath(project)
 	action := Action{
-		Project:       project.Alias,
-		ProjectID:     project.ID,
-		Identity:      project.NormalizedRemote,
-		Path:          path,
-		ObservedPath:  project.LocalPath,
-		CanonicalPath: project.CanonicalPath,
-		CloneURL:      redactedCloneURL(cloneURLForProject(project)),
-		Source:        project.Source,
-		CloneStrategy: clonestrategy.SelectionForOptions(options),
-		ProjectRow:    project,
+		Project:        project.Alias,
+		ProjectID:      project.ID,
+		Identity:       project.NormalizedRemote,
+		Path:           path,
+		ObservedPath:   project.LocalPath,
+		CanonicalPath:  project.CanonicalPath,
+		CloneURL:       redactedCloneURL(cloneURLForProject(project)),
+		Source:         project.Source,
+		LocalOnlyPaths: []policy.PathRule{},
+		CloneStrategy:  clonestrategy.SelectionForOptions(options),
+		ProjectRow:     project,
 	}
 	action.ProjectRow.LocalPath = path
 	action.ProjectRow.CloneURL = cloneURLForProject(project)
@@ -216,6 +220,16 @@ func classifyProject(project state.Project, workspaceRoot string, options clones
 	switch {
 	case err == nil:
 		action.PathPresent = true
+		if info.IsDir() {
+			localOnlyPaths, err := localOnlyPathsForProject(path)
+			if err != nil {
+				action.State = StatePathConflict
+				action.Action = ActionRefuse
+				action.Reason = err.Error()
+				return action
+			}
+			action.LocalOnlyPaths = localOnlyPaths
+		}
 		if isGitCheckoutPath(path) {
 			action.State = StatePresent
 			action.Action = ActionNone
@@ -281,6 +295,14 @@ func classifyProject(project state.Project, workspaceRoot string, options clones
 			action.Reason = reason
 			return action
 		}
+		localOnlyPaths, err := localOnlyPathsForObservedSource(project, path)
+		if err != nil {
+			action.State = StatePathConflict
+			action.Action = ActionRefuse
+			action.Reason = err.Error()
+			return action
+		}
+		action.LocalOnlyPaths = localOnlyPaths
 		action.State = StateMissing
 		action.Action = ActionClone
 		return action
@@ -295,15 +317,16 @@ func classifyProject(project state.Project, workspaceRoot string, options clones
 
 func actionFromDrift(drift reconciliation.Drift, options clonestrategy.Options) Action {
 	action := Action{
-		Project:       drift.Alias,
-		ProjectID:     drift.ProjectID,
-		Identity:      drift.Identity,
-		Path:          drift.DesiredLocalPath,
-		ObservedPath:  drift.ObservedLocalPath,
-		CanonicalPath: drift.DesiredLocalPath,
-		CloneURL:      drift.CloneURL,
-		Source:        "canonical",
-		CloneStrategy: clonestrategy.SelectionForOptions(options),
+		Project:        drift.Alias,
+		ProjectID:      drift.ProjectID,
+		Identity:       drift.Identity,
+		Path:           drift.DesiredLocalPath,
+		ObservedPath:   drift.ObservedLocalPath,
+		CanonicalPath:  drift.DesiredLocalPath,
+		CloneURL:       drift.CloneURL,
+		Source:         "canonical",
+		LocalOnlyPaths: []policy.PathRule{},
+		CloneStrategy:  clonestrategy.SelectionForOptions(options),
 		ProjectRow: state.Project{
 			ID:               drift.ProjectID,
 			Alias:            drift.Alias,
@@ -350,6 +373,35 @@ func actionFromDrift(drift reconciliation.Drift, options clonestrategy.Options) 
 	action.ProjectRow.CloneURL = cloneURLForDrift(drift)
 	action.CloneURL = redactedCloneURL(action.ProjectRow.CloneURL)
 	return action
+}
+
+func localOnlyPathsForProject(projectPath string) ([]policy.PathRule, error) {
+	projectPolicy, err := policy.Resolve(projectPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(projectPolicy.LocalOnly.Paths) == 0 {
+		return []policy.PathRule{}, nil
+	}
+	return append([]policy.PathRule(nil), projectPolicy.LocalOnly.Paths...), nil
+}
+
+func localOnlyPathsForObservedSource(project state.Project, targetPath string) ([]policy.PathRule, error) {
+	observedPath := filepath.Clean(strings.TrimSpace(project.LocalPath))
+	if observedPath == "" || observedPath == filepath.Clean(targetPath) {
+		return []policy.PathRule{}, nil
+	}
+	info, err := os.Lstat(observedPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []policy.PathRule{}, nil
+		}
+		return nil, fmt.Errorf("observed source path could not be checked safely: %w", err)
+	}
+	if !info.IsDir() {
+		return []policy.PathRule{}, nil
+	}
+	return localOnlyPathsForProject(observedPath)
 }
 
 func sortActions(actions []Action) {

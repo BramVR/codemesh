@@ -37,6 +37,7 @@
             },
             "clone_url": "<FIXTURE_REMOTES>/contract-hydrate-target.git",
             "identity": "<FIXTURE_REMOTES>/contract-hydrate-target.git",
+            "local_only_paths": [],
             "observed_path": "<FIXTURE_SOURCES>/contract-hydrate-target",
             "path": "<FIXTURE_SOURCES>/contract-hydrate-target",
             "path_present": false,

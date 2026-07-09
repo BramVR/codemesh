@@ -266,7 +266,7 @@ States:
 - stale
 - env-missing
 
-Output includes canonical path presence, current-machine path presence, and `workspace_state` for hydrated, placeholder, missing, or blocked path states. Imported manifest Projects can be shown as canonical and missing before hydration. Local-only scanned Projects remain visible as local-only until manifest topology makes them canonical.
+Output includes canonical path presence, current-machine path presence, `local_only_paths` from policy when available, and `workspace_state` for hydrated, placeholder, missing, or blocked path states. Imported manifest Projects can be shown as canonical and missing before hydration. Local-only scanned Projects remain visible as local-only until manifest topology makes them canonical.
 
 ### `codemesh status [project] [--base branch] [--json]`
 
@@ -281,6 +281,7 @@ Checks:
 - base branch exists
 - optional `.codemesh.yml` env requirements
 - optional `.codemesh.yml` toolchain requirements
+- optional `.codemesh.yml` local-only path classifications
 - optional Command Result JSON output for automation
 
 ### `codemesh doctor <project> [--base branch] [--strict] [--json]`
@@ -298,7 +299,7 @@ Rules:
 
 ### `codemesh hydrate <project>`
 
-Clones a missing project into its desired local path through the selected Clone Strategy after the shared Hydration Planner classifies the Project as present, missing, path-conflicted, unsafe, or unknown. Full clone remains the default; `--partial-clone` and repeatable `--sparse path` are explicit Git-native lazy checkout opt-ins.
+Clones a missing project into its desired local path through the selected Clone Strategy after the shared Hydration Planner classifies the Project as present, missing, path-conflicted, unsafe, or unknown. Planner JSON carries local-only policy decisions when policy is available. Full clone remains the default; `--partial-clone` and repeatable `--sparse path` are explicit Git-native lazy checkout opt-ins.
 
 Can replace an unmodified CodeMesh-owned placeholder with a real checkout. Does not perform path-triggered lazy hydration.
 
@@ -310,7 +311,7 @@ Does not watch filesystem paths, mount a workspace, start a daemon, sync in the 
 
 ### `codemesh bootstrap [--all | project... | <manifest-path>]`
 
-Reads registered Projects or Workspace Manifest JSON entries, compares them against the registered local machine workspace root and Project Registry, and prints a plan with planned clone/refusal actions from the same Hydration Planner used by `hydrate`. `--dry-run` is explicit preview mode. `--placeholders` refuses the same blockers, creates registry rows when a manifest is supplied, and writes metadata-only placeholder sentinels. `--apply` refuses blockers before Git, creates needed parent directories and registry rows when a manifest is supplied, then clones planned missing Projects.
+Reads registered Projects or Workspace Manifest JSON entries, compares them against the registered local machine workspace root and Project Registry, and prints a plan with planned clone/refusal actions from the same Hydration Planner used by `hydrate`. `--dry-run` is explicit preview mode. `--placeholders` refuses the same blockers, creates registry rows when a manifest is supplied, and writes metadata-only placeholder sentinels. `--apply` refuses blockers before Git, creates needed parent directories and registry rows when a manifest is supplied, then clones planned missing Projects. Hydration plan JSON includes local-only policy declarations when policy is available.
 
 Rules:
 
@@ -381,6 +382,7 @@ Rules:
 - warn or block on toolchain status based on policy
 - resolve default and policy-selected handoff docs from the prepared clone
 - write `codemesh-run.json`
+- record local-only policy decisions in `codemesh-run.json`
 - optionally materialize fake-provider env bundles when allowed scopes intersect private bindings
 - print ready path and handoff doc count
 
@@ -398,7 +400,7 @@ Repo-local policy is optional.
 
 File: `.codemesh.yml`
 
-See [Project Policy Reference](project-policy.md) for the current `.codemesh.yml` interface, defaults, env readiness behavior, toolchain readiness behavior, include-docs intent, and no-secret-values rule.
+See [Project Policy Reference](project-policy.md) for the current `.codemesh.yml` interface, defaults, env readiness behavior, toolchain readiness behavior, include-docs intent, local-only path classifications, and no-secret-values rule.
 
 ## State
 

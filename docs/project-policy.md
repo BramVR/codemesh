@@ -17,6 +17,7 @@ Absent `.codemesh.yml` means:
 - required env files: none
 - required env keys: none
 - include docs: none from policy; Agent Prep may discover common project docs separately
+- local-only paths: none
 
 Callers may still pass `--base` to choose an exact branch, and repositories may set `agent.base` when policy should override the remote default.
 
@@ -43,6 +44,20 @@ agent:
     - AGENTS.md
     - CONTEXT.md
     - docs/adr/**
+local_only:
+  paths:
+    - path: node_modules
+      category: dependency
+    - path: dist
+      category: build
+    - path: .cache/codemesh
+      category: cache
+    - path: generated/client
+      category: generated
+    - path: .env.local
+      category: env-config
+    - path: .DS_Store
+      category: os-specific
 ```
 <!-- codemesh-policy-example:end -->
 
@@ -62,9 +77,13 @@ agent:
 
 `agent.include_docs`: project-relative docs or glob-like path patterns that express which project context should travel with an agent handoff. Absolute paths and paths escaping the checkout are invalid. The Policy Module parses and preserves the list; it does not read doc contents during readiness checks. Agent Prep treats these as additive handoff docs on top of the default docs it discovers for ordinary repos and records only matched project-relative paths plus source metadata.
 
+`local_only.paths`: project-relative paths that CodeMesh should classify as machine-local rather than source content. Each entry has `path` and `category`. Paths must be relative to the project checkout and must not escape it. Allowed local-only categories are `dependency`, `build`, `cache`, `generated`, `env-config`, and `os-specific`. `source` is the implicit default for ordinary Git-managed content and is rejected inside `local_only.paths` because source-as-local-only is ambiguous and unsafe.
+
 ## Readiness Behavior
 
 Readiness resolves policy from the source checkout before checking env requirements. Invalid policy blocks readiness with an actionable diagnostic naming the policy file and field.
+
+Local-only policy is reporting and enforcement metadata. `tree`, `status`, Hydration Planner JSON, bootstrap JSON, hydrate/access JSON, and Agent Run Contract metadata include declared `local_only_paths` when policy is available. CodeMesh does not create dependency directories, build output, caches, generated files, env/config files, or OS-specific files from this policy.
 
 Env requirements are checked without secret access:
 
@@ -82,6 +101,8 @@ Toolchain results separate project facts from host facts. Project facts identify
 Agent Prep uses the requested base when passed. Without `--base`, it resolves `agent.base` from policy, then the discoverable remote default branch, then `main`. Missing or invalid selected bases block readiness. Agent Prep checks the policy from the fetched base for handoff env requirements, while env file presence is checked against the local source checkout because those files are usually untracked local setup.
 
 Agent Prep resolves handoff docs from the prepared clone, not the source checkout, so metadata points at files available to the agent on the selected base. It records project-relative paths only; it does not copy docs, embed doc contents, or read doc contents into metadata. The default handoff docs are `AGENTS.md`, `CONTEXT.md`, `README.md`, and Markdown files directly under `docs/adr/`; `agent.include_docs` adds project-specific paths or patterns. Valid policy patterns that select no available docs produce `handoff-doc-missing` warnings, not blockers. Command stdout reports only `handoff_docs: N`; the selected paths and `default` or `policy` source metadata live in `codemesh-run.json`.
+
+Agent Prep records local-only policy in `codemesh-run.json` from the prepared clone. Untracked machine-local directories such as `node_modules` remain outside the prepared clone because CodeMesh clones Git source content rather than copying the local source checkout.
 
 ## No Secret Values
 
