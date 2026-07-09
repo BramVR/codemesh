@@ -5897,28 +5897,34 @@ func (s *scenario) expectStatusLocalOnlyPaths(r result, alias string, want map[s
 		s.failCommandAssertion(r, "stdout was not JSON: "+err.Error())
 		return false
 	}
-	for _, project := range payload.Payload.Projects {
-		if project.Alias != alias {
-			continue
+	if len(payload.Payload.Projects) != 1 {
+		s.failCommandAssertion(r, fmt.Sprintf("project count = %d, want 1", len(payload.Payload.Projects)))
+		return false
+	}
+	project := payload.Payload.Projects[0]
+	if project.Alias != alias {
+		s.failCommandAssertion(r, fmt.Sprintf("project alias = %q, want %q", project.Alias, alias))
+		return false
+	}
+	got := make(map[string]string, len(project.LocalOnlyPaths))
+	for _, rule := range project.LocalOnlyPaths {
+		if _, exists := got[rule.Path]; exists {
+			s.failCommandAssertion(r, fmt.Sprintf("duplicate local_only_paths entry for %q", rule.Path))
+			return false
 		}
-		got := make(map[string]string, len(project.LocalOnlyPaths))
-		for _, rule := range project.LocalOnlyPaths {
-			got[rule.Path] = rule.Category
-		}
-		if len(got) != len(want) {
+		got[rule.Path] = rule.Category
+	}
+	if len(got) != len(want) {
+		s.failCommandAssertion(r, fmt.Sprintf("local_only_paths = %#v, want %#v", got, want))
+		return false
+	}
+	for path, category := range want {
+		if got[path] != category {
 			s.failCommandAssertion(r, fmt.Sprintf("local_only_paths = %#v, want %#v", got, want))
 			return false
 		}
-		for path, category := range want {
-			if got[path] != category {
-				s.failCommandAssertion(r, fmt.Sprintf("local_only_paths = %#v, want %#v", got, want))
-				return false
-			}
-		}
-		return true
 	}
-	s.failCommandAssertion(r, fmt.Sprintf("project %s missing from status JSON", alias))
-	return false
+	return true
 }
 
 func (s *scenario) expectTreeJSON(r result, exitClass string, states map[string]string) bool {
