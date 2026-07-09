@@ -210,6 +210,18 @@ func NormalizeRemoteFrom(remote, baseDir string) (string, error) {
 	return filepath.Clean(abs), nil
 }
 
+func RemoteMatchesSource(normalized, registeredRemote, cloneURL, baseDir string) bool {
+	if normalized == registeredRemote {
+		return true
+	}
+	cloneURL = strings.TrimSpace(cloneURL)
+	if cloneURL == "" {
+		return false
+	}
+	cloneIdentity, err := NormalizeRemoteFrom(cloneURL, baseDir)
+	return err == nil && normalized == cloneIdentity
+}
+
 func CloneURLFor(remote, baseDir string) string {
 	remote = strings.TrimSpace(remote)
 	if remote == "" {

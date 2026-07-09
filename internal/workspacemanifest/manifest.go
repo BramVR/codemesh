@@ -1068,6 +1068,12 @@ func sanitizedCloneHint(cloneURL string) (string, error) {
 			if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 				return "", errors.New("workspace manifest clone hint must not contain credentials, query strings, or fragments")
 			}
+			if parsed.Host != "" {
+				return "", errors.New("workspace manifest file clone hint must not include a host")
+			}
+			if !isAbsoluteFileURLPath(parsed.Path) {
+				return "", errors.New("workspace manifest file clone hint must use an absolute local path")
+			}
 			return cloneURL, nil
 		}
 		if strings.ContainsAny(cloneURL, "?#") {
@@ -1095,6 +1101,13 @@ func sanitizedCloneHint(cloneURL string) (string, error) {
 		return "", errors.New("workspace manifest clone hint must not contain query strings or fragments")
 	}
 	return cloneURL, nil
+}
+
+func isAbsoluteFileURLPath(path string) bool {
+	if filepath.IsAbs(path) || isWindowsDrivePath(path) {
+		return true
+	}
+	return strings.HasPrefix(path, "/") && isWindowsDrivePath(strings.TrimPrefix(path, "/"))
 }
 
 func cloneURLForPlan(cloneURL string) string {

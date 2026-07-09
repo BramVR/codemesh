@@ -348,7 +348,7 @@ func sourceRemote(ctx context.Context, report *ProjectReport) (string, bool) {
 		report.Blockers = append(report.Blockers, Diagnostic{Code: "origin-unsupported", Message: err.Error()})
 		return "", false
 	}
-	if !remoteMatchesProjectSource(normalized, report.Project) {
+	if !gitops.RemoteMatchesSource(normalized, report.Project.NormalizedRemote, report.Project.CloneURL, report.Project.LocalPath) {
 		report.State = StateBlocked
 		report.Blockers = append(report.Blockers, Diagnostic{
 			Code:    "remote-mismatch",
@@ -357,18 +357,6 @@ func sourceRemote(ctx context.Context, report *ProjectReport) (string, bool) {
 		return "", false
 	}
 	return remote, true
-}
-
-func remoteMatchesProjectSource(normalized string, project state.Project) bool {
-	if normalized == project.NormalizedRemote {
-		return true
-	}
-	cloneURL := strings.TrimSpace(project.CloneURL)
-	if cloneURL == "" {
-		return false
-	}
-	cloneIdentity, err := gitops.NormalizeRemoteFrom(cloneURL, project.LocalPath)
-	return err == nil && normalized == cloneIdentity
 }
 
 func selectRemoteDefaultOrFallback(ctx context.Context, report *ProjectReport, remote string) bool {

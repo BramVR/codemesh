@@ -5,6 +5,7 @@
 Target next patch: `v0.1.1`.
 
 - Added bootstrap execution for registered missing Projects, so `codemesh bootstrap --all`, project-targeted bootstrap, and manifest bootstrap `--apply` now reuse the Hydration Planner to refuse unsafe paths before Git and clone from registered clone sources: https://github.com/BramVR/codemesh/issues/138
+- Tightened Workspace Manifest clone-hint validation so hostful or non-absolute `file:` clone hints are refused while local absolute proof remotes remain supported.
 - Added a shared Hydration Planner for `bootstrap --dry-run` and `hydrate`, so canonical missing Projects now show planned clone/refusal actions before any Git remote is touched: https://github.com/BramVR/codemesh/issues/137
 - Added canonical versus local-only placement reporting in `codemesh tree` and `codemesh status`, so imported manifest Projects remain visible when missing locally and scans can record current-machine presence without rewriting desired layout: https://github.com/BramVR/codemesh/issues/136
 - Added `codemesh manifest export` and `codemesh manifest import` for deterministic portable Workspace Manifest files that validate topology before persisting Project Registry rows on another machine: https://github.com/BramVR/codemesh/issues/135

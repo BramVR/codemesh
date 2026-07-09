@@ -54,6 +54,26 @@ func TestNormalizeRemotePreservesGenericSSHAndLocalRemotes(t *testing.T) {
 	}
 }
 
+func TestRemoteMatchesSourceAcceptsRegisteredRemoteOrCloneURL(t *testing.T) {
+	baseDir := filepath.Join("tmp", "workspace", "project")
+	registered := "https://github.com/BramVR/codemesh"
+	cloneURL := "../remotes/codemesh.git"
+	cloneIdentity, err := NormalizeRemoteFrom(cloneURL, baseDir)
+	if err != nil {
+		t.Fatalf("NormalizeRemoteFrom error = %v", err)
+	}
+
+	if !RemoteMatchesSource(registered, registered, cloneURL, baseDir) {
+		t.Fatal("RemoteMatchesSource rejected registered remote identity")
+	}
+	if !RemoteMatchesSource(cloneIdentity, registered, cloneURL, baseDir) {
+		t.Fatal("RemoteMatchesSource rejected preserved clone URL identity")
+	}
+	if RemoteMatchesSource("https://github.com/BramVR/other", registered, cloneURL, baseDir) {
+		t.Fatal("RemoteMatchesSource accepted unrelated remote")
+	}
+}
+
 func TestCloneURLForStripsCredentialsButPreservesTransport(t *testing.T) {
 	tests := []struct {
 		raw  string

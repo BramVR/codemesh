@@ -360,19 +360,7 @@ func gitCheckoutMatches(ctx context.Context, git gitops.Client, project state.Pr
 	if err != nil {
 		return false
 	}
-	return remoteMatchesProjectSource(normalized, project)
-}
-
-func remoteMatchesProjectSource(normalized string, project state.Project) bool {
-	if normalized == project.NormalizedRemote {
-		return true
-	}
-	cloneURL := strings.TrimSpace(project.CloneURL)
-	if cloneURL == "" {
-		return false
-	}
-	cloneIdentity, err := NormalizeRemoteFrom(cloneURL, project.LocalPath)
-	return err == nil && normalized == cloneIdentity
+	return gitops.RemoteMatchesSource(normalized, project.NormalizedRemote, project.CloneURL, project.LocalPath)
 }
 
 func cloneURLFor(remote, baseDir string) string {
