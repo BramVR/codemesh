@@ -3813,7 +3813,7 @@ func (h *harness) caseAgentPrepFixtureWorkflow() {
 	}
 
 	localOnlyStatus := s.command("agent prep local-only status json", "status", localOnlyProject.Name, "--base", "main", "--json")
-	if localOnlyStatus.Status != "PASS" || !s.expectStatusLocalOnlyPaths(localOnlyStatus, localOnlyProject.Name, map[string]string{
+	if localOnlyStatus.Status != "PASS" || !s.expectStatusLocalOnlyPaths(localOnlyStatus, localOnlyProject.Name, "readiness-warning", map[string]string{
 		"node_modules": "dependency",
 		"dist":         "build",
 	}) {
@@ -5881,9 +5881,11 @@ func (s *scenario) expectStatusJSON(r result, alias, exitClass, state, base stri
 	return true
 }
 
-func (s *scenario) expectStatusLocalOnlyPaths(r result, alias string, want map[string]string) bool {
+func (s *scenario) expectStatusLocalOnlyPaths(r result, alias, exitClass string, want map[string]string) bool {
 	var payload struct {
-		Payload struct {
+		Command   string `json:"command"`
+		ExitClass string `json:"exit_class"`
+		Payload   struct {
 			Projects []struct {
 				Alias          string `json:"alias"`
 				LocalOnlyPaths []struct {
@@ -5895,6 +5897,10 @@ func (s *scenario) expectStatusLocalOnlyPaths(r result, alias string, want map[s
 	}
 	if err := json.Unmarshal([]byte(r.Stdout), &payload); err != nil {
 		s.failCommandAssertion(r, "stdout was not JSON: "+err.Error())
+		return false
+	}
+	if payload.Command != "status" || payload.ExitClass != exitClass {
+		s.failCommandAssertion(r, fmt.Sprintf("command metadata = %#v, want command status exit_class %s", payload, exitClass))
 		return false
 	}
 	if len(payload.Payload.Projects) != 1 {
