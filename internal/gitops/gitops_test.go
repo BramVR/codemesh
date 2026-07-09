@@ -90,6 +90,58 @@ func TestCloneURLForStripsCredentialsButPreservesTransport(t *testing.T) {
 	}
 }
 
+func TestValidateCloneSourceAllowsSecretFreeSources(t *testing.T) {
+	for _, source := range []string{
+		"/tmp/codemesh-fixtures/repo.git",
+		`C:\tmp\codemesh-fixtures\repo.git`,
+		"C:/tmp/codemesh-fixtures/repo.git",
+		"file:///tmp/codemesh-fixtures/repo.git",
+		"file:///C:/tmp/codemesh-fixtures/repo.git",
+		"git@example.invalid:org/repo.git",
+		"ssh://git@example.invalid/org/repo.git",
+		"HTTPS://example.invalid/org/repo.git",
+		"https://example.invalid/org/repo.git",
+	} {
+		t.Run(source, func(t *testing.T) {
+			if err := ValidateCloneSource(source); err != nil {
+				t.Fatalf("ValidateCloneSource error = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateCloneSourceRejectsUnsafeSourcesWithoutEchoing(t *testing.T) {
+	for _, source := range []string{
+		"https://user:redaction-fixture@example.invalid/org/repo.git?credential=redaction-fixture#piece",
+		"HTTPS://redaction-fixture@example.invalid/org/repo.git",
+		"ssh://git:redaction-fixture@example.invalid/org/repo.git",
+		"ssh://-oProxyCommand=redaction-fixture.example.invalid/org/repo.git",
+		"ssh://git@example.invalid/-repo.git",
+		"ssh://-git@example.invalid/org/repo.git",
+		"git@example.invalid:org/repo.git?credential=redaction-fixture#piece",
+		"-oProxyCommand=redaction-fixture@example.invalid:org/repo.git",
+		"git@example.invalid:-repo.git",
+		"git@example.invalid:org/repo with space.git",
+		"http://example.invalid/org/repo.git",
+		"ext::ssh -oProxyCommand=redaction-fixture example.invalid/org/repo.git",
+		"file://example.invalid/tmp/repo.git",
+		"file:repo.git",
+		"C:repo.git",
+		"C:repo.git?credential=redaction-fixture",
+		"repo.git",
+	} {
+		t.Run(source, func(t *testing.T) {
+			err := ValidateCloneSource(source)
+			if err == nil {
+				t.Fatal("ValidateCloneSource error = nil, want rejection")
+			}
+			if strings.Contains(err.Error(), "redaction-fixture") || strings.Contains(err.Error(), source) {
+				t.Fatalf("validation error leaked source: %v", err)
+			}
+		})
+	}
+}
+
 func TestRedactionRemovesCredentialBearingURLParts(t *testing.T) {
 	raw := "https://redactuser:redactme@example.invalid/org/repo.git?credential=redactme#fragment"
 

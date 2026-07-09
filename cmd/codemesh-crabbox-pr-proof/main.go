@@ -83,6 +83,7 @@ type commandCapture struct {
 	exitCode   int
 	stdout     string
 	stderr     string
+	rawStdout  string
 	transcript string
 }
 
@@ -262,6 +263,14 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	if !strings.Contains(statusAfterImport.stdout, `"workspace_source":"canonical"`) || !strings.Contains(statusAfterImport.stdout, `"state":"missing"`) {
 		return errors.New("manifest import status proof did not show canonical missing projects")
 	}
+	sourceLessAgentPrepare, err := r.runCodeMesh("machine C source-less agent prepare", machineC, "agent", "prepare", "mesh-target", "--base", "main", "--profile", "codex", "--json")
+	if err != nil {
+		return err
+	}
+	sourceLessAgentProof, err := readSourceLessAgentProof(sourceLessAgentPrepare.rawStdout)
+	if err != nil {
+		return err
+	}
 	if err := sanitizeFile(manifestPath, r.replacements); err != nil {
 		return err
 	}
@@ -358,6 +367,22 @@ func runProof(bin, outDir, fixtureRoot string) error {
 	if err := writeSVG(filepath.Join(outAbs, "bootstrap-hydration-plan.svg"), "Planned bootstrap and hydration actions", planLines); err != nil {
 		return err
 	}
+	sourceLessLines := []string{
+		"Source-less Agent Prep",
+		"project: " + sourceLessAgentProof.Project,
+		"source_mode: " + sourceLessAgentProof.SourceMode,
+		fmt.Sprintf("source_path_missing: %t", sourceLessAgentProof.SourcePathMissing),
+		"base: " + sourceLessAgentProof.Base,
+		"ready_path: " + sanitizePath(sourceLessAgentProof.ReadyPath, r.replacements),
+		"handoff_docs: " + strconv.Itoa(sourceLessAgentProof.HandoffDocs),
+		"prepared_head: " + shortCommit(sourceLessAgentProof.PreparedHEAD),
+	}
+	if err := writeText(filepath.Join(outAbs, "source-less-agent-prep.txt"), strings.Join(sourceLessLines, "\n")+"\n"); err != nil {
+		return err
+	}
+	if err := writeSVG(filepath.Join(outAbs, "source-less-agent-prep.svg"), "Source-less Agent Prep from registry clone source", sourceLessLines); err != nil {
+		return err
+	}
 	flowLines := []string{"Before bootstrap", ""}
 	flowLines = append(flowLines, linesFromText(treeBefore.stdout)...)
 	flowLines = append(flowLines, "", "After bootstrap apply", "")
@@ -386,6 +411,8 @@ func runProof(bin, outDir, fixtureRoot string) error {
 		{"machine-placement-presence.txt", "machine-placement-presence.txt", "text"},
 		{"bootstrap-hydration-plan.svg", "bootstrap-hydration-plan.svg", "visual"},
 		{"bootstrap-hydration-plan.txt", "bootstrap-hydration-plan.txt", "text"},
+		{"source-less-agent-prep.svg", "source-less-agent-prep.svg", "visual"},
+		{"source-less-agent-prep.txt", "source-less-agent-prep.txt", "text"},
 		{"mutating-flow-before-after.svg", "mutating-flow-before-after.svg", "visual"},
 		{"mutating-flow-before-after.txt", "mutating-flow-before-after.txt", "text"},
 		{"workspace-manifest.json", "workspace-manifest.json", "manifest"},
@@ -422,6 +449,7 @@ func runProof(bin, outDir, fixtureRoot string) error {
 			"manifest-import-export",
 			"machine-placement-presence",
 			"bootstrap-hydration-plan",
+			"source-less-agent-prep",
 			"mutating-flow-before-after",
 		},
 		Commands:     r.commands,
@@ -626,10 +654,11 @@ func (r *runner) run(label, dir string, extraEnv []string, name string, args ...
 		}
 	}
 	capture := commandCapture{
-		label:    label,
-		exitCode: exitCode,
-		stdout:   r.sanitize(stdout.String()),
-		stderr:   r.sanitize(stderr.String()),
+		label:     label,
+		exitCode:  exitCode,
+		stdout:    r.sanitize(stdout.String()),
+		stderr:    r.sanitize(stderr.String()),
+		rawStdout: stdout.String(),
 	}
 	r.commandIndex++
 	transcriptName := fmt.Sprintf("%02d-%s.txt", r.commandIndex, slugify(label))
@@ -715,6 +744,87 @@ func sanitizeFile(path string, replacements []replacement) error {
 	return os.WriteFile(path, []byte(sanitized), 0o644)
 }
 
+type sourceLessAgentProof struct {
+	Project           string
+	SourceMode        string
+	SourcePathMissing bool
+	Base              string
+	ReadyPath         string
+	HandoffDocs       int
+	PreparedHEAD      string
+}
+
+func readSourceLessAgentProof(agentPrepareJSON string) (sourceLessAgentProof, error) {
+	var payload struct {
+		Command string `json:"command"`
+		Payload struct {
+			Project         string `json:"project"`
+			Ready           bool   `json:"ready"`
+			Base            string `json:"base"`
+			ReadyPath       string `json:"ready_path"`
+			RunContractPath string `json:"run_contract_path"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(agentPrepareJSON), &payload); err != nil {
+		return sourceLessAgentProof{}, fmt.Errorf("decode source-less agent prepare JSON: %w", err)
+	}
+	if payload.Command != "agent prepare" || !payload.Payload.Ready || payload.Payload.ReadyPath == "" || payload.Payload.RunContractPath == "" {
+		return sourceLessAgentProof{}, errors.New("source-less agent prepare proof did not return a ready workspace")
+	}
+	data, err := os.ReadFile(payload.Payload.RunContractPath)
+	if err != nil {
+		return sourceLessAgentProof{}, fmt.Errorf("read source-less agent run contract: %w", err)
+	}
+	var metadata struct {
+		Project struct {
+			SourceMode        string `json:"source_mode"`
+			SourcePathMissing bool   `json:"source_path_missing"`
+		} `json:"project"`
+		Base           string `json:"base"`
+		BaseProvenance struct {
+			PreparedHEAD string `json:"prepared_head"`
+		} `json:"base_provenance"`
+		HandoffDocs []struct {
+			Path string `json:"path"`
+		} `json:"handoff_docs"`
+	}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return sourceLessAgentProof{}, fmt.Errorf("decode source-less agent run contract: %w", err)
+	}
+	if metadata.Project.SourceMode != "registry_clone" || !metadata.Project.SourcePathMissing {
+		return sourceLessAgentProof{}, fmt.Errorf("source-less agent run contract recorded source_mode=%q source_path_missing=%t", metadata.Project.SourceMode, metadata.Project.SourcePathMissing)
+	}
+	if bytes.Contains(data, []byte("CodeMesh fixture project.")) {
+		return sourceLessAgentProof{}, errors.New("source-less agent run contract embedded handoff document contents")
+	}
+	return sourceLessAgentProof{
+		Project:           payload.Payload.Project,
+		SourceMode:        metadata.Project.SourceMode,
+		SourcePathMissing: metadata.Project.SourcePathMissing,
+		Base:              firstNonEmpty(metadata.Base, payload.Payload.Base),
+		ReadyPath:         payload.Payload.ReadyPath,
+		HandoffDocs:       len(metadata.HandoffDocs),
+		PreparedHEAD:      metadata.BaseProvenance.PreparedHEAD,
+	}, nil
+}
+
+func shortCommit(commit string) string {
+	commit = strings.TrimSpace(commit)
+	if len(commit) > 12 {
+		return commit[:12]
+	}
+	return commit
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func writeSummary(outDir string, manifest proofManifest) error {
 	lines := []string{
 		"# CodeMesh Crabbox PR proof",
@@ -739,6 +849,7 @@ func writeSummary(outDir string, manifest proofManifest) error {
 		"- canonical workspace tree",
 		"- per-machine placement and presence",
 		"- planned bootstrap and hydration actions",
+		"- source-less agent workspace prep from registry clone source",
 		"- before and after state for bootstrap apply plus idempotent hydrate",
 		"",
 		"## Confidentiality",
@@ -844,7 +955,7 @@ func validateProofBundle(root string) error {
 	if len(manifest.Commands) == 0 {
 		problems = append(problems, "real command list is empty")
 	}
-	for _, required := range []string{"canonical-workspace-tree", "machine-placement-presence", "bootstrap-hydration-plan", "mutating-flow-before-after"} {
+	for _, required := range []string{"canonical-workspace-tree", "machine-placement-presence", "bootstrap-hydration-plan", "source-less-agent-prep", "mutating-flow-before-after"} {
 		if !contains(manifest.Coverage, required) {
 			problems = append(problems, "coverage missing "+required)
 		}
@@ -853,6 +964,7 @@ func validateProofBundle(root string) error {
 		"canonical-workspace-tree.svg":   false,
 		"machine-placement-presence.svg": false,
 		"bootstrap-hydration-plan.svg":   false,
+		"source-less-agent-prep.svg":     false,
 		"mutating-flow-before-after.svg": false,
 		"summary.md":                     false,
 		"workspace-manifest.json":        false,

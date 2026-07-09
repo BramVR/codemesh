@@ -4,6 +4,7 @@
 
 Target next patch: `v0.1.1`.
 
+- Added registry-clone Agent Prep for source-less Projects, with selected source mode in Agent Run metadata and Crabbox PR proof from an isolated local Git remote: https://github.com/BramVR/codemesh/issues/139
 - Added bootstrap execution for registered missing Projects, so `codemesh bootstrap --all`, project-targeted bootstrap, and manifest bootstrap `--apply` now reuse the Hydration Planner to refuse unsafe paths before Git and clone from registered clone sources: https://github.com/BramVR/codemesh/issues/138
 - Tightened Workspace Manifest clone-hint validation so hostful or non-absolute `file:` clone hints are refused while local absolute proof remotes remain supported.
 - Added a shared Hydration Planner for `bootstrap --dry-run` and `hydrate`, so canonical missing Projects now show planned clone/refusal actions before any Git remote is touched: https://github.com/BramVR/codemesh/issues/137

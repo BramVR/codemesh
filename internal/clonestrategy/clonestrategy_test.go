@@ -33,7 +33,7 @@ func TestFullCloneUsesBranchSingleBranchAndReportsSelection(t *testing.T) {
 		t.Fatalf("git calls = %#v", fake.Calls)
 	}
 	got := strings.Join(fake.Calls[0].Args, " ")
-	want := "clone --branch main --single-branch https://example.invalid/org/repo.git /tmp/workspace"
+	want := "clone --branch main --single-branch -- https://example.invalid/org/repo.git /tmp/workspace"
 	if got != want {
 		t.Fatalf("git args = %q, want %q", got, want)
 	}
@@ -55,7 +55,7 @@ func TestFullClonePreservesExactCloneURLAndDestination(t *testing.T) {
 		t.Fatalf("git calls = %#v", fake.Calls)
 	}
 	args := fake.Calls[0].Args
-	if len(args) != 3 || args[0] != "clone" || args[1] != " /tmp/source repo.git " || args[2] != " /tmp/target workspace " {
+	if len(args) != 4 || args[0] != "clone" || args[1] != "--" || args[2] != " /tmp/source repo.git " || args[3] != " /tmp/target workspace " {
 		t.Fatalf("git args = %#v, want exact clone URL and destination preserved", args)
 	}
 }
@@ -90,7 +90,7 @@ func TestCloneWithPartialAndSparseOptionsRecordsStrategyAndUsesGitNativeLaziness
 	if len(fake.Calls) != 5 {
 		t.Fatalf("git calls = %#v, want clone, partial verification, sparse-checkout set, checkout", fake.Calls)
 	}
-	if got, want := strings.Join(fake.Calls[0].Args, " "), "clone --filter=blob:none --no-checkout --branch main --single-branch https://example.invalid/org/repo.git /tmp/workspace"; got != want {
+	if got, want := strings.Join(fake.Calls[0].Args, " "), "clone --filter=blob:none --no-checkout --branch main --single-branch -- https://example.invalid/org/repo.git /tmp/workspace"; got != want {
 		t.Fatalf("clone args = %q, want %q", got, want)
 	}
 	if fake.Calls[3].Dir != "/tmp/workspace" || strings.Join(fake.Calls[3].Args, " ") != "sparse-checkout set --no-cone -- /README.md /docs/adr" {

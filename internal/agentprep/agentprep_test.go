@@ -49,6 +49,9 @@ func TestPrepareClonesRequestedBaseAndWritesMetadata(t *testing.T) {
 	if metadata.Project.Remote != project.NormalizedRemote {
 		t.Fatalf("metadata remote = %q, want %q", metadata.Project.Remote, project.NormalizedRemote)
 	}
+	if metadata.Project.SourceMode != "source_checkout" {
+		t.Fatalf("metadata source mode = %q, want source_checkout", metadata.Project.SourceMode)
+	}
 	if metadata.ContractVersion != 1 || metadata.Producer.Name != "codemesh" || metadata.Producer.Version == "" {
 		t.Fatalf("metadata contract version/producer = version %d producer %#v", metadata.ContractVersion, metadata.Producer)
 	}
@@ -209,6 +212,9 @@ func TestPrepareMissingSourceCheckoutClonesFromRegisteredRemote(t *testing.T) {
 	}
 	if !metadata.Project.SourcePathMissing {
 		t.Fatalf("metadata source path missing = false, want true")
+	}
+	if metadata.Project.SourceMode != "registry_clone" {
+		t.Fatalf("metadata source mode = %q, want registry_clone", metadata.Project.SourceMode)
 	}
 	if metadata.ResolvedCommit == "" || metadata.ReadinessDecision != "ready" {
 		t.Fatalf("metadata commit/decision = %#v", metadata)
@@ -480,6 +486,37 @@ func TestPrepareMissingSourceCheckoutBlocksWithoutCloneURL(t *testing.T) {
 	}
 	if !hasDiagnostic(result.Diagnostics.Blockers, "origin-missing") {
 		t.Fatalf("blockers = %#v, want origin-missing", result.Diagnostics.Blockers)
+	}
+	if _, statErr := os.Stat(filepath.Join(home, "agents", "run-test")); !os.IsNotExist(statErr) {
+		t.Fatalf("run dir exists or stat failed: %v", statErr)
+	}
+	if len(store.runs) != 0 {
+		t.Fatalf("recorded runs = %d, want 0", len(store.runs))
+	}
+}
+
+func TestPrepareMissingSourceCheckoutRejectsUnsafeRegistryCloneURL(t *testing.T) {
+	project := createFixtureProject(t, "missing-source-unsafe-clone")
+	project.CloneURL = "https://user:redaction-fixture@example.invalid/org/repo.git?credential=redaction-fixture#piece"
+	if err := os.RemoveAll(project.LocalPath); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	store := newMemoryStore(project)
+	preparer := testPreparer(home, store)
+
+	result, err := preparer.Prepare(context.Background(), Request{Project: project.Alias, Base: "main"})
+
+	if err == nil {
+		t.Fatal("Prepare error = nil, want unsafe clone URL blocker")
+	}
+	if !hasDiagnostic(result.Diagnostics.Blockers, "unsafe-clone-url") {
+		t.Fatalf("blockers = %#v, want unsafe-clone-url", result.Diagnostics.Blockers)
+	}
+	for _, blocker := range result.Diagnostics.Blockers {
+		if strings.Contains(blocker.Message, "redaction-fixture") || strings.Contains(blocker.Message, project.CloneURL) {
+			t.Fatalf("blocker leaked unsafe clone URL: %#v", blocker)
+		}
 	}
 	if _, statErr := os.Stat(filepath.Join(home, "agents", "run-test")); !os.IsNotExist(statErr) {
 		t.Fatalf("run dir exists or stat failed: %v", statErr)

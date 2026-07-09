@@ -226,7 +226,7 @@ It should orchestrate existing primitives:
 
 ## PR Proof Requirement
 
-Changes that affect the Dropbox-for-developers workflow need reviewer-visible proof, not only unit tests. The required free lane is the `crabbox-pr-proof` GitHub Actions workflow. It runs on standard GitHub-hosted public-repo runners with isolated local fixtures, then uploads `codemesh-crabbox-pr-proof` artifacts showing the canonical workspace tree, per-machine placement or presence, planned bootstrap or hydration actions, and before/after state for mutating fixture flows.
+Changes that affect the Dropbox-for-developers workflow need reviewer-visible proof, not only unit tests. The required free lane is the `crabbox-pr-proof` GitHub Actions workflow. It runs on standard GitHub-hosted public-repo runners with isolated local fixtures, then uploads `codemesh-crabbox-pr-proof` artifacts showing the canonical workspace tree, per-machine placement or presence, planned bootstrap or hydration actions, source-less Agent Prep from a registry clone source, and before/after state for mutating fixture flows.
 
 The lane must fail when proof is skipped, fake-only, incomplete, or unsafe to publish. Public proof must not include raw secrets, private endpoints, personal local paths outside isolated fixture placeholders, internal model names, or sensitive generated logs.
 

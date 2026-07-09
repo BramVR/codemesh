@@ -110,6 +110,20 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		}, BlockedError{Diagnostics: diagnostics}
 	}
 
+	cloneURL := project.CloneURL
+	if cloneURL == "" {
+		cloneURL = project.NormalizedRemote
+	}
+	if err := gitops.ValidateCloneSource(cloneURL); err != nil {
+		diagnostics.Blockers = append(diagnostics.Blockers, Diagnostic{Code: "unsafe-clone-url", Message: err.Error()})
+		return Result{
+			Base:        base,
+			Profile:     strings.TrimSpace(req.Profile),
+			Diagnostics: diagnostics,
+			Metadata:    Metadata{Env: envSummary},
+		}, BlockedError{Diagnostics: diagnostics}
+	}
+
 	runID := p.newID()
 	runDir := filepath.Join(p.AgentsDir, runID)
 	readyPath := filepath.Join(runDir, "workspace")
@@ -126,10 +140,6 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		}
 	}()
 
-	cloneURL := project.CloneURL
-	if cloneURL == "" {
-		cloneURL = project.NormalizedRemote
-	}
 	cloneResult, err := cloneWorkspace(ctx, cloneURL, base, readyPath, req.CloneOptions)
 	if err != nil {
 		return Result{
@@ -203,6 +213,7 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 			Alias:             project.Alias,
 			Remote:            project.NormalizedRemote,
 			CloneURL:          cloneURL,
+			SourceMode:        sourceMode(decision.SourcePathMissing),
 			SourcePath:        project.LocalPath,
 			LocalPath:         project.LocalPath,
 			SourcePathMissing: decision.SourcePathMissing,
@@ -246,6 +257,13 @@ func (p Preparer) Prepare(ctx context.Context, req Request) (Result, error) {
 		Diagnostics:    diagnostics,
 		Metadata:       metadata,
 	}, nil
+}
+
+func sourceMode(sourcePathMissing bool) string {
+	if sourcePathMissing {
+		return "registry_clone"
+	}
+	return "source_checkout"
 }
 
 type materializedEnvLookup struct{}
