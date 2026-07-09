@@ -24,6 +24,8 @@
         {
           "alias": "contract-missing-project",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/contract-missing-project",
+          "canonical_path_present": false,
           "diagnostics": {
             "blockers": [
               {
@@ -33,10 +35,13 @@
             ],
             "warnings": []
           },
+          "machine_path": "<FIXTURE_SOURCES>/contract-missing-project",
+          "machine_path_present": false,
           "path": "<FIXTURE_SOURCES>/contract-missing-project",
           "path_present": false,
           "remote": "<FIXTURE_REMOTES>/contract-missing-project.git",
-          "state": "missing"
+          "state": "missing",
+          "workspace_source": "local-only"
         }
       ]
     }

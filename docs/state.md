@@ -57,11 +57,13 @@ Stored fields:
 - `alias`: human CLI name; defaults to the checkout directory name and must be unique.
 - `normalized_remote`: stable project identity anchor. GitHub SSH and HTTPS remotes normalize to the same value.
 - `clone_url`: last known usable Git remote URL/path for cloning, preserving SSH or local transport when different from normalized identity. HTTP(S) userinfo and URL passwords are stripped before storage so local state does not keep embedded credentials.
-- `local_path`: absolute path to the current checkout on this machine.
+- `canonical_path`: absolute desired path for the current machine's canonical workspace layout.
+- `local_path`: absolute observed checkout path on this machine. For local-only rows it is also the desired path; for imported canonical rows it may differ when local discovery finds the same Project somewhere else.
+- `source`: `canonical` for manifest/bootstrap-imported Projects, `local-only` for Projects learned only through `add` or `scan`.
 
 When migrating older state, CodeMesh backfills `clone_url` from a present checkout's `origin` when possible. If the checkout is already missing during migration, the normalized remote remains the fallback clone source until the project is re-added or rediscovered.
 
-Presence is derived from the filesystem when reading the registry. The MVP does not store readiness, dirty, stale, env, hydration, or agent-prep state in project rows.
+Presence is derived from the filesystem when reading the registry. `canonical_path_present` reports whether the desired layout path exists. `machine_path_present` reports whether the observed current-machine checkout path exists. The MVP does not store readiness, dirty, stale, env, hydration, or agent-prep state in project rows.
 
 ## Machine Registry
 
@@ -83,9 +85,9 @@ Re-running registration updates mutable facts without changing `machine_id` or `
 
 Machine rows are local observed state. They are not exported to shared topology by default.
 
-`codemesh hydrate <project>` resolves an existing registry row by alias and clones `clone_url` into `local_path` when that path is absent. Hydration defaults to the `full-clone` Clone Strategy: full Git history and a complete working tree. `--partial-clone` and repeatable `--sparse path` explicitly opt into Git-native partial clone and sparse checkout. Hydration may create the parent directory needed for the desired path, but it must not create placeholder project directories for other missing rows. If `local_path` already contains files, CodeMesh refuses to overwrite it with an actionable path-conflict error. If `local_path` is already a present checkout matching the registered project identity, hydration reports that no clone was needed.
+`codemesh hydrate <project>` resolves an existing registry row by alias and clones `clone_url` into the desired path when that path is absent. Hydration defaults to the `full-clone` Clone Strategy: full Git history and a complete working tree. `--partial-clone` and repeatable `--sparse path` explicitly opt into Git-native partial clone and sparse checkout. Hydration may create the parent directory needed for the desired path, but it must not create placeholder project directories for other missing rows. If the target path already contains files, CodeMesh refuses to overwrite it with an actionable path-conflict error. If the target path is already a present checkout matching the registered project identity, hydration reports that no clone was needed.
 
-`codemesh scan [workspace-root]` walks a requested workspace root for local Git checkouts and upserts discovered projects by normalized remote. If a known remote appears at a new absolute path, scan updates `local_path` and keeps the existing alias. New projects use the checkout directory name as the alias, with deterministic numeric suffixes when another project already owns that alias.
+`codemesh scan [workspace-root]` walks a requested workspace root for local Git checkouts and upserts discovered projects by normalized remote. If a known remote appears at a new absolute path, scan updates `local_path` and keeps the existing alias. For `canonical` Projects, scan preserves `canonical_path` and `source` so local discovery records current-machine placement without rewriting imported manifest layout. For `local-only` Projects, scan updates both observed and canonical path because no portable desired layout exists yet. New projects use the checkout directory name as the alias, with deterministic numeric suffixes when another project already owns that alias.
 
 Scan reports added, updated, unchanged, and skipped candidates. Skips are runtime diagnostics only; unsupported Git candidates and nested repositories are not stored in the Project Registry.
 
@@ -93,7 +95,7 @@ Scan reports added, updated, unchanged, and skipped candidates. Skips are runtim
 
 Workspace Manifest files are desired shared topology, not observed local state. The current command surface uses one deterministic JSON file with `manifest_version` and sorted `projects`. Each project records project identity, alias, relative desired path, clone hints, and grouping. Export derives desired paths from Project Registry rows relative to the registered machine workspace root and omits machine-local paths from the portable shape.
 
-`codemesh manifest export [--output path]` writes that portable file from local SQLite metadata. `codemesh manifest import <path>` validates schema version, unknown fields, aliases, normalized remotes, clone hints, relative paths, duplicate topology, and no-secret-value rules before mutating SQLite. Import separates canonical Project identity from machine-local placement by resolving each desired path under the importing machine's registered workspace root.
+`codemesh manifest export [--output path]` writes that portable file from local SQLite metadata. `codemesh manifest import <path>` validates schema version, unknown fields, aliases, normalized remotes, clone hints, relative paths, duplicate topology, and no-secret-value rules before mutating SQLite. Import separates canonical Project identity from machine-local placement by resolving each desired path under the importing machine's registered workspace root and marking rows as `source: canonical`.
 
 SQLite remains the local operational store. The manifest is the portable reviewable interface between machines.
 
@@ -119,7 +121,7 @@ Normalized states:
 
 Diagnostics are split into warnings and blockers. Dirty source checkouts and stale local base branches are warnings so unrelated local work does not prevent temp-clone agent handoff. Missing local paths, fetch failures, and missing requested base branches are blockers for `status` until hydration or base selection exists.
 
-`tree` consumes the same normalized states for local filesystem and dirty-checkout summaries. `status` runs the fuller readiness check, including fetch and base branch validation. `doctor` consumes the Agent Prep handoff readiness decision and reports whether the handoff is green, warning-only, or blocked without recording an Agent Run.
+`tree` consumes the same normalized states for local filesystem and dirty-checkout summaries, and includes canonical path versus current-machine path presence. `status` runs the fuller readiness check, including fetch and base branch validation, and includes the same canonical/current-machine placement fields. `doctor` consumes the Agent Prep handoff readiness decision and reports whether the handoff is green, warning-only, or blocked without recording an Agent Run.
 
 ## Project Policy
 

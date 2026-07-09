@@ -4,6 +4,7 @@
 
 Target next patch: `v0.1.1`.
 
+- Added canonical versus local-only placement reporting in `codemesh tree` and `codemesh status`, so imported manifest Projects remain visible when missing locally and scans can record current-machine presence without rewriting desired layout: https://github.com/BramVR/codemesh/issues/136
 - Added `codemesh manifest export` and `codemesh manifest import` for deterministic portable Workspace Manifest files that validate topology before persisting Project Registry rows on another machine: https://github.com/BramVR/codemesh/issues/135
 - Added named machine registration plus `codemesh machine status` so local placement facts include display name, CodeMesh home, workspace root, and persisted troubleshooting output: https://github.com/BramVR/codemesh/issues/134
 - Added a free GitHub-hosted Crabbox PR proof lane that publishes sanitized visual artifacts for Dropbox-for-developers workspace changes: https://github.com/BramVR/codemesh/issues/133

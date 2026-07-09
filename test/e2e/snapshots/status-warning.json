@@ -24,6 +24,8 @@
         {
           "alias": "dirty-source",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/dirty-source",
+          "canonical_path_present": true,
           "diagnostics": {
             "blockers": [],
             "warnings": [
@@ -33,10 +35,13 @@
               }
             ]
           },
+          "machine_path": "<FIXTURE_SOURCES>/dirty-source",
+          "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/dirty-source",
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/dirty-source.git",
-          "state": "dirty"
+          "state": "dirty",
+          "workspace_source": "local-only"
         }
       ]
     }

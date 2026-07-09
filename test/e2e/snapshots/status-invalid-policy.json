@@ -24,6 +24,8 @@
         {
           "alias": "contract-invalid-policy",
           "base": "main",
+          "canonical_path": "<FIXTURE_SOURCES>/contract-invalid-policy",
+          "canonical_path_present": true,
           "diagnostics": {
             "blockers": [
               {
@@ -33,10 +35,13 @@
             ],
             "warnings": []
           },
+          "machine_path": "<FIXTURE_SOURCES>/contract-invalid-policy",
+          "machine_path_present": true,
           "path": "<FIXTURE_SOURCES>/contract-invalid-policy",
           "path_present": true,
           "remote": "<FIXTURE_REMOTES>/contract-invalid-policy.git",
-          "state": "blocked"
+          "state": "blocked",
+          "workspace_source": "local-only"
         }
       ]
     }

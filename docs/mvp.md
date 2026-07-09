@@ -249,7 +249,9 @@ Project identity:
 
 - normalized Git remote URL
 - human alias
-- current local path
+- canonical workspace path
+- current-machine path
+- source: canonical or local-only
 
 ### `codemesh tree`
 
@@ -262,6 +264,8 @@ States:
 - dirty
 - stale
 - env-missing
+
+Output includes canonical path presence and current-machine path presence. Imported manifest Projects can be shown as canonical and missing before hydration. Local-only scanned Projects remain visible as local-only until manifest topology makes them canonical.
 
 ### `codemesh status [project] [--base branch] [--json]`
 
@@ -329,6 +333,7 @@ Rules:
 - rejects unsupported schema versions, unknown fields, unsafe clone hints, duplicate topology, and non-relative paths before mutation
 - resolves each desired path under the importing machine's workspace root
 - does not clone project content or create project placeholders
+- marks imported rows as canonical so later scans can update current-machine placement without rewriting desired layout
 
 ### `codemesh target export <target-name>`
 

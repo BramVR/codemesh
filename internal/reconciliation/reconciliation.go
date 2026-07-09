@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -112,7 +113,12 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 	aliasOwner := make(map[string]string, len(projects))
 	for _, project := range projects {
 		byIdentity[project.NormalizedRemote] = project
-		if strings.TrimSpace(project.LocalPath) != "" {
+		projectInManifest := desiredIdentity[project.NormalizedRemote]
+		canonicalPath := projectCanonicalPath(project)
+		if !projectInManifest && strings.TrimSpace(canonicalPath) != "" {
+			byPath[cleanPath(canonicalPath)] = project
+		}
+		if strings.TrimSpace(project.LocalPath) != "" && (!projectInManifest || pathExistsOrUnknown(project.LocalPath)) {
 			byPath[cleanPath(project.LocalPath)] = project
 		}
 		if desiredAlias, ok := desiredAliasByIdentity[project.NormalizedRemote]; ok && desiredAlias != project.Alias {
@@ -126,10 +132,15 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 	seenDesiredIdentities := map[string]bool{}
 	seenDesiredPaths := map[string]string{}
 	for _, project := range projects {
-		if desiredIdentity[project.NormalizedRemote] || strings.TrimSpace(project.LocalPath) == "" {
+		projectInManifest := desiredIdentity[project.NormalizedRemote]
+		if strings.TrimSpace(project.LocalPath) != "" && (!projectInManifest || pathExistsOrUnknown(project.LocalPath)) {
+			seenDesiredPaths[cleanPath(project.LocalPath)] = project.NormalizedRemote
+		}
+		canonicalPath := projectCanonicalPath(project)
+		if projectInManifest || strings.TrimSpace(canonicalPath) == "" {
 			continue
 		}
-		seenDesiredPaths[cleanPath(project.LocalPath)] = project.NormalizedRemote
+		seenDesiredPaths[cleanPath(canonicalPath)] = project.NormalizedRemote
 	}
 	for _, entry := range desiredEntries {
 		project := entry.Project
@@ -194,7 +205,8 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 
 		drift.ProjectID = observed.ID
 		drift.ObservedLocalPath = observed.LocalPath
-		observedPath := cleanPath(observed.LocalPath)
+		observedPath := cleanPath(projectCanonicalPath(observed))
+		localPath := cleanPath(observed.LocalPath)
 		if observedPath == desiredComparePath {
 			drift.Kind = DriftUnchanged
 			plan.Drifts = append(plan.Drifts, drift)
@@ -204,9 +216,11 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 			plan.addConflict(drift, BlockerPathConflict, desiredLocalPath, fmt.Sprintf("desired path is already registered to %q", owner.NormalizedRemote))
 			continue
 		}
-		if reason, blocked := workspacemanifest.PathConflictReason(desiredLocalPath); blocked {
-			plan.addConflict(drift, BlockerPathConflict, desiredLocalPath, reason)
-			continue
+		if localPath != desiredComparePath {
+			if reason, blocked := workspacemanifest.PathConflictReason(desiredLocalPath); blocked {
+				plan.addConflict(drift, BlockerPathConflict, desiredLocalPath, reason)
+				continue
+			}
 		}
 		drift.Kind = DriftMoved
 		plan.Drifts = append(plan.Drifts, drift)
@@ -221,7 +235,7 @@ func BuildDryRunPlan(entries []workspacemanifest.Entry, projects []state.Project
 			ProjectID:         project.ID,
 			Identity:          project.NormalizedRemote,
 			Alias:             project.Alias,
-			DesiredLocalPath:  filepath.Clean(project.LocalPath),
+			DesiredLocalPath:  filepath.Clean(projectCanonicalPath(project)),
 			ObservedLocalPath: project.LocalPath,
 			Reason:            "project is present in the local Project Registry but absent from the Workspace Manifest",
 		})
@@ -287,6 +301,18 @@ func cleanPath(path string) string {
 		path = abs
 	}
 	return workspacemanifest.CanonicalPathForComparison(path)
+}
+
+func projectCanonicalPath(project state.Project) string {
+	if strings.TrimSpace(project.CanonicalPath) != "" {
+		return project.CanonicalPath
+	}
+	return project.LocalPath
+}
+
+func pathExistsOrUnknown(path string) bool {
+	_, err := os.Lstat(path)
+	return !errors.Is(err, os.ErrNotExist)
 }
 
 func cloneURLFor(project workspacemanifest.ProjectEntry) string {

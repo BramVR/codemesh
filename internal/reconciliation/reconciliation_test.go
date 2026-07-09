@@ -68,6 +68,38 @@ func TestDryRunPlanComparesCanonicalSymlinkedWorkspacePaths(t *testing.T) {
 	assertDrift(t, plan, "https://github.com/BramVR/alpha", DriftUnchanged, filepath.Join(linkWorkspace, "apps", "alpha"))
 }
 
+func TestDryRunPlanComparesManifestAgainstCanonicalPathAfterMachineScan(t *testing.T) {
+	workspace := t.TempDir()
+	observedPath := filepath.Join(workspace, "moved", "alpha")
+	if err := os.MkdirAll(observedPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	canonicalPath := filepath.Join(workspace, "apps", "alpha")
+
+	plan, err := BuildDryRunPlan([]workspacemanifest.Entry{
+		manifestEntry("https://github.com/BramVR/alpha", "alpha", "apps/alpha"),
+	}, []state.Project{{
+		ID:               1,
+		Alias:            "alpha",
+		NormalizedRemote: "https://github.com/BramVR/alpha",
+		CloneURL:         "https://github.com/BramVR/alpha.git",
+		LocalPath:        observedPath,
+		CanonicalPath:    canonicalPath,
+		Source:           "canonical",
+	}}, machine(workspace))
+	if err != nil {
+		t.Fatalf("BuildDryRunPlan error = %v", err)
+	}
+
+	drift := assertDrift(t, plan, "https://github.com/BramVR/alpha", DriftUnchanged, canonicalPath)
+	if drift.ObservedLocalPath != observedPath {
+		t.Fatalf("observed local path = %q, want scanned machine path %q", drift.ObservedLocalPath, observedPath)
+	}
+	if plan.Blocked {
+		t.Fatalf("plan = %#v, want unblocked canonical match", plan)
+	}
+}
+
 func TestDryRunPlanAllowsMissingProjectUnderSymlinkedWorkspaceRoot(t *testing.T) {
 	tmp := t.TempDir()
 	realWorkspace := filepath.Join(tmp, "real-workspace")
